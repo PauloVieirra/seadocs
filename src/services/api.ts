@@ -118,6 +118,7 @@ export interface DocumentModel {
 }
 
 class APIService {
+  private readonly storageKey = 'sgid:mockdb:v1';
   // Em uma implementação real, esta classe seria um cliente HTTP que interage com um backend real.
   // A persistência de dados seria no banco de dados e não em memória (mock data).
   // A autenticação e autorização seriam tratadas por tokens JWT/OAuth com um servidor de autenticação.
@@ -306,6 +307,52 @@ class APIService {
   private mockFiles: Map<string, UploadedFile[]> = new Map();
   private mockAuditLogs: Map<string, AuditLog[]> = new Map();
 
+  constructor() {
+    this.hydrateFromLocalStorage();
+  }
+
+  private persistToLocalStorage(): void {
+    try {
+      const payload = {
+        version: 1,
+        savedAt: new Date().toISOString(),
+        users: this.mockUsers,
+        groups: this.mockGroups,
+        documentModels: this.mockDocumentModels,
+        projects: this.mockProjects,
+        documents: Array.from(this.mockDocuments.entries()),
+        documentVersions: Array.from(this.mockDocumentVersions.entries()),
+        files: Array.from(this.mockFiles.entries()),
+        auditLogs: Array.from(this.mockAuditLogs.entries()),
+      };
+      localStorage.setItem(this.storageKey, JSON.stringify(payload));
+    } catch (error) {
+      console.warn('[SGID] Falha ao persistir mockdb no localStorage:', error);
+    }
+  }
+
+  private hydrateFromLocalStorage(): void {
+    try {
+      const raw = localStorage.getItem(this.storageKey);
+      if (!raw) return;
+      const parsed = JSON.parse(raw);
+
+      if (!parsed || parsed.version !== 1) return;
+
+      if (Array.isArray(parsed.users)) this.mockUsers = parsed.users;
+      if (Array.isArray(parsed.groups)) this.mockGroups = parsed.groups;
+      if (Array.isArray(parsed.documentModels)) this.mockDocumentModels = parsed.documentModels;
+      if (Array.isArray(parsed.projects)) this.mockProjects = parsed.projects;
+
+      if (Array.isArray(parsed.documents)) this.mockDocuments = new Map(parsed.documents);
+      if (Array.isArray(parsed.documentVersions)) this.mockDocumentVersions = new Map(parsed.documentVersions);
+      if (Array.isArray(parsed.files)) this.mockFiles = new Map(parsed.files);
+      if (Array.isArray(parsed.auditLogs)) this.mockAuditLogs = new Map(parsed.auditLogs);
+    } catch (error) {
+      console.warn('[SGID] Falha ao hidratar mockdb do localStorage:', error);
+    }
+  }
+
   // Configuração do banco de dados
   async configurarBancoDeDados(config: DatabaseConfig): Promise<boolean> {
     try {
@@ -416,6 +463,7 @@ class APIService {
     this.mockUsers.push(newUser);
     this.currentUser = newUser; // Se registrar, já loga
     localStorage.setItem('current_user', JSON.stringify(newUser));
+    this.persistToLocalStorage();
     return newUser;
   }
 
@@ -522,6 +570,7 @@ class APIService {
 
     // Log de auditoria
     this.addAuditLog(newProject.id, 'project_created', user.id, user.name, `Projeto "${name}" criado`);
+    this.persistToLocalStorage();
 
     return newProject;
   }
@@ -693,6 +742,7 @@ class APIService {
 
     // Log de auditoria
     this.addAuditLog(projectToUpdate.id, 'project_updated', user.id, user.name, `Projeto "${projectToUpdate.name}" atualizado`);
+    this.persistToLocalStorage();
 
     return projectToUpdate;
   }
@@ -749,6 +799,7 @@ class APIService {
 
     // Log de auditoria
     this.addAuditLog(projectId, 'document_edited', user.id, user.name, `Documento editado manualmente (versão ${newVersionNumber})`);
+    this.persistToLocalStorage();
 
     // Retornar o documento atualizado (formato compatível)
     return {
@@ -761,6 +812,42 @@ class APIService {
       updatedAt: newVersion.updatedAt, // Data de atualização vem da nova versão
       updatedBy: newVersion.updatedBy, // Usuário que atualizou vem da nova versão
     } as Document;
+  }
+
+  /**
+   * Salva uma cópia do documento atual e do modelo associado (se houver) no localStorage.
+   * Observação: isto NÃO cria uma nova versão no histórico (não chama updateDocument).
+   */
+  async saveDocumentAndModelToLocalStorage(
+    projectId: string,
+    content: DocumentContent
+  ): Promise<{ documentKey: string; modelKey?: string }> {
+    const user = this.getCurrentUser();
+    const project = await this.getProject(projectId);
+
+    const documentKey = `sgid:savedDocument:${projectId}`;
+    const payload = {
+      projectId,
+      savedAt: new Date().toISOString(),
+      savedBy: user ? { id: user.id, name: user.name, email: user.email, role: user.role } : null,
+      project: project || null,
+      documentModelId: project?.documentModelId || null,
+      content,
+    };
+
+    localStorage.setItem(documentKey, JSON.stringify(payload));
+
+    let modelKey: string | undefined;
+    const modelId = project?.documentModelId;
+    if (modelId) {
+      const model = this.mockDocumentModels.find(m => m.id === modelId);
+      if (model) {
+        modelKey = `sgid:savedDocumentModel:${modelId}`;
+        localStorage.setItem(modelKey, JSON.stringify({ ...model, savedAt: payload.savedAt }));
+      }
+    }
+
+    return { documentKey, modelKey };
   }
 
   async getDocumentVersions(documentId: string): Promise<DocumentVersion[]> {
@@ -814,6 +901,7 @@ class APIService {
       currentUser.name, 
       `Documento "${document.id}" compartilhado com ${targetUser.name} com permissões: ${permissions.join(', ')}`
     );
+    this.persistToLocalStorage();
 
     return document;
   }
@@ -852,6 +940,7 @@ class APIService {
       currentUser.name, 
       `Permissões de compartilhamento do documento "${document.id}" com o usuário ${userId} atualizadas para: ${permissions.join(', ')}`
     );
+    this.persistToLocalStorage();
 
     return document;
   }
@@ -1256,6 +1345,7 @@ class APIService {
 
     // Log de auditoria
     this.addAuditLog(projectId, 'file_uploaded', user.id, user.name, `Arquivo \"${file.name}\" enviado`);
+    this.persistToLocalStorage();
 
     return uploadedFile;
   }
@@ -1279,6 +1369,7 @@ class APIService {
     const logs = this.mockAuditLogs.get(projectId) || [];
     logs.unshift(log);
     this.mockAuditLogs.set(projectId, logs);
+    this.persistToLocalStorage();
   }
 
   async getAuditLogs(projectId: string): Promise<AuditLog[]> {
@@ -1334,6 +1425,7 @@ class APIService {
 
     // Log de auditoria
     this.addAuditLog('system', 'user_updated', user.id, user.name, `Usuário "${updatedUser.name}" (${updatedUser.email}) atualizado`);
+    this.persistToLocalStorage();
 
     return updatedUser;
   }
@@ -1358,6 +1450,7 @@ class APIService {
     if (this.mockUsers.length < initialLength) {
       // Log de auditoria
       this.addAuditLog('system', 'user_deleted', user.id, user.name, `Usuário com ID "${userId}" excluído`);
+      this.persistToLocalStorage();
       return true;
     }
     return false;
@@ -1403,6 +1496,7 @@ class APIService {
 
     // Log de auditoria
     this.addAuditLog(projectId || 'system', 'document_model_created', user.id, user.name, `Modelo de documento \"${name}\" criado`);
+    this.persistToLocalStorage();
 
     return newModel;
   }
@@ -1432,6 +1526,7 @@ class APIService {
 
     // Log de auditoria
     this.addAuditLog(modelToUpdate.projectId || 'system', 'document_model_updated', user.id, user.name, `Modelo de documento \"${modelToUpdate.name}\" atualizado`);
+    this.persistToLocalStorage();
 
     return modelToUpdate;
   }
@@ -1477,6 +1572,7 @@ class APIService {
     };
 
     this.mockGroups.push(newGroup);
+    this.persistToLocalStorage();
     return newGroup;
   }
 
@@ -1541,6 +1637,7 @@ class APIService {
 
     // Log de auditoria
     this.addAuditLog(documentId, 'section_added', user.id, user.name, `Seção "${newSection.title}" adicionada ao documento`);
+    this.persistToLocalStorage();
 
     return {
       id: doc.id,
@@ -1578,6 +1675,7 @@ class APIService {
 
     // Log de auditoria
     this.addAuditLog('system', 'group_updated', user.id, user.name, `Grupo "${groupToUpdate.name}" atualizado`);
+    this.persistToLocalStorage();
 
     return groupToUpdate;
   }

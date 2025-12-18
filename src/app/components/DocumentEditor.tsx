@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { Button } from './ui/button';
 import { Textarea } from './ui/textarea';
-import { Sparkles, RotateCw, Plus } from 'lucide-react'; // Adicionar Plus
+import { Sparkles, RotateCw, Plus, Save } from 'lucide-react'; // Adicionar Plus
 import 'react-quill/dist/quill.snow.css'; // ES6
 import { apiService, type Document, type DocumentContent, type DocumentSection } from '../../services/api';
 import { toast } from 'sonner';
@@ -17,6 +17,7 @@ interface DocumentEditorProps {
 export function DocumentEditor({ document, onSave, projectId }: DocumentEditorProps) {
   const [content, setContent] = useState<DocumentContent>(document.content);
   const [isGeneratingAll, setIsGeneratingAll] = useState(false);
+  const [isSavingToLocalStorage, setIsSavingToLocalStorage] = useState(false);
   const [newSectionDialogOpen, setNewSectionDialogOpen] = useState(false); // Estado para o modal de nova seção
   const [isAddingSection, setIsAddingSection] = useState(false); // Estado para o botão de adicionar seção
   const [aiProcessingStatus, setAiProcessingStatus] = useState<
@@ -134,6 +135,27 @@ export function DocumentEditor({ document, onSave, projectId }: DocumentEditorPr
     }
   };
 
+  const handleSaveToLocalStorage = async () => {
+    if (isSavingToLocalStorage) return;
+    setIsSavingToLocalStorage(true);
+    try {
+      // Mantém o fluxo atual (versões/auditoria) e também persiste uma cópia no localStorage.
+      onSave(content);
+      const { documentKey, modelKey } = await apiService.saveDocumentAndModelToLocalStorage(projectId, content);
+      toast.success('Documento salvo no navegador!', {
+        description: modelKey
+          ? 'Documento e modelo associados foram persistidos no localStorage.'
+          : 'Documento persistido no localStorage.',
+        duration: 3500,
+      });
+      console.log('[SGID] Salvo no localStorage:', { documentKey, modelKey });
+    } catch (error: any) {
+      toast.error('Erro ao salvar no navegador', { description: error?.message || 'Erro desconhecido' });
+    } finally {
+      setIsSavingToLocalStorage(false);
+    }
+  };
+
   return (
     <div className="flex flex-col items-center min-h-screen bg-gray-100 py-8 font-sans antialiased">
       <div className="w-full max-w-4xl bg-white rounded-lg shadow-md p-10 space-y-8">
@@ -142,7 +164,7 @@ export function DocumentEditor({ document, onSave, projectId }: DocumentEditorPr
           <div>
             <h1 className="text-3xl font-extrabold text-gray-900 mb-2">Documento de Especificação</h1>
             <p className="text-gray-600 text-lg">
-              Edite e gere conteúdo com IA para seu projeto: <span className="font-semibold">{document.projectId}</span>
+              Criando documento para o projeto: <span className="font-semibold">{document.projectId}</span>
             </p>
           </div>
           <Button
@@ -175,7 +197,7 @@ export function DocumentEditor({ document, onSave, projectId }: DocumentEditorPr
         <div className="space-y-6">
           {content.sections.map((section) => (
             <div key={section.id} className="group">
-              {section.title && <h2 className="text-2xl font-bold text-gray-800 mb-2 mt-4">{section.title}</h2>}
+              
               {section.isEditable ? (
                 <Textarea
                   value={section.content || ''}
@@ -215,6 +237,14 @@ export function DocumentEditor({ document, onSave, projectId }: DocumentEditorPr
             <li>Todas as interações de geração de conteúdo são registradas no histórico de auditoria.</li>
             <li>O conteúdo gerado pela IA pode ser editado manualmente a qualquer momento.</li>
           </ul>
+        </div>
+
+        {/* Botão de salvar no final do documento */}
+        <div className="pt-2 flex justify-end">
+          <Button onClick={handleSaveToLocalStorage} disabled={isSavingToLocalStorage || isGeneratingAll}>
+            <Save className="w-4 h-4 mr-2" />
+            {isSavingToLocalStorage ? 'Salvando...' : 'Salvar'}
+          </Button>
         </div>
       </div>
 

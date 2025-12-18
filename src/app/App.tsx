@@ -23,7 +23,6 @@ export default function App() {
   const navigate = useNavigate(); // useNavigate está de volta aqui para ser usado nos handlers
 
   useEffect(() => {
-    localStorage.removeItem('current_user');
     const user = apiService.getCurrentUser();
     if (user) {
       setCurrentUser(user);

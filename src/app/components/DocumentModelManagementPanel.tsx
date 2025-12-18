@@ -155,21 +155,36 @@ export function DocumentModelManagementPanel({ currentUser }: DocumentModelManag
 
       {/* Dialogo de Edição de Modelo de Documento */}
       <Dialog open={editDialogOpen} onOpenChange={setEditDialogOpen}>
-        <DialogContent className="sm:max-w-4xl"> {/* Reverte para a largura anterior, sem tela cheia */}
-          <DialogHeader>
-            <DialogTitle>Editar Modelo de Documento</DialogTitle>
-            <DialogDescription>
-              Modifique o layout e o conteúdo do modelo existente.
-            </DialogDescription>
-          </DialogHeader>
-          {selectedModelForEdit && (
-            <RichTextDocumentModelEditor
-              onSave={handleEditDocumentModel}
-              onCancel={() => setEditDialogOpen(false)}
-              isLoading={isSavingModel}
-              initialData={selectedModelForEdit}
-            />
-          )}
+        <DialogContent
+          className="fixed inset-0 left-0 top-0 translate-x-0 translate-y-0 w-screen h-screen max-w-none rounded-none p-0 flex flex-col gap-0 overflow-hidden"
+        >
+          {/* Header fixo */}
+          <div className="shrink-0 border-b border-gray-200 bg-white">
+            <div className="w-full max-w-[1440px] mx-auto px-6 py-4">
+              <DialogHeader className="gap-1">
+                <DialogTitle>Editar Modelo de Documento</DialogTitle>
+                <DialogDescription>
+                  Modifique o layout e o conteúdo do modelo existente.
+                </DialogDescription>
+              </DialogHeader>
+            </div>
+          </div>
+
+          {/* Conteúdo com scroll */}
+          <div className="flex-1 overflow-y-auto bg-gray-50">
+            <div className="w-full max-w-[1440px] mx-auto px-6 py-6">
+              <div className="bg-white rounded-lg shadow-sm border p-6">
+                {selectedModelForEdit && (
+                  <RichTextDocumentModelEditor
+                    onSave={handleEditDocumentModel}
+                    onCancel={() => setEditDialogOpen(false)}
+                    isLoading={isSavingModel}
+                    initialData={selectedModelForEdit}
+                  />
+                )}
+              </div>
+            </div>
+          </div>
         </DialogContent>
       </Dialog>
     </div>
