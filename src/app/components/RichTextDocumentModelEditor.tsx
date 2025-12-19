@@ -23,14 +23,16 @@ function ensureMetadataFieldBlotRegistered() {
     static tagName = 'div';
     static className = 'sgid-metadata-field';
 
-    static create(value: { id?: string; title?: string }) {
+    static create(value: { id?: string; title?: string; help?: string }) {
       const node: HTMLElement = super.create();
       const id = value?.id || `field-${Date.now()}`;
       const title = value?.title || 'Campo';
+      const help = value?.help || '';
 
       node.setAttribute('contenteditable', 'false');
       node.setAttribute('data-field-id', id);
       node.setAttribute('data-field-title', title);
+      node.setAttribute('data-field-help', help);
       node.setAttribute('draggable', 'true');
       node.setAttribute('role', 'group');
       node.setAttribute('aria-label', `Campo de metadado: ${title}`);
@@ -43,6 +45,15 @@ function ensureMetadataFieldBlotRegistered() {
       titleEl.className = 'sgid-metadata-field__title';
       titleEl.innerText = title;
       header.appendChild(titleEl);
+
+      if (help) {
+        const helpEl = document.createElement('div');
+        helpEl.className = 'sgid-metadata-field__help';
+        helpEl.innerText = help;
+        helpEl.style.fontSize = '10px';
+        helpEl.style.opacity = '0.7';
+        header.appendChild(helpEl);
+      }
 
       const body = document.createElement('div');
       body.className = 'sgid-metadata-field__textarea';
@@ -58,6 +69,7 @@ function ensureMetadataFieldBlotRegistered() {
       return {
         id: node.getAttribute('data-field-id') || '',
         title: node.getAttribute('data-field-title') || '',
+        help: node.getAttribute('data-field-help') || '',
       };
     }
   }
@@ -168,7 +180,11 @@ export function RichTextDocumentModelEditor({
       }
     }
 
-    editor.insertEmbed(insertAt, 'metadataField', { id: uniqueId, title: fieldTitle.trim() }, 'user');
+    editor.insertEmbed(insertAt, 'metadataField', { 
+      id: uniqueId, 
+      title: fieldTitle.trim(),
+      help: fieldHelp.trim()
+    }, 'user');
     // Quebra depois do bloco para o próximo título/linha
     editor.insertText(insertAt + 1, '\n', 'user');
     editor.setSelection(insertAt + 2, 0, 'user');

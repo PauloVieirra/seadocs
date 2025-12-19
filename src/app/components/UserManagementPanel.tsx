@@ -20,9 +20,15 @@ export function UserManagementPanel({ currentUser }: UserManagementPanelProps) {
   const [dialogOpen, setDialogOpen] = useState(false);
   const [newUserName, setNewUserName] = useState('');
   const [newUserEmail, setNewUserEmail] = useState('');
+  const [newUserPassword, setNewUserPassword] = useState('');
   const [newUserRole, setNewUserRole] = useState<User['role']>('operational');
 
-  // Estados para edição de usuário
+  // Estados para reset de senha
+  const [resetPasswordUser, setResetPasswordUser] = useState<User | null>(null);
+  const [resetPasswordDialogOpen, setResetPasswordDialogOpen] = useState(false);
+  const [newPassword, setNewPassword] = useState('');
+  const [newPasswordConfirm, setNewPasswordConfirm] = useState('');
+  const [isResettingPassword, setIsResettingPassword] = useState(false);
   const [editingUser, setEditingUser] = useState<User | null>(null);
   const [editDialogOpen, setEditDialogOpen] = useState(false);
   const [editedUserName, setEditedUserName] = useState('');
@@ -47,13 +53,23 @@ export function UserManagementPanel({ currentUser }: UserManagementPanelProps) {
   const handleCreateUser = async (e: React.FormEvent) => {
     e.preventDefault();
     try {
-      // No mock, a senha não é usada na criação direta
-      await apiService.register(newUserEmail, "senha_padrao", newUserName, newUserRole);
+      // Validação da senha
+      if (!newUserPassword) {
+        alert('A senha é obrigatória');
+        return;
+      }
+      if (newUserPassword.length < 6) {
+        alert('A senha deve ter pelo menos 6 caracteres');
+        return;
+      }
+      await apiService.register(newUserEmail, newUserPassword, newUserName, newUserRole);
       setNewUserName('');
       setNewUserEmail('');
+      setNewUserPassword('');
       setNewUserRole('operational');
       setDialogOpen(false);
       loadUsers();
+      alert('Usuário criado com sucesso! Ele terá que alterar a senha no primeiro login.');
     } catch (error: any) {
       alert(error.message);
     }
@@ -126,14 +142,53 @@ export function UserManagementPanel({ currentUser }: UserManagementPanelProps) {
     }
   };
 
+  const handleResetPasswordClick = (user: User) => {
+    setResetPasswordUser(user);
+    setNewPassword('');
+    setNewPasswordConfirm('');
+    setResetPasswordDialogOpen(true);
+  };
+
+  const handleResetPassword = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!resetPasswordUser) return;
+
+    // Validação da senha
+    if (!newPassword) {
+      alert('A nova senha é obrigatória');
+      return;
+    }
+    if (newPassword.length < 6) {
+      alert('A senha deve ter pelo menos 6 caracteres');
+      return;
+    }
+    if (newPassword !== newPasswordConfirm) {
+      alert('As senhas não coincidem');
+      return;
+    }
+
+    setIsResettingPassword(true);
+    try {
+      // Atualizar senha e marcar como forcePasswordChange
+      await apiService.updateUserPassword(resetPasswordUser.id, newPassword, true);
+      setResetPasswordDialogOpen(false);
+      setResetPasswordUser(null);
+      loadUsers();
+      alert('Senha resetada com sucesso! O usuário será obrigado a alterar na próxima login.');
+    } catch (error: any) {
+      alert(error.message);
+    } finally {
+      setIsResettingPassword(false);
+    }
+  };
+
   const getRoleLabel = (role: User['role']) => {
     const labels: Record<User['role'], string> = {
       'admin': 'Administrador',
-      'director': 'Diretor',
       'manager': 'Gerente',
-      'technical_responsible': 'Responsável Técnico',
+      'technical_responsible': 'Técnico Operacional',
       'operational': 'Operacional',
-      'user': 'Usuário' // Embora 'user' não seja um papel dos requisitos, mantemos aqui para consistência
+      'external': 'Usuário Externo'
     };
     return labels[role];
   };
@@ -179,6 +234,20 @@ export function UserManagementPanel({ currentUser }: UserManagementPanelProps) {
                   />
                 </div>
                 <div className="space-y-2">
+                  <Label htmlFor="user-password">Senha Inicial *</Label>
+                  <Input
+                    id="user-password"
+                    type="password"
+                    placeholder="Mínimo 6 caracteres"
+                    value={newUserPassword}
+                    onChange={(e) => setNewUserPassword(e.target.value)}
+                    required
+                  />
+                  <p className="text-xs text-gray-500">
+                    O usuário será obrigado a alterar esta senha no primeiro login.
+                  </p>
+                </div>
+                <div className="space-y-2">
                   <Label htmlFor="user-role">Papel *</Label>
                   <Select value={newUserRole} onValueChange={(value: User['role']) => setNewUserRole(value)}>
                     <SelectTrigger>
@@ -186,10 +255,10 @@ export function UserManagementPanel({ currentUser }: UserManagementPanelProps) {
                     </SelectTrigger>
                     <SelectContent>
                       <SelectItem value="admin">Administrador</SelectItem>
-                      <SelectItem value="director">Diretor</SelectItem>
                       <SelectItem value="manager">Gerente</SelectItem>
-                      <SelectItem value="technical_responsible">Responsável Técnico</SelectItem>
+                      <SelectItem value="technical_responsible">Técnico Operacional</SelectItem>
                       <SelectItem value="operational">Operacional</SelectItem>
+                      <SelectItem value="external">Usuário Externo</SelectItem>
                     </SelectContent>
                   </Select>
                 </div>
@@ -197,7 +266,9 @@ export function UserManagementPanel({ currentUser }: UserManagementPanelProps) {
                   <Button type="button" variant="outline" onClick={() => setDialogOpen(false)}>
                     Cancelar
                   </Button>
-                  <Button type="submit">Criar Usuário</Button>
+                  <Button type="submit" disabled={!newUserName || !newUserEmail || !newUserPassword || newUserPassword.length < 6}>
+                    Criar Usuário
+                  </Button>
                 </div>
               </form>
             </DialogContent>
@@ -241,15 +312,77 @@ export function UserManagementPanel({ currentUser }: UserManagementPanelProps) {
           {users.map(userItem => (
             <Card key={userItem.id}>
               <CardContent className="flex items-center justify-between p-4">
-                <div>
+                <div className="flex-1">
                   <CardTitle className="text-md">{userItem.name}</CardTitle>
                   <CardDescription>{userItem.email}</CardDescription>
                 </div>
-                <Badge variant="secondary">{getRoleLabel(userItem.role)}</Badge>
+                <div className="flex items-center gap-3">
+                  <Badge variant="secondary">{getRoleLabel(userItem.role)}</Badge>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => handleResetPasswordClick(userItem)}
+                  >
+                    Resetar Senha
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    onClick={() => handleEditUserClick(userItem)}
+                  >
+                    Editar
+                  </Button>
+                </div>
               </CardContent>
             </Card>
           ))}
         </div>
+      )}
+
+      {/* Dialog para Resetar Senha */}
+      {resetPasswordUser && (
+        <Dialog open={resetPasswordDialogOpen} onOpenChange={setResetPasswordDialogOpen}>
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>Resetar Senha</DialogTitle>
+              <DialogDescription>
+                Defina uma nova senha para {resetPasswordUser.name}. O usuário será obrigado a alterar na próxima login.
+              </DialogDescription>
+            </DialogHeader>
+            <form onSubmit={handleResetPassword} className="space-y-4 py-4">
+              <div className="space-y-2">
+                <Label htmlFor="reset-password">Nova Senha *</Label>
+                <Input
+                  id="reset-password"
+                  type="password"
+                  placeholder="Mínimo 6 caracteres"
+                  value={newPassword}
+                  onChange={(e) => setNewPassword(e.target.value)}
+                  required
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="reset-password-confirm">Confirmar Senha *</Label>
+                <Input
+                  id="reset-password-confirm"
+                  type="password"
+                  placeholder="Repita a senha"
+                  value={newPasswordConfirm}
+                  onChange={(e) => setNewPasswordConfirm(e.target.value)}
+                  required
+                />
+              </div>
+              <div className="flex justify-end gap-2">
+                <Button type="button" variant="outline" onClick={() => setResetPasswordDialogOpen(false)}>
+                  Cancelar
+                </Button>
+                <Button type="submit" disabled={isResettingPassword || !newPassword || !newPasswordConfirm || newPassword.length < 6}>
+                  {isResettingPassword ? 'Salvando...' : 'Resetar Senha'}
+                </Button>
+              </div>
+            </form>
+          </DialogContent>
+        </Dialog>
       )}
 
       {/* Dialog para Editar/Excluir Usuário */}
@@ -290,10 +423,10 @@ export function UserManagementPanel({ currentUser }: UserManagementPanelProps) {
                   </SelectTrigger>
                   <SelectContent>
                     <SelectItem value="admin">Administrador</SelectItem>
-                    <SelectItem value="director">Diretor</SelectItem>
                     <SelectItem value="manager">Gerente</SelectItem>
-                    <SelectItem value="technical_responsible">Responsável Técnico</SelectItem>
+                    <SelectItem value="technical_responsible">Técnico Operacional</SelectItem>
                     <SelectItem value="operational">Operacional</SelectItem>
+                    <SelectItem value="external">Usuário Externo</SelectItem>
                   </SelectContent>
                 </Select>
               </div>

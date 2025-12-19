@@ -40,8 +40,8 @@ export function DocumentModelManagementPanel({ currentUser }: DocumentModelManag
     setIsSavingModel(true);
     try {
       if (!selectedModelForEdit) return;
-      if (currentUser.role !== 'admin' && currentUser.role !== 'manager') {
-        toast.error('Permissão negada: Somente administradores ou gerentes podem editar modelos.');
+      if (currentUser.role !== 'admin' && currentUser.role !== 'manager' && currentUser.role !== 'technical_responsible') {
+        toast.error('Permissão negada: Somente administradores, gerentes ou técnicos responsáveis podem editar modelos.');
         return;
       }
       const updatedModel: DocumentModel = { ...selectedModelForEdit, name, type, templateContent };
@@ -57,8 +57,8 @@ export function DocumentModelManagementPanel({ currentUser }: DocumentModelManag
   };
 
   const handleEditModelClick = (model: DocumentModel) => {
-    if (currentUser.role !== 'admin' && currentUser.role !== 'manager') {
-      toast.error('Permissão negada: Somente administradores ou gerentes podem editar modelos.');
+    if (currentUser.role !== 'admin' && currentUser.role !== 'manager' && currentUser.role !== 'technical_responsible') {
+      toast.error('Permissão negada: Somente administradores, gerentes ou técnicos responsáveis podem editar modelos.');
       return;
     }
     setSelectedModelForEdit(model);
@@ -69,7 +69,7 @@ export function DocumentModelManagementPanel({ currentUser }: DocumentModelManag
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <h3 className="text-lg font-medium">Gerenciamento de Modelos de Documento</h3>
-        {currentUser.role === 'admin' || currentUser.role === 'manager' ? (
+        {(currentUser.role === 'admin' || currentUser.role === 'manager' || currentUser.role === 'technical_responsible') ? (
           <Button onClick={() => navigate('/create-document-model')}> {/* Navega para a nova rota */}
             <Plus className="mr-2 h-4 w-4" /> Criar Novo Modelo
           </Button>
@@ -96,12 +96,12 @@ export function DocumentModelManagementPanel({ currentUser }: DocumentModelManag
           <CardContent>
             <FileText className="w-12 h-12 mx-auto text-gray-400 mb-4" />
             <h3 className="text-lg mb-2">Nenhum modelo de documento encontrado</h3>
-            {(currentUser.role === 'admin' || currentUser.role === 'manager') && (
+            {(currentUser.role === 'admin' || currentUser.role === 'manager' || currentUser.role === 'technical_responsible') && (
               <p className="text-sm text-gray-600 mb-4">
                 Comece criando seu primeiro modelo.
               </p>
             )}
-            {(currentUser.role === 'admin' || currentUser.role === 'manager') && (
+            {(currentUser.role === 'admin' || currentUser.role === 'manager' || currentUser.role === 'technical_responsible') && (
               <Button onClick={() => navigate('/create-document-model')}>
                 <Plus className="mr-2 h-4 w-4" /> Criar primeiro modelo
               </Button>
@@ -121,7 +121,7 @@ export function DocumentModelManagementPanel({ currentUser }: DocumentModelManag
                   <CardTitle className="text-lg">{model.name}</CardTitle>
                   <CardDescription>{model.type}</CardDescription>
                 </div>
-                {(currentUser.role === 'admin' || currentUser.role === 'manager') && (
+                {(currentUser.role === 'admin' || currentUser.role === 'manager' || currentUser.role === 'technical_responsible') && (
                   <Button
                     variant="ghost"
                     size="icon"
@@ -154,10 +154,18 @@ export function DocumentModelManagementPanel({ currentUser }: DocumentModelManag
       )}
 
       {/* Dialogo de Edição de Modelo de Documento */}
-      <Dialog open={editDialogOpen} onOpenChange={setEditDialogOpen}>
-        <DialogContent
-          className="fixed inset-0 left-0 top-0 translate-x-0 translate-y-0 w-screen h-screen max-w-none rounded-none p-0 flex flex-col gap-0 overflow-hidden"
-        >
+      <Dialog open={editDialogOpen} onOpenChange={setEditDialogOpen} >
+        <DialogContent className=' fixed inset-0
+      w-screen h-screen
+      min-w-full
+      rounded-none
+      p-0
+      flex flex-col
+      gap-0
+      overflow-hidden
+      bg-white
+      translate-x-0
+      translate-y-0'>
           {/* Header fixo */}
           <div className="shrink-0 border-b border-gray-200 bg-white">
             <div className="w-full max-w-[1440px] mx-auto px-6 py-4">

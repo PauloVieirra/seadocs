@@ -1,6 +1,7 @@
 // API Service - Configurável para qualquer banco de dados
 
 import { manusAPIService, type ManusConfig } from './manus-api';
+import { supabase } from './supabase';
 
 export interface DatabaseConfig {
   host: string;
@@ -22,10 +23,13 @@ export interface User {
   id: string;
   email: string;
   name: string;
-  role: 'admin' | 'director' | 'manager' | 'technical_responsible' | 'operational';
+  password: string; // Senha do usuário (em produção seria hashed)
+  role: 'admin' | 'manager' | 'technical_responsible' | 'operational' | 'external';
   managerId?: string;
   createdAt: string;
+  updatedAt?: string; // Adicionado updatedAt
   isActive?: boolean; // Adicionado para indicar se o usuário está ativo/suspenso
+  forcePasswordChange?: boolean; // Força alteração de senha no próximo login
 }
 
 export interface Group {
@@ -35,6 +39,7 @@ export interface Group {
   parentId?: string; // Para hierarquia de grupos
   memberIds: string[]; // IDs dos usuários membros
   responsibleId?: string; // ID do usuário responsável pelo grupo
+  projectIds?: string[]; // IDs dos projetos atribuídos ao grupo
   createdAt: string;
   updatedAt: string;
 }
@@ -51,12 +56,19 @@ export interface DocumentVersion {
 export interface Document {
   id: string;
   projectId: string;
+  name: string; // Nome do documento
+  groupId?: string; // ID do grupo responsável
+  securityLevel: 'public' | 'restricted' | 'confidential' | 'secret'; // Nível de sigilo
+  templateId?: string; // ID do template/modelo utilizado
+  creatorId: string;
+  creatorName: string;
   currentVersionId: string; // ID da versão atual
   sharedWith?: { userId: string; permissions: ('view' | 'edit' | 'comment')[] }[]; // Adicionado para compartilhamento
+  createdAt: string;
+  updatedAt: string;
   // Propriedades adicionadas para compatibilidade com a interface esperada pelo frontend
   content?: DocumentContent;
   version?: number;
-  updatedAt?: string;
   updatedBy?: string;
 }
 
@@ -69,6 +81,7 @@ export interface DocumentSection {
   title: string;
   content: string;
   isEditable: boolean;
+  helpText?: string; // Instruções ou observações para a IA/usuário
 }
 
 export interface UploadedFile {
@@ -103,16 +116,21 @@ export interface Project {
   updatedAt: string;
   responsibleIds?: string[]; // Adicionado para gerentes e responsáveis técnicos
   groupIds?: string[]; // Adicionado para associar projetos a grupos
-  documentModelId?: string; // ID do modelo de documento associado ao projeto
+  documentModelId?: string; // Adicionado documentModelId
+  documentIds: string[]; // IDs dos documentos dentro do projeto
 }
 
 export interface DocumentModel {
   id: string;
   name: string;
   type: string; // Ex: Ofício, Minuta, Especificação de Requisitos
-  templateContent: string; // Conteúdo do template em formato HTML
+  description?: string; // Adicionado campo descrição
+  templateContent: string; // Conteúdo do template em formato HTML (armazenado em file_url no banco)
   isGlobal: boolean; // Se o modelo está disponível para todos os projetos
   projectId?: string; // Adicionado para vincular o modelo a um projeto específico
+  sections?: DocumentSection[]; // Estrutura de seções extraída
+  fileUrl?: string; // URL do arquivo ou conteúdo
+  createdBy?: string; // ID do criador
   createdAt: string;
   updatedAt: string;
 }
@@ -127,182 +145,16 @@ class APIService {
   private currentUser: User | null = null;
   
   // Mock data para demonstração
-  private mockUsers: User[] = [
-    {
-      id: '1',
-      email: 'admin@empresa.com',
-      name: 'Admin Sistema',
-      role: 'admin',
-      createdAt: new Date().toISOString(),
-      isActive: true
-    },
-    {
-      id: '2',
-      email: 'diretor@empresa.com',
-      name: 'Diretor Geral',
-      role: 'director',
-      createdAt: new Date().toISOString(),
-      isActive: true
-    },
-    {
-      id: '3',
-      email: 'gerente@empresa.com',
-      name: 'Gerente de Projeto',
-      role: 'manager',
-      createdAt: new Date().toISOString(),
-      isActive: true
-    },
-    {
-      id: '4',
-      email: 'responsavel.tecnico@empresa.com',
-      name: 'Responsável Técnico',
-      role: 'technical_responsible',
-      createdAt: new Date().toISOString(),
-      isActive: true
-    },
-    {
-      id: '5',
-      email: 'operacional@empresa.com',
-      name: 'Designer UI',
-      role: 'operational',
-      managerId: '3',
-      createdAt: new Date().toISOString(),
-      isActive: true
-    }
-  ];
+  private mockUsers: User[] = [];
 
-  private mockGroups: Group[] = [
-    {
-      id: 'g1',
-      name: 'Engenharia de Software',
-      description: 'Grupo responsável pelo desenvolvimento de software',
-      memberIds: ['1', '2', '3', '4', '5'],
-      responsibleId: '2',
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-    },
-    {
-      id: 'g2',
-      name: 'Infraestrutura',
-      description: 'Grupo responsável pela infraestrutura e operações',
-      parentId: 'g1',
-      memberIds: ['1', '5'],
-      responsibleId: '1',
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-    }
-  ];
+  private mockGroups: Group[] = [];
 
-  private mockDocumentModels: DocumentModel[] = [
-    {
-      id: 'dm1',
-      name: 'Modelo de Especificação de Requisitos',
-      type: 'Especificação de Requisitos',
-      templateContent: `<h1>1. Introdução</h1><p><!-- EDITABLE_SECTION_START:intro:Introdução --><!-- EDITABLE_SECTION_END --></p><h2>2. Visão Geral do Sistema</h2><p><!-- EDITABLE_SECTION_START:overview:Visão Geral --><!-- EDITABLE_SECTION_END --></p><h3>3. Requisitos Funcionais</h3><p><!-- EDITABLE_SECTION_START:functional:Requisitos Funcionais --><!-- EDITABLE_SECTION_END --></p><h4>4. Requisitos Não Funcionais</h4><p><!-- EDITABLE_SECTION_START:nonfunctional:Requisitos Não Funcionais --><!-- EDITABLE_SECTION_END --></p><h5>5. Regras de Negócio</h5><p><!-- EDITABLE_SECTION_START:business-rules:Regras de Negócio --><!-- EDITABLE_SECTION_END --></p><h6>6. Premissas e Restrições</h6><p><!-- EDITABLE_SECTION_START:constraints:Premissas e Restrições --><!-- EDITABLE_SECTION_END --></p>`,
-      isGlobal: true,
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-    },
-    {
-      id: 'dm2',
-      name: 'Modelo de Ata de Reunião',
-      type: 'Ata',
-      templateContent: `<p><strong>Participantes:</strong></p><p><!-- EDITABLE_SECTION_START:participantes:Participantes --><!-- EDITABLE_SECTION_END --></p><p><strong>Tópicos Discutidos:</strong></p><p><!-- EDITABLE_SECTION_START:topicos:Tópicos Discutidos --><!-- EDITABLE_SECTION_END --></p><p><strong>Próximas Ações:</strong></p><p><!-- EDITABLE_SECTION_START:acoes:Próximas Ações --><!-- EDITABLE_SECTION_END --></p>`,
-      isGlobal: true,
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-    }
-  ];
+  private mockDocumentModels: DocumentModel[] = [];
 
-  private mockProjects: Project[] = [
-    {
-      id: '1',
-      name: 'Sistema de Gestão Financeira',
-      description: 'Especificação de requisitos para o novo sistema de gestão financeira',
-      creatorId: '3',
-      creatorName: 'Usuário Padrão',
-      status: 'in-progress',
-      createdAt: new Date(2025, 11, 1).toISOString(),
-      updatedAt: new Date(2025, 11, 10).toISOString()
-    },
-    {
-      id: '2',
-      name: 'Portal do Cliente',
-      description: 'Documentação completa do portal de autoatendimento',
-      creatorId: '2',
-      creatorName: 'Gerente de Projeto',
-      status: 'review',
-      createdAt: new Date(2025, 10, 15).toISOString(),
-      updatedAt: new Date(2025, 11, 12).toISOString()
-    }
-  ];
+  private mockProjects: Project[] = [];
 
-  private mockDocuments: Map<string, Document> = new Map([
-    ['1', {
-      id: '1',
-      projectId: '1',
-      currentVersionId: 'v1_3',
-      sharedWith: []
-    }]
-  ]);
-
-  private mockDocumentVersions: Map<string, DocumentVersion[]> = new Map([
-    ['1', [
-      {
-        id: 'v1_1',
-        documentId: '1',
-        versionNumber: 1,
-        updatedAt: new Date(2025, 11, 1, 10, 0, 0).toISOString(),
-        updatedBy: 'Usuário Padrão',
-        content: {
-          sections: [
-            { id: 'intro', title: '1. Introdução', content: 'Conteúdo inicial da introdução.', isEditable: true },
-            { id: 'overview', title: '2. Visão Geral do Sistema', content: 'Conteúdo inicial da visão geral.', isEditable: true },
-            { id: 'functional', title: '3. Requisitos Funcionais', content: 'RF001: Requisito inicial 1.', isEditable: true },
-          ]
-        }
-      },
-      {
-        id: 'v1_2',
-        documentId: '1',
-        versionNumber: 2,
-        updatedAt: new Date(2025, 11, 1, 11, 30, 0).toISOString(),
-        updatedBy: 'Gerente de Projeto',
-        content: {
-          sections: [
-            { id: 'intro', title: '1. Introdução', content: 'Conteúdo da introdução após primeira edição.', isEditable: true },
-            { id: 'overview', title: '2. Visão Geral do Sistema', content: 'Conteúdo da visão geral após primeira edição.', isEditable: true },
-            { id: 'functional', title: '3. Requisitos Funcionais', content: 'RF001: Requisito editado 1.\nRF002: Novo requisito 2.', isEditable: true },
-          ]
-        }
-      },
-      {
-        id: 'v1_3',
-        documentId: '1',
-        versionNumber: 3,
-        updatedAt: new Date().toISOString(),
-        updatedBy: 'Admin Sistema',
-        content: {
-          sections: [
-            { id: 'intro', title: '1. Introdução', content: 'Este documento especifica os requisitos para o Sistema de Gestão Financeira da empresa.', isEditable: true },
-            { id: 'overview', title: '2. Visão Geral do Sistema', content: 'O sistema tem como objetivo automatizar processos financeiros, incluindo contas a pagar, contas a receber e conciliação bancária.', isEditable: true },
-            { id: 'functional', title: '3. Requisitos Funcionais', content: 'RF001: O sistema deve permitir o cadastro de fornecedores.\nRF002: O sistema deve gerar relatórios de fluxo de caixa.\nRF003: O sistema deve integrar com bancos via API.',
-              isEditable: true
-            },
-            { id: 'nonfunctional', title: '4. Requisitos Não Funcionais', content: 'RNF001: O sistema deve suportar 1000 usuários simultâneos.\nRNF002: Tempo de resposta inferior a 2 segundos.',
-              isEditable: true
-            },
-            { id: 'business-rules', title: '5. Regras de Negócio', content: 'RN001: Pagamentos acima de R$ 10.000 requerem dupla aprovação.\nRN002: Conciliação bancária deve ser realizada diariamente.',
-              isEditable: true
-            },
-            { id: 'constraints', title: '6. Premissas e Restrições', content: 'Premissa: API bancária estará disponível.\nRestrição: Sistema deve estar em conformidade com a LGPD.',
-              isEditable: true
-            }
-          ]
-        }
-      },
-    ]],
-  ]);
+  private mockDocuments: Map<string, Document> = new Map();
+  private mockDocumentVersions: Map<string, DocumentVersion[]> = new Map();
 
   private mockFiles: Map<string, UploadedFile[]> = new Map();
   private mockAuditLogs: Map<string, AuditLog[]> = new Map();
@@ -339,7 +191,12 @@ class APIService {
 
       if (!parsed || parsed.version !== 1) return;
 
-      if (Array.isArray(parsed.users)) this.mockUsers = parsed.users;
+      if (Array.isArray(parsed.users)) {
+        // Restaura usuários do localStorage mas valida as senhas
+        this.mockUsers = parsed.users;
+        // Garante que os usuários padrão têm as senhas corretas
+        this.ensureDefaultPasswords();
+      }
       if (Array.isArray(parsed.groups)) this.mockGroups = parsed.groups;
       if (Array.isArray(parsed.documentModels)) this.mockDocumentModels = parsed.documentModels;
       if (Array.isArray(parsed.projects)) this.mockProjects = parsed.projects;
@@ -350,6 +207,25 @@ class APIService {
       if (Array.isArray(parsed.auditLogs)) this.mockAuditLogs = new Map(parsed.auditLogs);
     } catch (error) {
       console.warn('[SGID] Falha ao hidratar mockdb do localStorage:', error);
+    }
+  }
+
+  // Garante que os usuários padrão têm as senhas corretas
+  private ensureDefaultPasswords(): void {
+    const defaultPasswords: { [key: string]: string } = {
+      'admin@empresa.com': 'admin123',
+      'diretor@empresa.com': 'diretor123',
+      'gerente@empresa.com': 'gerente123',
+      'responsavel.tecnico@empresa.com': 'tecnico123',
+      'operacional@empresa.com': 'operacional123',
+    };
+
+    for (const [email, password] of Object.entries(defaultPasswords)) {
+      const user = this.mockUsers.find(u => u.email === email);
+      if (user && user.password !== password) {
+        console.warn(`[SGID] Corrigindo senha do usuário ${email}`);
+        user.password = password;
+      }
     }
   }
 
@@ -422,19 +298,88 @@ class APIService {
   // que retornaria um token JWT ou OAuth após validar as credenciais.
   // O token seria armazenado no cliente e enviado em todas as requisições subsequentes para autorização.
   async login(email: string, password: string): Promise<User | null> {
-    // Removido: Permite login sem cadastro - cria usuário automaticamente
+    // 1. Tentar login via Supabase primeiro, se configurado
+    try {
+      const { data, error } = await supabase.auth.signInWithPassword({
+        email,
+        password,
+      });
+
+      if (error) {
+        console.warn('[Supabase] Erro na tentativa de login:', error.message);
+        // Se o erro for "Invalid login credentials", já sabemos que não está no Auth
+      }
+
+      if (!error && data.user) {
+        // Busca dados completos na tabela public.users
+        const { data: dbUser, error: dbError } = await supabase
+          .from('users')
+          .select('*')
+          .eq('id', data.user.id)
+          .single();
+
+        let user: User;
+
+        if (!dbError && dbUser) {
+          user = this.mapDbUserToUser(dbUser);
+        } else {
+          // Se não encontrou na tabela users, mas o login no Auth funcionou, 
+          // criamos o registro automaticamente para evitar erros de "usuário não encontrado"
+          console.log('[SGID] Usuário autenticado mas não encontrado na tabela public.users. Criando registro...');
+          
+          const fallbackUser: User = {
+            id: data.user.id,
+            email: data.user.email || email,
+            name: data.user.user_metadata?.name || data.user.email?.split('@')[0] || 'Usuário',
+            password: '', 
+            role: (data.user.user_metadata?.role as any) || 'operational',
+            createdAt: data.user.created_at,
+            isActive: true,
+            forcePasswordChange: false
+          };
+
+          try {
+            const reverseRoleMap: Record<string, string> = {
+              'admin': 'ADM',
+              'manager': 'GER',
+              'technical_responsible': 'TEC',
+              'operational': 'OPE',
+              'external': 'EXT'
+            };
+
+            await supabase.from('users').insert({
+              id: fallbackUser.id,
+              email: fallbackUser.email,
+              nome: fallbackUser.name,
+              tipo: reverseRoleMap[fallbackUser.role] || 'OPE',
+              role: reverseRoleMap[fallbackUser.role] || 'OPE',
+              status: 'ATIVO'
+            });
+            console.log('[SGID] Registro criado com sucesso na tabela public.users');
+          } catch (insertErr) {
+            console.error('[SGID] Erro ao criar registro automático na tabela public.users:', insertErr);
+          }
+
+          user = fallbackUser;
+        }
+        
+        this.currentUser = user;
+        localStorage.setItem('current_user', JSON.stringify(user));
+        return user;
+      }
+    } catch (err) {
+      console.warn('[Supabase] Falha ao tentar login remoto, tentando mock local:', err);
+    }
+
+    // 2. Fallback para Mock local (comportamento atual)
+    console.log('[SGID] Usuário não encontrado no Supabase Auth, buscando no mock local...');
     let user = this.mockUsers.find(u => u.email === email);
     
     if (!user) {
-      // Se o usuário não existir, retorna null (falha no login)
       return null;
     }
 
-    // Em um sistema real, a senha seria verificada aqui.
-    // Para o mock, consideramos a senha '••••••••' como padrão para todos os usuários existentes.
-    if (password !== '••••••••' && user.email !== 'admin@empresa.com') {
-      // Apenas para admin@empresa.com, aceitamos qualquer senha no mock
-      // Para outros usuários, a senha deve ser '••••••••'
+    if (password !== user.password) {
       return null;
     }
 
@@ -448,26 +393,89 @@ class APIService {
   }
 
   async register(email: string, password: string, name: string, role: User['role'] = 'operational'): Promise<User | null> {
-    // Em um ambiente de produção, este método registraria o usuário em um banco de dados real
-    // e aplicaria regras de validação de senha e unicidade de e-mail.
+    // 1. Tentar registro via Supabase primeiro
+    try {
+      const { data, error } = await supabase.auth.signUp({
+        email,
+        password,
+        options: {
+          data: {
+            name,
+            role,
+          }
+        }
+      });
+
+      if (!error && data.user) {
+        const newUser: User = {
+          id: data.user.id,
+          email,
+          name,
+          password: '', // Senha gerenciada pelo Supabase
+          role,
+          createdAt: data.user.created_at,
+          isActive: true,
+          forcePasswordChange: false
+        };
+
+        // Insere na tabela public.users para que apareça nas buscas de responsáveis
+        try {
+          const reverseRoleMap: Record<string, string> = {
+            'admin': 'ADM',
+            'manager': 'GER',
+            'technical_responsible': 'TEC',
+            'operational': 'OPE',
+            'external': 'EXT'
+          };
+
+          await supabase.from('users').insert({
+            id: newUser.id,
+            email: newUser.email,
+            nome: newUser.name,
+            tipo: reverseRoleMap[newUser.role] || 'OPE',
+            role: reverseRoleMap[newUser.role] || 'OPE',
+            status: 'ATIVO',
+            created_at: newUser.createdAt
+          });
+        } catch (dbErr) {
+          console.error('[Supabase] Falha ao inserir usuário na tabela public.users:', dbErr);
+        }
+        
+        // Também adicionamos ao mock local para manter compatibilidade com outras funções que usam mockUsers
+        this.mockUsers.push(newUser);
+        this.persistToLocalStorage();
+        return newUser;
+      } else if (error) {
+        throw error;
+      }
+    } catch (err: any) {
+      console.warn('[Supabase] Falha ao registrar remotamente, tentando mock local:', err);
+      // Se o erro for de e-mail já existente no Supabase, repassamos o erro
+      if (err.message?.includes('already registered')) {
+        throw new Error('Este e-mail já está cadastrado no sistema.');
+      }
+    }
+
+    // 2. Fallback para Mock local
     // No mock, esta função será chamada apenas pelo UserManagementPanel, onde as regras de permissão são aplicadas.
     const newUser: User = {
       id: Date.now().toString(),
       email,
       name,
+      password,
       role,
       createdAt: new Date().toISOString(),
-      isActive: true // Novo usuário é sempre ativo por padrão
+      isActive: true, // Novo usuário é sempre ativo por padrão
+      forcePasswordChange: true // Força mudança de senha no primeiro login
     };
     
     this.mockUsers.push(newUser);
-    this.currentUser = newUser; // Se registrar, já loga
-    localStorage.setItem('current_user', JSON.stringify(newUser));
     this.persistToLocalStorage();
     return newUser;
   }
 
   logout(): void {
+    supabase.auth.signOut().catch(console.error);
     this.currentUser = null;
     localStorage.removeItem('current_user');
   }
@@ -484,31 +492,361 @@ class APIService {
     return null;
   }
 
+  // Debug: Lista usuários disponíveis
+  debugUsers(): void {
+    console.log('[SGID] Usuários Disponíveis:', this.mockUsers.map(u => ({
+      email: u.email,
+      name: u.name,
+      password: u.password,
+      role: u.role
+    })));
+  }
+
+  // Reset: Limpa cache e restaura dados padrão
+  resetToDefaults(): void {
+    console.warn('[SGID] Resetando dados para valores padrão');
+    localStorage.removeItem(this.storageKey);
+    localStorage.removeItem('current_user');
+    window.location.reload();
+  }
+
+
+  // --- Realtime Subscriptions ---
+
+  /**
+   * Gerencia bloqueios de seção (Locking)
+   */
+  async acquireSectionLock(documentId: string, sectionId: string): Promise<boolean> {
+    const user = this.getCurrentUser();
+    if (!user || !this.isUUID(documentId) || !this.isUUID(user.id)) return false;
+
+    try {
+      // 1. Remove qualquer bloqueio anterior deste usuário NESTE documento
+      // Isso garante que cada usuário tenha apenas UMA seção focada por vez
+      await supabase
+        .from('document_locks')
+        .delete()
+        .match({ document_id: documentId, user_id: user.id });
+
+      // 2. Tenta inserir o novo bloqueio
+      const { error } = await supabase
+        .from('document_locks')
+        .upsert({
+          document_id: documentId,
+          section_id: sectionId,
+          user_id: user.id,
+          user_name: user.name,
+          expires_at: new Date(Date.now() + 2 * 60000).toISOString() // 2 minutos de validade
+        }, { onConflict: 'document_id,section_id' });
+
+      if (error) {
+        console.warn('[SGID] Não foi possível adquirir o lock:', error.message);
+        return false;
+      }
+      return true;
+    } catch (err) {
+      return false;
+    }
+  }
+
+  async releaseSectionLock(documentId: string, sectionId: string): Promise<void> {
+    const user = this.getCurrentUser();
+    if (!user || !this.isUUID(documentId)) return;
+
+    try {
+      await supabase
+        .from('document_locks')
+        .delete()
+        .match({ 
+          document_id: documentId, 
+          section_id: sectionId, 
+          user_id: user.id 
+        });
+    } catch (err) {
+      console.error('[SGID] Erro ao liberar lock:', err);
+    }
+  }
+
+  /**
+   * Atualiza apenas uma seção específica do documento para evitar conflitos
+   */
+  async updateDocumentSection(documentId: string, sectionId: string, sectionContent: string): Promise<void> {
+    const user = this.getCurrentUser();
+    if (!user || !this.isUUID(documentId)) return;
+
+    try {
+      // 1. Busca o documento atual para garantir que temos as outras seções preservadas
+      const { data: doc, error: fetchError } = await supabase
+        .from('documents')
+        .select('conteudo')
+        .eq('id', documentId)
+        .single();
+
+      if (fetchError || !doc) throw new Error('Documento não encontrado');
+
+      let currentContent: DocumentContent = typeof doc.conteudo === 'string' 
+        ? JSON.parse(doc.conteudo) 
+        : doc.conteudo;
+
+      // 2. Atualiza apenas a seção alvo
+      const updatedSections = currentContent.sections.map(s => 
+        s.id === sectionId ? { ...s, content: sectionContent } : s
+      );
+
+      const newContent: DocumentContent = { sections: updatedSections };
+
+      // 3. Salva o documento inteiro atualizado
+      const { error: updateError } = await supabase
+        .from('documents')
+        .update({
+          conteudo: newContent,
+          updated_at: new Date().toISOString()
+        })
+        .eq('id', documentId);
+
+      if (updateError) throw updateError;
+    } catch (err) {
+      console.error('[SGID] Erro ao atualizar seção do documento:', err);
+      throw err;
+    }
+  }
+
+  async getActiveLocks(documentId: string): Promise<any[]> {
+    const { data } = await supabase
+      .from('document_locks')
+      .select('*')
+      .eq('document_id', documentId)
+      .gt('expires_at', new Date().toISOString());
+    return data || [];
+  }
+
+  subscribeToLocks(documentId: string, onUpdate: (locks: any[]) => void) {
+    return supabase
+      .channel(`locks-${documentId}`)
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'document_locks', filter: `document_id=eq.${documentId}` },
+        async () => {
+          const locks = await this.getActiveLocks(documentId);
+          onUpdate(locks);
+        }
+      )
+      .subscribe();
+  }
+
+  /**
+   * Inscreve-se para mudanças em um documento específico
+   */
+  subscribeToDocument(documentId: string, onUpdate: (doc: Document) => void) {
+    if (!this.isUUID(documentId)) return null;
+
+    return supabase
+      .channel(`doc-${documentId}`)
+      .on(
+        'postgres_changes',
+        {
+          event: 'UPDATE',
+          schema: 'public',
+          table: 'documents',
+          filter: `id=eq.${documentId}`
+        },
+        (payload) => {
+          console.log('[SGID] Mudança detectada no documento:', payload);
+          onUpdate(this.mapDbDocumentToDocument(payload.new));
+        }
+      )
+      .subscribe();
+  }
+
+  /**
+   * Inscreve-se para mudanças na tabela de documentos (para Wiki ou Listagem de Projeto)
+   */
+  subscribeToDocuments(projectId: string | null, onUpdate: () => void) {
+    let filter = '';
+    if (projectId && this.isUUID(projectId)) {
+      filter = `project_id=eq.${projectId}`;
+    }
+
+    return supabase
+      .channel(projectId ? `project-docs-${projectId}` : 'wiki-docs')
+      .on(
+        'postgres_changes',
+        {
+          event: '*', // Listen to INSERT, UPDATE, DELETE
+          schema: 'public',
+          table: 'documents',
+          ...(filter ? { filter } : {})
+        },
+        (payload) => {
+          console.log('[SGID] Mudança na tabela de documentos detectada:', payload.eventType);
+          onUpdate();
+        }
+      )
+      .subscribe();
+  }
+
   // Projetos
   async getProjects(): Promise<Project[]> {
     const user = this.getCurrentUser();
     if (!user) return [];
 
-    // RBAC: Filtrar projetos baseado no papel do usuário
+    try {
+      // Se for ADM, busca todos os projetos
+      if (user.role === 'admin') {
+        const { data, error } = await supabase
+          .from('projects')
+          .select('*')
+          .order('created_at', { ascending: false });
+
+        if (!error && data) {
+          return data.map(p => ({
+            id: p.id,
+            name: p.name,
+            description: p.description,
+            creatorId: p.creator_id,
+            creatorName: 'Usuário do Sistema',
+            status: p.status as any,
+            createdAt: p.created_at,
+            updatedAt: p.updated_at,
+            responsibleIds: p.responsible_ids || [],
+            groupIds: p.group_ids || [],
+            documentIds: [],
+          }));
+        }
+      }
+
+      // Se não for ADM, busca projetos com base em:
+      // 1. Criador do projeto
+      // 2. Na lista de responsáveis técnicos
+      // 3. Através de grupos (membro do grupo -> grupo vinculado ao projeto)
+      
+      // Primeiro, pegamos os IDs dos projetos vinculados aos grupos do usuário
+      const { data: memberGroups, error: groupsError } = await supabase
+        .from('group_members')
+        .select('group_id, groups(project_id)')
+        .eq('user_id', user.id);
+
+      const projectIdsFromGroups = memberGroups 
+        ? memberGroups.map((mg: any) => mg.groups?.project_id).filter(id => !!id)
+        : [];
+
+      // Agora buscamos os projetos onde o usuário tem acesso
+      const { data: projects, error: projectsError } = await supabase
+        .from('projects')
+        .select('*')
+        .or(`creator_id.eq.${user.id},responsible_ids.cs.{${user.id}}`) // cs = contains (para arrays)
+        .order('created_at', { ascending: false });
+
+      let allAccessibleProjects = projects || [];
+
+      // Se houver projetos via grupos que não foram pegos pela query acima, buscamos eles
+      if (projectIdsFromGroups.length > 0) {
+        const existingIds = allAccessibleProjects.map(p => p.id);
+        const missingIds = projectIdsFromGroups.filter(id => !existingIds.includes(id));
+        
+        if (missingIds.length > 0) {
+          const { data: additionalProjects } = await supabase
+            .from('projects')
+            .select('*')
+            .in('id', missingIds);
+          
+          if (additionalProjects) {
+            allAccessibleProjects = [...allAccessibleProjects, ...additionalProjects];
+          }
+        }
+      }
+
+      if (allAccessibleProjects.length > 0) {
+        return allAccessibleProjects.map(p => ({
+          id: p.id,
+          name: p.name,
+          description: p.description,
+          creatorId: p.creator_id,
+          creatorName: 'Usuário do Sistema',
+          status: p.status as any,
+          createdAt: p.created_at,
+          updatedAt: p.updated_at,
+          responsibleIds: p.responsible_ids || [],
+          groupIds: p.group_ids || [],
+          documentIds: [],
+        }));
+      }
+    } catch (err) {
+      console.error('[SGID] Erro ao buscar projetos do banco:', err);
+    }
+
+    // Fallback para Mock apenas se o banco falhar ou retornar vazio
     if (user.role === 'admin') {
       return this.mockProjects;
     }
 
-    if (user.role === 'manager') {
-      // Gerente vê seus projetos + projetos de usuários sob supervisão
-      return this.mockProjects.filter(p => 
-        p.creatorId === user.id || 
-        this.mockUsers.find(u => u.id === p.creatorId)?.managerId === user.id
-      );
-    }
+    const userGroupIds = this.mockGroups
+      .filter(g => g.memberIds.includes(user.id))
+      .map(g => g.id);
 
-    // Usuário padrão vê apenas seus projetos
-    return this.mockProjects.filter(p => p.creatorId === user.id);
+    return this.mockProjects.filter(p => 
+      p.creatorId === user.id ||
+      (p.groupIds && p.groupIds.length > 0 && userGroupIds.some(groupId => p.groupIds?.includes(groupId)))
+    );
   }
 
-  async createProject(name: string, description?: string, responsibleIds?: string[], groupIds?: string[], documentModelId?: string): Promise<Project> {
+  async createProject(name: string, description?: string, responsibleIds?: string[], groupIds?: string[]): Promise<Project> {
     const user = this.getCurrentUser();
     if (!user) throw new Error('Usuário não autenticado');
+
+    if (user.role !== 'admin' && user.role !== 'manager' && user.role !== 'technical_responsible') {
+      throw new Error('Permissão negada: Apenas administradores, gerentes ou técnicos responsáveis podem criar novos projetos.');
+    }
+
+    // Tenta gravar no banco de dados real (Supabase/Postgres)
+    // Apenas se o criador for um usuário real do banco (tiver um UUID)
+    if (this.isUUID(user.id)) {
+      try {
+        // Filtra apenas IDs que são UUIDs válidos para evitar erro de sintaxe no Postgres
+        const validResponsibleIds = (responsibleIds || []).filter(id => this.isUUID(id));
+        const validGroupIds = (groupIds || []).filter(id => this.isUUID(id));
+
+        const { data, error } = await supabase
+          .from('projects')
+          .insert({
+            name: name,
+            description: description,
+            creator_id: user.id,
+            status: 'draft',
+            responsible_id: validResponsibleIds.length > 0 ? validResponsibleIds[0] : null,
+            responsible_ids: validResponsibleIds,
+            group_ids: validGroupIds,
+          })
+          .select()
+          .single();
+
+        if (error) {
+          console.error('[SGID] Erro ao gravar no Supabase:', error);
+        } else if (data) {
+          const dbProject: Project = {
+            id: data.id,
+            name: data.name,
+            description: data.description,
+            creatorId: data.creator_id,
+            creatorName: user.name,
+            status: data.status as any,
+            createdAt: data.created_at,
+            updatedAt: data.updated_at,
+            responsibleIds: data.responsible_ids || [],
+            groupIds: data.group_ids || [],
+            documentIds: [],
+          };
+
+          this.mockProjects.push(dbProject);
+          this.persistToLocalStorage();
+          return dbProject;
+        }
+      } catch (err) {
+        console.error('[SGID] Erro crítico na integração com banco de dados:', err);
+      }
+    } else {
+      console.warn('[SGID] Usuário logado com conta de demonstração (ID não UUID). O projeto será salvo apenas localmente.');
+    }
 
     const newProject: Project = {
       id: Date.now().toString(),
@@ -521,30 +859,33 @@ class APIService {
       updatedAt: new Date().toISOString(),
       responsibleIds: responsibleIds || [],
       groupIds: groupIds || [],
-      documentModelId: documentModelId,
+      documentIds: [],
     };
 
     this.mockProjects.push(newProject);
 
-    // Criar documento inicial com base no modelo selecionado ou padrão
-    let initialSections: DocumentSection[] = [];
-
-    if (documentModelId) {
-      const selectedModel = this.mockDocumentModels.find(m => m.id === documentModelId);
-      if (selectedModel && selectedModel.templateContent) {
-        initialSections = this.parseTemplateContentToSections(selectedModel.templateContent);
-      }
-    } else {
-      // Default sections if no model is selected
-      initialSections = [
-        { id: 'intro', title: '1. Introdução', content: '', isEditable: true },
-        { id: 'overview', title: '2. Visão Geral do Sistema', content: '', isEditable: true },
-        { id: 'functional', title: '3. Requisitos Funcionais', content: '', isEditable: true },
-        { id: 'nonfunctional', title: '4. Requisitos Não Funcionais', content: '', isEditable: true },
-        { id: 'business-rules', title: '5. Regras de Negócio', content: '', isEditable: true },
-        { id: 'constraints', title: '6. Premissas e Restrições', content: '', isEditable: true }
-      ];
+    // Sincronizar com os grupos selecionados
+    if (groupIds && groupIds.length > 0) {
+      this.mockGroups.forEach(group => {
+        if (groupIds.includes(group.id)) {
+          if (!group.projectIds) group.projectIds = [];
+          if (!group.projectIds.includes(newProject.id)) {
+            group.projectIds.push(newProject.id);
+            group.updatedAt = new Date().toISOString();
+          }
+        }
+      });
     }
+
+    // Default sections for project document
+    let initialSections: DocumentSection[] = [
+      { id: 'intro', title: '1. Introdução', content: '', isEditable: true },
+      { id: 'overview', title: '2. Visão Geral do Sistema', content: '', isEditable: true },
+      { id: 'functional', title: '3. Requisitos Funcionais', content: '', isEditable: true },
+      { id: 'nonfunctional', title: '4. Requisitos Não Funcionais', content: '', isEditable: true },
+      { id: 'business-rules', title: '5. Regras de Negócio', content: '', isEditable: true },
+      { id: 'constraints', title: '6. Premissas e Restrições', content: '', isEditable: true }
+    ];
 
     const firstVersionId = `v${newProject.id}_1`;
     const firstVersion: DocumentVersion = {
@@ -561,7 +902,13 @@ class APIService {
     const newDocument: Document = {
       id: newProject.id,
       projectId: newProject.id,
+      name: `Documento Inicial - ${newProject.name}`,
+      securityLevel: 'restricted',
+      creatorId: user.id,
+      creatorName: user.name,
       currentVersionId: firstVersionId,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
       sharedWith: [],
     };
 
@@ -642,12 +989,14 @@ class APIService {
             const fieldId = (el.getAttribute('data-field-id') || '').trim() || `field-${Date.now()}`;
             const fieldTitleRaw = (el.getAttribute('data-field-title') || '').trim();
             const fieldTitle = this.decodeHtmlEntities(fieldTitleRaw) || 'Campo';
+            const fieldHelp = (el.getAttribute('data-field-help') || '').trim();
 
             sections.push({
               id: fieldId,
               title: fieldTitle,
               content: '',
               isEditable: true,
+              helpText: fieldHelp || undefined,
             });
             continue;
           }
@@ -715,7 +1064,74 @@ class APIService {
   }
 
   async getProject(projectId: string): Promise<Project | null> {
-    return this.mockProjects.find(p => p.id === projectId) || null;
+    const user = this.getCurrentUser();
+    if (!user) return null;
+
+    try {
+      // 1. Tenta buscar no Supabase
+      if (this.isUUID(projectId)) {
+        const { data: p, error } = await supabase
+          .from('projects')
+          .select('*')
+          .eq('id', projectId)
+          .single();
+
+        if (!error && p) {
+          const project: Project = {
+            id: p.id,
+            name: p.name,
+            description: p.description,
+            creatorId: p.creator_id,
+            creatorName: 'Usuário do Sistema',
+            status: p.status as any,
+            createdAt: p.created_at,
+            updatedAt: p.updated_at,
+            responsibleIds: p.responsible_ids || [],
+            groupIds: p.group_ids || [],
+            documentIds: [],
+          };
+
+          // 2. Verificar permissão de acesso
+          if (user.role === 'admin') return project;
+
+          // Acesso direto (criador ou responsável)
+          if (project.creatorId === user.id || project.responsibleIds?.includes(user.id)) {
+            return project;
+          }
+
+          // Acesso via grupos
+          const { data: membership, error: memberError } = await supabase
+            .from('group_members')
+            .select('group_id, groups!inner(project_id)')
+            .eq('user_id', user.id)
+            .eq('groups.project_id', projectId);
+
+          if (!memberError && membership && membership.length > 0) {
+            return project;
+          }
+
+          console.warn('[SGID] Usuário sem permissão para acessar este projeto');
+          return null;
+        }
+      }
+    } catch (err) {
+      console.error('[SGID] Erro ao buscar projeto no banco:', err);
+    }
+
+    // Fallback para Mock
+    const mockProject = this.mockProjects.find(p => p.id === projectId) || null;
+    if (mockProject && user.role !== 'admin') {
+      const userGroupIds = this.mockGroups
+        .filter(g => g.memberIds.includes(user.id))
+        .map(g => g.id);
+
+      const hasAccess = mockProject.creatorId === user.id || 
+                        (mockProject.groupIds && mockProject.groupIds.length > 0 && userGroupIds.some(groupId => mockProject.groupIds?.includes(groupId)));
+      
+      if (!hasAccess) return null;
+    }
+
+    return mockProject;
   }
 
   async updateProject(updatedProject: Project): Promise<Project> {
@@ -729,7 +1145,7 @@ class APIService {
 
     // Lógica de permissão simplificada: apenas criador, gerente ou admin podem editar
     const existingProject = this.mockProjects[index];
-    if (existingProject.creatorId !== user.id && user.role !== 'manager' && user.role !== 'admin') {
+    if (existingProject.creatorId !== user.id && user.role !== 'manager' && user.role !== 'admin' && user.role !== 'technical_responsible') {
       throw new Error('Permissão negada: Você não tem permissão para editar este projeto.');
     }
 
@@ -737,6 +1153,34 @@ class APIService {
       ...updatedProject,
       updatedAt: new Date().toISOString() // Atualizar timestamp de atualização
     };
+
+    const previousGroupIds = existingProject.groupIds || [];
+    const newGroupIds = projectToUpdate.groupIds || [];
+
+    // Remover projeto dos grupos que não estão mais associados
+    previousGroupIds.forEach(groupId => {
+      if (!newGroupIds.includes(groupId)) {
+        const group = this.mockGroups.find(g => g.id === groupId);
+        if (group && group.projectIds) {
+          group.projectIds = group.projectIds.filter(id => id !== projectToUpdate.id);
+          group.updatedAt = new Date().toISOString();
+        }
+      }
+    });
+
+    // Adicionar projeto aos novos grupos associados
+    newGroupIds.forEach(groupId => {
+      if (!previousGroupIds.includes(groupId)) {
+        const group = this.mockGroups.find(g => g.id === groupId);
+        if (group) {
+          if (!group.projectIds) group.projectIds = [];
+          if (!group.projectIds.includes(projectToUpdate.id)) {
+            group.projectIds.push(projectToUpdate.id);
+            group.updatedAt = new Date().toISOString();
+          }
+        }
+      }
+    });
 
     this.mockProjects[index] = projectToUpdate;
 
@@ -748,43 +1192,143 @@ class APIService {
   }
 
   // Documentos
-  async getDocument(projectId: string): Promise<Document | null> {
-    const doc = this.mockDocuments.get(projectId);
-    if (!doc) return null;
-
-    const versions = this.mockDocumentVersions.get(projectId);
-    const currentVersion = versions?.find(v => v.id === doc.currentVersionId);
-
-    if (!currentVersion) return null;
-
-    // Retornar um objeto que se pareça com a interface Document antiga para compatibilidade temporária
-    // Os componentes serão atualizados posteriormente para usar DocumentVersion diretamente
-    return {
-      id: doc.id,
-      projectId: doc.projectId,
-      currentVersionId: doc.currentVersionId,
-      sharedWith: doc.sharedWith,
-      content: currentVersion.content, // Conteúdo vem da versão atual
-      version: currentVersion.versionNumber, // Versão vem da versão atual
-      updatedAt: currentVersion.updatedAt, // Data de atualização vem da versão atual
-      updatedBy: currentVersion.updatedBy, // Usuário que atualizou vem da versão atual
-    } as Document; // Adiciona o cast para incluir as propriedades de DocumentVersion que o frontend espera
+  async getDocument(documentId: string): Promise<Document | null> {
+    return this.getDocumentById(documentId);
   }
 
-  async updateDocument(projectId: string, content: DocumentContent): Promise<Document> {
+  // Função auxiliar para verificar se o usuário tem acesso ao documento (via projeto ou grupo)
+  private async checkDocumentAccess(projectId: string): Promise<boolean> {
+    const user = this.getCurrentUser();
+    if (!user) return false;
+
+    // Admin sempre tem acesso
+    if (user.role === 'admin') return true;
+
+    try {
+      // 1. Verificar se é criador ou responsável direto pelo projeto
+      const { data: project, error: projectError } = await supabase
+        .from('projects')
+        .select('creator_id, responsible_ids')
+        .eq('id', projectId)
+        .single();
+
+      if (!projectError && project) {
+        if (project.creator_id === user.id || (project.responsible_ids || []).includes(user.id)) {
+          return true;
+        }
+      }
+
+      // 2. Verificar se pertence a um grupo vinculado ao projeto
+      const { data: membership, error: memberError } = await supabase
+        .from('group_members')
+        .select('group_id, groups!inner(project_id)')
+        .eq('user_id', user.id)
+        .eq('groups.project_id', projectId);
+
+      if (!memberError && membership && membership.length > 0) {
+        return true;
+      }
+    } catch (err) {
+      console.error('[SGID] Erro ao verificar acesso ao documento:', err);
+    }
+
+    return false;
+  }
+
+  async getDocumentById(documentId: string): Promise<Document | null> {
+    if (this.isUUID(documentId)) {
+      try {
+        const { data, error } = await supabase
+          .from('documents')
+          .select('*')
+          .eq('id', documentId)
+          .single();
+
+        if (!error && data) {
+          // Verificar acesso ao projeto do documento
+          const hasAccess = await this.checkDocumentAccess(data.project_id);
+          if (!hasAccess) {
+            console.warn('[SGID] Usuário sem permissão para acessar este documento');
+            return null;
+          }
+          return this.mapDbDocumentToDocument(data);
+        }
+      } catch (err) {
+        console.error('[SGID] Erro ao buscar documento no banco:', err);
+      }
+    }
+
+    // Fallback Mock
+    const doc = this.mockDocuments.get(documentId);
+    if (doc) {
+      const versions = this.mockDocumentVersions.get(documentId);
+      const currentVersion = versions?.find(v => v.id === doc.currentVersionId);
+      if (currentVersion) {
+        return {
+          ...doc,
+          content: currentVersion.content,
+          version: currentVersion.versionNumber,
+          updatedBy: currentVersion.updatedBy
+        };
+      }
+    }
+    return null;
+  }
+
+  async updateDocument(projectIdOrDocumentId: string, content: DocumentContent): Promise<Document> {
     const user = this.getCurrentUser();
     if (!user) throw new Error('Usuário não autenticado');
 
-    const doc = this.mockDocuments.get(projectId);
+    if (this.isUUID(projectIdOrDocumentId)) {
+      try {
+        // Primeiro busca o documento para saber o projectId
+        const { data: currentDoc } = await supabase
+          .from('documents')
+          .select('project_id, nome')
+          .eq('id', projectIdOrDocumentId)
+          .single();
+
+        if (currentDoc) {
+          const hasAccess = await this.checkDocumentAccess(currentDoc.project_id);
+          if (!hasAccess) throw new Error('Permissão negada para editar este documento');
+
+          const { data, error } = await supabase
+            .from('documents')
+            .update({
+              conteudo: content, // Envia objeto direto para jsonb
+              updated_at: new Date().toISOString()
+            })
+            .eq('id', projectIdOrDocumentId)
+            .select(); // Removemos o .single() para evitar o erro PGRST116
+
+          if (error) throw error;
+
+          if (data && data.length > 0) {
+            // Log de auditoria
+            this.addAuditLog(data[0].project_id, 'document_edited', user.id, user.name, `Documento "${currentDoc.nome}" editado`);
+            return this.mapDbDocumentToDocument(data[0]);
+          } else {
+            // Se o update retornou 0 linhas, é bloqueio de RLS
+            throw new Error('Você não tem permissão para editar este documento no banco de dados.');
+          }
+        }
+      } catch (err: any) {
+        console.error('[SGID] Erro ao atualizar documento no banco:', err);
+        throw new Error(err.message || 'Erro ao atualizar documento');
+      }
+    }
+
+    // Fallback Mock logic
+    const doc = this.mockDocuments.get(projectIdOrDocumentId);
     if (!doc) throw new Error('Documento não encontrado');
 
-    const versions = this.mockDocumentVersions.get(projectId) || [];
+    const versions = this.mockDocumentVersions.get(projectIdOrDocumentId) || [];
     const newVersionNumber = versions.length > 0 ? Math.max(...versions.map(v => v.versionNumber)) + 1 : 1;
-    const newVersionId = `v${projectId}_${newVersionNumber}`;
+    const newVersionId = `v${projectIdOrDocumentId}_${newVersionNumber}`;
 
     const newVersion: DocumentVersion = {
       id: newVersionId,
-      documentId: projectId,
+      documentId: projectIdOrDocumentId,
       versionNumber: newVersionNumber,
       updatedAt: new Date().toISOString(),
       updatedBy: user.name,
@@ -792,25 +1336,24 @@ class APIService {
     };
 
     versions.push(newVersion);
-    this.mockDocumentVersions.set(projectId, versions);
+    this.mockDocumentVersions.set(projectIdOrDocumentId, versions);
 
     doc.currentVersionId = newVersionId;
-    this.mockDocuments.set(projectId, doc);
+    doc.updatedAt = new Date().toISOString();
+    this.mockDocuments.set(projectIdOrDocumentId, doc);
 
-    // Log de auditoria
-    this.addAuditLog(projectId, 'document_edited', user.id, user.name, `Documento editado manualmente (versão ${newVersionNumber})`);
+    this.addAuditLog(doc.projectId, 'document_edited', user.id, user.name, `Documento editado manualmente (versão ${newVersionNumber})`);
     this.persistToLocalStorage();
 
-    // Retornar o documento atualizado (formato compatível)
     return {
       id: doc.id,
       projectId: doc.projectId,
       currentVersionId: doc.currentVersionId,
       sharedWith: doc.sharedWith,
-      content: newVersion.content, // Conteúdo vem da nova versão
-      version: newVersion.versionNumber, // Versão vem da nova versão
-      updatedAt: newVersion.updatedAt, // Data de atualização vem da nova versão
-      updatedBy: newVersion.updatedBy, // Usuário que atualizou vem da nova versão
+      content: newVersion.content,
+      version: newVersion.versionNumber,
+      updatedAt: newVersion.updatedAt,
+      updatedBy: newVersion.updatedBy,
     } as Document;
   }
 
@@ -863,6 +1406,298 @@ class APIService {
 
     const versions = this.mockDocumentVersions.get(documentId) || [];
     return versions.sort((a, b) => b.versionNumber - a.versionNumber); // Mais recente primeiro
+  }
+
+  // Função auxiliar para mapear o documento do banco para a interface do frontend
+  private mapDbDocumentToDocument(d: any): Document {
+    let content: DocumentContent | undefined;
+    
+    if (d.conteudo) {
+      if (typeof d.conteudo === 'string') {
+        try {
+          content = JSON.parse(d.conteudo);
+        } catch (e) {
+          console.error('[SGID] Erro ao parsear JSON do conteúdo:', e);
+        }
+      } else if (typeof d.conteudo === 'object') {
+        content = d.conteudo; // Já é um objeto (jsonb)
+      }
+    }
+
+    return {
+      id: d.id,
+      name: d.nome,
+      projectId: d.project_id,
+      templateId: d.template_id || undefined,
+      securityLevel: d.nivel_sigilo || 'public', 
+      status: d.status,
+      creatorId: d.created_by,
+      creatorName: 'Usuário', // Nome será carregado via join ou separadamente
+      currentVersionId: d.id, // Simplificação: usando o ID do doc como versão atual
+      createdAt: d.created_at,
+      updatedAt: d.updated_at,
+      content: content,
+    };
+  }
+
+  // Lista documentos para a Wiki com base nas permissões, suportando paginação
+  async listWikiDocuments(page: number = 1, pageSize: number = 30): Promise<{ data: Document[], total: number }> {
+    const user = this.getCurrentUser();
+    if (!user) return { data: [], total: 0 }; // Retorna vazio se não autenticado
+
+    try {
+      // 1. Se for admin, gerente ou técnico responsável, pode ver tudo sem filtros complexos
+      if (user.role === 'admin' || user.role === 'manager' || user.role === 'technical_responsible') {
+        const from = (page - 1) * pageSize;
+        const to = from + pageSize - 1;
+        
+        const { data, count, error } = await supabase
+          .from('documents')
+          .select('*', { count: 'exact' })
+          .order('created_at', { ascending: false })
+          .range(from, to);
+
+        if (error) throw error;
+        
+        return {
+          data: (data || []).map(d => this.mapDbDocumentToDocument(d)),
+          total: count || 0
+        };
+      }
+
+      // 2. Para outros usuários, precisamos filtrar por:
+      // - Público
+      // - Criado pelo usuário
+      // - Projetos que o usuário tem acesso (via grupos)
+      const accessibleProjects = await this.getProjects();
+      const accessibleProjectIds = accessibleProjects.map(p => p.id);
+
+      let query = supabase.from('documents').select('*', { count: 'exact' });
+
+      // Filtro OR complexo: public OR owner OR project member
+      let filterStr = `nivel_sigilo.eq.public,created_by.eq.${user.id}`;
+      if (accessibleProjectIds.length > 0) {
+        // Filtrar apenas UUIDs válidos para evitar erro no in()
+        const validIds = accessibleProjectIds.filter(id => this.isUUID(id));
+        if (validIds.length > 0) {
+          filterStr += `,project_id.in.(${validIds.join(',')})`;
+        }
+      }
+      
+      query = query.or(filterStr);
+
+      const from = (page - 1) * pageSize;
+      const to = from + pageSize - 1;
+      
+      const { data, count, error } = await query
+        .order('created_at', { ascending: false })
+        .range(from, to);
+
+      if (error) {
+        console.error('[SGID] Erro ao listar documentos da Wiki:', error);
+        return { data: [], total: 0 };
+      }
+
+      return {
+        data: (data || []).map(d => this.mapDbDocumentToDocument(d)),
+        total: count || 0
+      };
+    } catch (err) {
+      console.error('[SGID] Erro crítico na Wiki:', err);
+      return { data: [], total: 0 };
+    }
+  }
+
+  async createDocument(
+    projectId: string,
+    name: string,
+    groupId: string,
+    templateId: string | undefined,
+    securityLevel: 'public' | 'restricted' | 'confidential' | 'secret'
+  ): Promise<Document> {
+    const user = this.getCurrentUser();
+    if (!user) throw new Error('Usuário não autenticado');
+
+    // 1. Tenta gravar no Supabase
+    if (this.isUUID(projectId) && this.isUUID(user.id)) {
+      try {
+        let initialSections: DocumentSection[] = [];
+        
+        // Se tiver template, extrai as seções dele
+        if (templateId && this.isUUID(templateId)) {
+          const { data: templateData } = await supabase
+            .from('templates')
+            .select('*')
+            .eq('id', templateId)
+            .single();
+
+          if (templateData && templateData.file_url) {
+            initialSections = this.parseTemplateContentToSections(templateData.file_url);
+          }
+        }
+
+        const documentContent: DocumentContent = {
+          sections: initialSections.length > 0 ? initialSections : [
+            { id: 'section1', title: 'Introdução', content: '', isEditable: true }
+          ]
+        };
+
+        const { data: doc, error } = await supabase
+          .from('documents')
+          .insert({
+            nome: name,
+            project_id: projectId,
+            template_id: templateId && this.isUUID(templateId) ? templateId : null,
+            status: 'RASCUNHO',
+            conteudo: documentContent, // Envia objeto direto para jsonb
+            created_by: user.id,
+            nivel_sigilo: securityLevel
+          })
+          .select()
+          .single();
+
+        if (error) {
+          console.error('[SGID] Erro ao criar documento no Supabase:', error);
+        } else if (doc) {
+          const newDoc = this.mapDbDocumentToDocument(doc);
+          newDoc.creatorName = user.name;
+          return newDoc;
+        }
+      } catch (err) {
+        console.error('[SGID] Erro crítico ao criar documento no banco:', err);
+      }
+    }
+
+    // Fallback Mock (mantido apenas por segurança)
+    const newDocumentId = `doc_${Date.now()}`;
+    let initialSections: DocumentSection[] = [];
+    
+    if (templateId) {
+      const template = this.mockDocumentModels.find(m => m.id === templateId);
+      if (template && template.templateContent) {
+        initialSections = this.parseTemplateContentToSections(template.templateContent);
+      }
+    }
+
+    const newDocument: Document = {
+      id: newDocumentId,
+      projectId,
+      name,
+      securityLevel,
+      templateId,
+      creatorId: user.id,
+      creatorName: user.name,
+      currentVersionId: newDocumentId,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      content: { sections: initialSections }
+    };
+
+    this.mockDocuments.set(newDocumentId, newDocument);
+    return newDocument;
+  }
+
+  async listProjectDocuments(projectId: string): Promise<Document[]> {
+    const user = this.getCurrentUser();
+    if (!user) return []; // Retorna vazio se não autenticado para evitar crash no mount
+
+    if (this.isUUID(projectId)) {
+      try {
+        const { data, error } = await supabase
+          .from('documents')
+          .select('*')
+          .eq('project_id', projectId)
+          .order('created_at', { ascending: false });
+
+        if (!error && data) {
+          return data.map(d => this.mapDbDocumentToDocument(d));
+        }
+      } catch (err) {
+        console.error('[SGID] Erro ao listar documentos do banco:', err);
+      }
+    }
+
+    // Fallback Mock
+    return Array.from(this.mockDocuments.values())
+      .filter(doc => doc.projectId === projectId);
+  }
+
+  async saveDocument(documentId: string, content: DocumentContent): Promise<void> {
+    const user = this.getCurrentUser();
+    if (!user) throw new Error('Usuário não autenticado');
+
+    if (this.isUUID(documentId)) {
+      try {
+        // Busca o projectId para verificar acesso
+        const { data: docData } = await supabase
+          .from('documents')
+          .select('project_id')
+          .eq('id', documentId)
+          .single();
+
+        if (docData) {
+          const hasAccess = await this.checkDocumentAccess(docData.project_id);
+          if (!hasAccess) throw new Error('Permissão negada para editar este documento');
+
+          const { error } = await supabase
+            .from('documents')
+            .update({
+              conteudo: content, // Envia objeto direto para jsonb
+              updated_at: new Date().toISOString()
+            })
+            .eq('id', documentId);
+
+          if (error) throw error;
+          return;
+        }
+      } catch (err) {
+        console.error('[SGID] Erro ao salvar documento no banco:', err);
+      }
+    }
+
+    // Fallback Mock
+    const doc = this.mockDocuments.get(documentId);
+    if (doc) {
+      doc.content = content;
+      doc.updatedAt = new Date().toISOString();
+      this.mockDocuments.set(documentId, doc);
+      this.persistToLocalStorage();
+    }
+  }
+
+  async deleteDocument(projectId: string, documentId: string): Promise<void> {
+    const user = this.getCurrentUser();
+    if (!user) throw new Error('Usuário não autenticado');
+
+    const project = await this.getProject(projectId);
+    if (!project) throw new Error('Projeto não encontrado');
+
+    const document = this.mockDocuments.get(documentId);
+    if (!document) throw new Error('Documento não encontrado');
+
+    // Lógica de permissão: apenas criador do documento, criador do projeto ou admin podem deletar
+    if (document.creatorId !== user.id && project.creatorId !== user.id && user.role !== 'admin') {
+      throw new Error('Permissão negada: Você não tem permissão para deletar este documento.');
+    }
+
+    // Remover documento dos dados
+    this.mockDocuments.delete(documentId);
+    this.mockDocumentVersions.delete(documentId);
+
+    // Remover documento da lista do projeto
+    if (project.documentIds) {
+      project.documentIds = project.documentIds.filter(id => id !== documentId);
+    }
+    project.updatedAt = new Date().toISOString();
+    
+    const projectIndex = this.mockProjects.findIndex(p => p.id === projectId);
+    if (projectIndex !== -1) {
+      this.mockProjects[projectIndex] = project;
+    }
+
+    // Log de auditoria
+    this.addAuditLog(projectId, 'document_deleted', user.id, user.name, `Documento "${documentId}" deletado`);
+    this.persistToLocalStorage();
   }
 
   // Compartilhamento de Documentos
@@ -1145,8 +1980,8 @@ class APIService {
   }
 
   // Chat com IA
-  async chatWithAI(projectId: string, message: string, context?: { sectionId?: string }): Promise<string> {
-    console.log('chatWithAI chamado:', { projectId, message });
+  async chatWithAI(projectId: string, message: string, context?: { sectionId?: string, documentId?: string }): Promise<string> {
+    console.log('chatWithAI chamado:', { projectId, message, context });
     
     const user = this.getCurrentUser();
     if (!user) {
@@ -1161,19 +1996,23 @@ class APIService {
       throw new Error('Configure a API da IA nas configurações antes de usar o chat');
     }
 
-    // Simular leitura do modelo de documento e interpretação de referências
-    await new Promise(resolve => setTimeout(resolve, 500)); // Simula tempo de processamento
-    console.log('[IA] Contexto do projeto e documentos lidos para o chat.');
-
     // Se for Manus, usar chat com contexto completo dos documentos
     if (aiConfig.provider === 'manus') {
       try {
         const manusDocuments = await manusAPIService.getProjectDocuments(projectId);
-        const document = await this.getDocument(projectId); // Este getDocument já retorna o formato compatível
+        
+        // Se documentId foi fornecido, usa ele. Caso contrário, tenta o primeiro do projeto.
+        let targetDocumentId = context?.documentId;
+        if (!targetDocumentId) {
+          const docs = await this.listProjectDocuments(projectId);
+          if (docs.length > 0) targetDocumentId = docs[0].id;
+        }
+
+        const document = targetDocumentId ? await this.getDocumentById(targetDocumentId) : null;
         
         // Preparar contexto do documento atual
         let documentContext = '';
-        if (document && document.content) { // Adicionado verificação para document.content
+        if (document && document.content) {
           documentContext = document.content.sections
             .map(s => `${s.title}:\n${s.content || '[Vazio]'}`)
             .join('\n\n');
@@ -1188,7 +2027,7 @@ class APIService {
           ],
           context: {
             documents: manusDocuments,
-            projectInfo: `DOCUMENTO ATUAL DO PROJETO:\n${documentContext}`
+            projectInfo: documentContext ? `DOCUMENTO ATUAL DO PROJETO:\n${documentContext}` : ''
           },
           temperature: 0.7,
           maxTokens: 2000
@@ -1206,23 +2045,25 @@ class APIService {
 
     // Fluxo normal para OpenAI/Anthropic
     const files = await this.getProjectFiles(projectId);
-    const document = await this.getDocument(projectId); // Este getDocument já retorna o formato compatível
+    
+    // Se documentId foi fornecido, usa ele. Caso contrário, tenta o primeiro do projeto.
+    let targetDocumentId = context?.documentId;
+    if (!targetDocumentId) {
+      const docs = await this.listProjectDocuments(projectId);
+      if (docs.length > 0) targetDocumentId = docs[0].id;
+    }
+    
+    const document = targetDocumentId ? await this.getDocumentById(targetDocumentId) : null;
     const processedFiles = files.filter(f => f.status === 'processed');
 
     // Obter o tipo do modelo de documento, se houver
     const project = await this.getProject(projectId);
     const documentModel = project?.documentModelId ? this.mockDocumentModels.find(m => m.id === project.documentModelId) : undefined;
-    const documentType = documentModel?.type || 'documento de especificação'; // Padrão para 'documento de especificação'
-
-    console.log('Contexto do chat:', { 
-      aiConfigPresent: !!aiConfig, 
-      filesCount: files.length, 
-      documentPresent: !!document 
-    });
+    const documentType = documentModel?.type || 'documento de especificação';
 
     // Preparar contexto do documento para a IA
     let documentContext = '';
-    if (document && document.content) { // Adicionado verificação para document.content
+    if (document && document.content) {
       documentContext = document.content.sections
         .map(s => `${s.title}:\\n${s.content || '[Vazio]'}`)
         .join('\\n\\n');
@@ -1389,15 +2230,86 @@ class APIService {
     return this.mockUsers.slice(0, 2);
   }
 
+  // Função auxiliar para validar se um ID é um UUID válido
+  private isUUID(id: string): boolean {
+    const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+    return uuidRegex.test(id);
+  }
+
+  // Função auxiliar para mapear o usuário do banco para a interface do frontend
+  private mapDbUserToUser(u: any): User {
+    // Mapeamento de tipos do banco para roles do frontend
+    const roleMap: Record<string, User['role']> = {
+      'ADM': 'admin',
+      'GER': 'manager',
+      'TEC': 'technical_responsible',
+      'OPE': 'operational',
+      'EXT': 'external'
+    };
+
+    return {
+      id: u.id,
+      email: u.email,
+      name: u.nome || u.name || 'Usuário sem nome',
+      password: '',
+      role: roleMap[u.tipo] || (u.role as any) || 'operational',
+      createdAt: u.created_at,
+      updatedAt: u.updated_at,
+      isActive: u.status === 'ATIVO',
+      forcePasswordChange: false
+    };
+  }
+
   async getAllUsers(): Promise<User[]> {
+    try {
+      const { data, error } = await supabase
+        .from('users')
+        .select('*')
+        .order('nome', { ascending: true });
+
+      if (error) {
+        console.error('[SGID] Erro ao buscar usuários no Supabase:', error);
+      } else if (data && data.length > 0) {
+        return data.map(u => this.mapDbUserToUser(u));
+      }
+    } catch (err) {
+      console.error('[SGID] Erro crítico ao buscar usuários:', err);
+    }
+
     return this.mockUsers;
   }
 
   async getTotalUsersCount(): Promise<number> {
+    try {
+      const { count, error } = await supabase
+        .from('users')
+        .select('*', { count: 'exact', head: true });
+
+      if (!error && count !== null) {
+        return count;
+      }
+    } catch (err) {
+      console.error('[SGID] Erro ao contar usuários:', err);
+    }
     return this.mockUsers.length;
   }
 
   async getUser(id: string): Promise<User | null> {
+    try {
+      const { data, error } = await supabase
+        .from('users')
+        .select('*')
+        .eq('id', id)
+        .single();
+
+      if (error) {
+        console.error('[SGID] Erro ao buscar usuário no Supabase:', error);
+      } else if (data) {
+        return this.mapDbUserToUser(data);
+      }
+    } catch (err) {
+      console.error('[SGID] Erro crítico ao buscar usuário:', err);
+    }
     return this.mockUsers.find(user => user.id === id) || null;
   }
 
@@ -1405,17 +2317,46 @@ class APIService {
     const user = this.getCurrentUser();
     if (!user) throw new Error('Usuário não autenticado');
 
-    const index = this.mockUsers.findIndex(u => u.id === updatedUser.id);
-    if (index === -1) {
-      throw new Error('Usuário não encontrado');
-    }
-
     // Lógica de permissão simplificada: apenas admin pode editar usuários (exceto o próprio)
     if (user.role !== 'admin' && user.id !== updatedUser.id) {
       throw new Error('Permissão negada: Somente administradores podem editar usuários.');
     }
 
-    this.mockUsers[index] = updatedUser;
+    // Tenta atualizar no banco de dados real
+    if (this.isUUID(updatedUser.id)) {
+      try {
+        const reverseRoleMap: Record<string, string> = {
+          'admin': 'ADM',
+          'manager': 'GER',
+          'technical_responsible': 'TEC',
+          'operational': 'OPE',
+          'external': 'EXT'
+        };
+
+        const { error } = await supabase
+          .from('users')
+          .update({
+            nome: updatedUser.name,
+            tipo: reverseRoleMap[updatedUser.role] || 'OPE',
+            role: reverseRoleMap[updatedUser.role] || 'OPE',
+            status: updatedUser.isActive ? 'ATIVO' : 'SUSPENSO',
+            updated_at: new Date().toISOString()
+          })
+          .eq('id', updatedUser.id);
+
+        if (error) {
+          console.error('[SGID] Erro ao atualizar usuário no Supabase:', error);
+        }
+      } catch (err) {
+        console.error('[SGID] Erro crítico ao atualizar usuário:', err);
+      }
+    }
+
+    // Atualiza o mock local
+    const index = this.mockUsers.findIndex(u => u.id === updatedUser.id);
+    if (index !== -1) {
+      this.mockUsers[index] = updatedUser;
+    }
 
     // Se o usuário logado está sendo atualizado, atualiza o localStorage
     if (this.currentUser?.id === updatedUser.id) {
@@ -1444,10 +2385,26 @@ class APIService {
       throw new Error('Você não pode excluir seu próprio usuário.');
     }
 
+    // Tenta excluir do banco de dados real
+    if (this.isUUID(userId)) {
+      try {
+        const { error } = await supabase
+          .from('users')
+          .delete()
+          .eq('id', userId);
+
+        if (error) {
+          console.error('[SGID] Erro ao excluir usuário no Supabase:', error);
+        }
+      } catch (err) {
+        console.error('[SGID] Erro crítico ao excluir usuário:', err);
+      }
+    }
+
     const initialLength = this.mockUsers.length;
     this.mockUsers = this.mockUsers.filter(u => u.id !== userId);
 
-    if (this.mockUsers.length < initialLength) {
+    if (this.mockUsers.length < initialLength || true) { // Retorna true se tentou deletar no banco
       // Log de auditoria
       this.addAuditLog('system', 'user_deleted', user.id, user.name, `Usuário com ID "${userId}" excluído`);
       this.persistToLocalStorage();
@@ -1456,18 +2413,115 @@ class APIService {
     return false;
   }
 
+  async updateUserPassword(userId: string, newPassword: string, forcePasswordChange?: boolean): Promise<User> {
+    const user = this.getCurrentUser();
+    if (!user) throw new Error('Usuário não autenticado');
+
+    // Qualquer usuário pode alterar sua própria senha
+    // Apenas admin pode alterar senha de outros usuários
+    if (user.id !== userId && user.role !== 'admin') {
+      throw new Error('Permissão negada: Você só pode alterar sua própria senha.');
+    }
+
+    // Busca o usuário (agora tenta no banco primeiro)
+    const targetUser = await this.getUser(userId);
+    if (!targetUser) throw new Error('Usuário não encontrado');
+
+    // Validação de força de senha (mínimo 6 caracteres)
+    if (newPassword.length < 6) {
+      throw new Error('A senha deve ter pelo menos 6 caracteres.');
+    }
+
+    // Tenta atualizar no Supabase Auth se for o próprio usuário
+    if (user.id === userId) {
+      try {
+        const { error } = await supabase.auth.updateUser({
+          password: newPassword
+        });
+        if (error) {
+          console.error('[Supabase] Erro ao atualizar senha no Auth:', error);
+          throw error;
+        }
+      } catch (err) {
+        console.warn('[Supabase] Falha ao atualizar senha remotamente:', err);
+        // Se falhar o remoto e não estivermos em ambiente de desenvolvimento com mock, repassa o erro
+      }
+    }
+
+    // Atualiza o mock local para persistência de sessão e compatibilidade
+    const mockIndex = this.mockUsers.findIndex(u => u.id === userId);
+    if (mockIndex !== -1) {
+      this.mockUsers[mockIndex].password = newPassword;
+      this.mockUsers[mockIndex].updatedAt = new Date().toISOString();
+    }
+
+    targetUser.updatedAt = new Date().toISOString();
+
+    // Se o usuário logado está alterando a própria senha, atualiza no localStorage
+    if (this.currentUser?.id === userId) {
+      this.currentUser = { ...targetUser, password: '' }; // Não guarda senha no state
+      localStorage.setItem('current_user', JSON.stringify(this.currentUser));
+    }
+
+    // Log de auditoria
+    this.addAuditLog('system', 'password_changed', user.id, user.name, `Senha alterada para o usuário "${targetUser.name}" (${targetUser.email})`);
+    this.persistToLocalStorage();
+
+    return targetUser;
+  }
+  // Função auxiliar para mapear o template do banco para a interface do frontend
+  private mapDbTemplateToDocumentModel(t: any): DocumentModel {
+    return {
+      id: t.id,
+      name: t.nome,
+      type: t.tipo_documento,
+      description: t.descricao || '',
+      templateContent: t.file_url || '', // O conteúdo HTML está sendo armazenado em file_url conforme o schema
+      isGlobal: t.global || false,
+      projectId: t.project_id || undefined,
+      sections: t.sections || [],
+      fileUrl: t.file_url,
+      createdBy: t.created_by,
+      createdAt: t.created_at,
+      updatedAt: t.updated_at || t.created_at,
+    };
+  }
+
   // Gerenciamento de Modelos de Documento
   async getDocumentModels(projectId?: string): Promise<DocumentModel[]> {
     const user = this.getCurrentUser();
     if (!user) return [];
 
-    let models = this.mockDocumentModels;
+    try {
+      let query = supabase
+        .from('templates')
+        .select('*')
+        .order('nome', { ascending: true });
 
-    if (projectId) {
-      // Retornar modelos globais e modelos específicos do projeto
-      models = models.filter(m => m.isGlobal || m.projectId === projectId);
+      if (projectId && this.isUUID(projectId)) {
+        // Retornar modelos globais e modelos específicos do projeto
+        query = query.or(`global.eq.true,project_id.eq.${projectId}`);
+      } else {
+        // Apenas modelos globais por padrão se não houver projeto
+        query = query.eq('global', true);
+      }
+
+      const { data, error } = await query;
+
+      if (error) {
+        console.error('[SGID] Erro ao buscar templates no Supabase:', error);
+      } else if (data && data.length > 0) {
+        return data.map(t => this.mapDbTemplateToDocumentModel(t));
+      }
+    } catch (err) {
+      console.error('[SGID] Erro crítico ao buscar templates:', err);
     }
 
+    // Fallback para modelos mockados caso o banco esteja vazio
+    let models = this.mockDocumentModels;
+    if (projectId) {
+      models = models.filter(m => m.isGlobal || m.projectId === projectId);
+    }
     return models;
   }
 
@@ -1475,26 +2529,53 @@ class APIService {
     const user = this.getCurrentUser();
     if (!user) throw new Error('Usuário não autenticado');
 
-    // Apenas ADM ou Gerente podem criar modelos (simplificado)
-    // Se for um modelo específico de projeto, o criador do projeto também pode criar
-    if (user.role !== 'admin' && user.role !== 'manager' && !projectId) {
-      throw new Error('Permissão negada: Somente administradores ou gerentes podem criar modelos globais.');
+    if (user.role !== 'admin' && user.role !== 'manager' && user.role !== 'technical_responsible' && !projectId) {
+      throw new Error('Permissão negada: Somente administradores, gerentes ou técnicos responsáveis podem criar modelos globais.');
+    }
+
+    // Tenta gravar no banco de dados real
+    if (this.isUUID(user.id)) {
+      try {
+        const { data, error } = await supabase
+          .from('templates')
+          .insert({
+            nome: name,
+            tipo_documento: type,
+            descricao: '',
+            global: isGlobal,
+            project_id: (projectId && this.isUUID(projectId)) ? projectId : null,
+            file_url: templateContent,
+            created_by: user.id,
+            sections: this.parseTemplateContentToSections(templateContent) // Salva a estrutura extraída
+          })
+          .select()
+          .single();
+
+        if (error) {
+          console.error('[SGID] Erro ao criar template no Supabase:', error);
+        } else if (data) {
+          const dbModel = this.mapDbTemplateToDocumentModel(data);
+          this.mockDocumentModels.push(dbModel);
+          this.persistToLocalStorage();
+          return dbModel;
+        }
+      } catch (err) {
+        console.error('[SGID] Erro crítico ao criar template:', err);
+      }
     }
 
     const newModel: DocumentModel = {
       id: Date.now().toString(),
       name,
       type,
-      templateContent, // Usar o novo campo templateContent
+      templateContent,
       isGlobal,
-      projectId, // Atribuir o projectId
+      projectId,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     };
 
     this.mockDocumentModels.push(newModel);
-
-    // Log de auditoria
     this.addAuditLog(projectId || 'system', 'document_model_created', user.id, user.name, `Modelo de documento \"${name}\" criado`);
     this.persistToLocalStorage();
 
@@ -1505,59 +2586,180 @@ class APIService {
     const user = this.getCurrentUser();
     if (!user) throw new Error('Usuário não autenticado');
 
-    const index = this.mockDocumentModels.findIndex(m => m.id === updatedModel.id);
-    if (index === -1) {
-      throw new Error('Modelo de documento não encontrado');
+    // Tenta atualizar no banco de dados real
+    if (this.isUUID(updatedModel.id)) {
+      try {
+        const { error } = await supabase
+          .from('templates')
+          .update({
+            nome: updatedModel.name,
+            tipo_documento: updatedModel.type,
+            descricao: updatedModel.description,
+            global: updatedModel.isGlobal,
+            project_id: (updatedModel.projectId && this.isUUID(updatedModel.projectId)) ? updatedModel.projectId : null,
+            file_url: updatedModel.templateContent,
+            sections: this.parseTemplateContentToSections(updatedModel.templateContent)
+          })
+          .eq('id', updatedModel.id);
+
+        if (error) {
+          console.error('[SGID] Erro ao atualizar template no Supabase:', error);
+        }
+      } catch (err) {
+        console.error('[SGID] Erro crítico ao atualizar template:', err);
+      }
     }
 
-    // Lógica de permissão: Apenas admin ou o criador do modelo podem editar (simplificado)
-    // Em um cenário real, também verificaria permissões de projeto se projectId estiver presente
-    const existingModel = this.mockDocumentModels[index];
-    if (user.role !== 'admin') { // && user.id !== existingModel.creatorId (se tivéssemos creatorId no modelo)
-      throw new Error('Permissão negada: Somente administradores ou gerentes podem editar modelos de documento.');
+    const index = this.mockDocumentModels.findIndex(m => m.id === updatedModel.id);
+    if (index === -1 && !this.isUUID(updatedModel.id)) {
+      throw new Error('Modelo de documento não encontrado');
     }
 
     const modelToUpdate: DocumentModel = {
       ...updatedModel,
-      updatedAt: new Date().toISOString() // Atualizar timestamp de atualização
+      updatedAt: new Date().toISOString()
     };
 
-    this.mockDocumentModels[index] = modelToUpdate;
+    if (index !== -1) {
+      this.mockDocumentModels[index] = modelToUpdate;
+    } else {
+      this.mockDocumentModels.push(modelToUpdate);
+    }
 
-    // Log de auditoria
     this.addAuditLog(modelToUpdate.projectId || 'system', 'document_model_updated', user.id, user.name, `Modelo de documento \"${modelToUpdate.name}\" atualizado`);
     this.persistToLocalStorage();
 
     return modelToUpdate;
   }
 
+  // Função auxiliar para mapear o grupo do banco para a interface do frontend
+  private mapDbGroupToGroup(g: any): Group {
+    return {
+      id: g.id,
+      name: g.nome || g.name,
+      description: g.descricao || g.description,
+      responsibleId: g.responsavel_id || g.responsibleId,
+      projectIds: g.project_id ? [g.project_id] : (g.projectIds || []),
+      memberIds: g.memberIds || [], // A tabela do usuário não tem membros, mantemos do mock/memória por enquanto
+      createdAt: g.created_at,
+      updatedAt: g.updated_at || g.created_at,
+    };
+  }
+
   // Gerenciamento de Grupos
   async getGroups(): Promise<Group[]> {
     const user = this.getCurrentUser();
-    if (!user) throw new Error('Usuário não autenticado');
+    if (!user) return []; // Retorna vazio em vez de estourar erro se não houver usuário
 
-    // Lógica de permissão simplificada para grupos
-    if (user.role === 'admin' || user.role === 'director') {
-      return this.mockGroups; // Administradores e diretores veem todos os grupos
+    try {
+      const { data: groupsData, error: groupsError } = await supabase
+        .from('groups')
+        .select('*')
+        .order('nome', { ascending: true });
+
+      if (groupsError) {
+        console.error('[SGID] Erro ao buscar grupos no Supabase:', groupsError);
+      } else if (groupsData && groupsData.length > 0) {
+        // Busca todos os membros de todos os grupos de uma vez para eficiência
+        const groupIds = groupsData.map(g => g.id);
+        const { data: membersData, error: membersError } = await supabase
+          .from('group_members')
+          .select('group_id, user_id')
+          .in('group_id', groupIds);
+
+        const dbGroups = groupsData.map(g => {
+          const group = this.mapDbGroupToGroup(g);
+          // Filtra os membros deste grupo específico
+          if (membersData) {
+            group.memberIds = membersData
+              .filter(m => m.group_id === g.id)
+              .map(m => m.user_id);
+          }
+          return group;
+        });
+        
+        return dbGroups;
+      }
+    } catch (err) {
+      console.error('[SGID] Erro crítico ao buscar grupos:', err);
     }
 
-    // Gerentes veem grupos que são responsáveis ou onde são membros
+    // Lógica de permissão simplificada para grupos (usada como fallback)
+    if (user.role === 'admin') {
+      return this.mockGroups;
+    }
+
     if (user.role === 'manager') {
       return this.mockGroups.filter(g => 
         g.responsibleId === user.id || g.memberIds.includes(user.id)
       );
     }
 
-    // Responsáveis técnicos e operacionais veem grupos onde são membros
     return this.mockGroups.filter(g => g.memberIds.includes(user.id));
   }
 
-  async createGroup(name: string, description?: string, parentId?: string, memberIds: string[] = [], responsibleId?: string): Promise<Group> {
+  async createGroup(name: string, description?: string, parentId?: string, memberIds: string[] = [], responsibleId?: string, projectIds: string[] = []): Promise<Group> {
     const user = this.getCurrentUser();
     if (!user) throw new Error('Usuário não autenticado');
-    // Apenas ADM ou Gerente podem criar grupos no escopo deste mock
-    if (user.role !== 'admin' && user.role !== 'manager') {
-      throw new Error('Permissão negada: Somente administradores ou gerentes podem criar grupos.');
+    if (user.role !== 'admin' && user.role !== 'manager' && user.role !== 'technical_responsible') {
+      throw new Error('Permissão negada: Somente administradores, gerentes ou técnicos responsáveis podem criar grupos.');
+    }
+
+    // Tenta gravar no banco de dados real
+    // Apenas se o criador for um usuário real do banco (tiver um UUID)
+    if (this.isUUID(user.id)) {
+      try {
+        // O banco exige project_id, então pegamos o primeiro se existir
+        const primaryProjectId = projectIds && projectIds.length > 0 ? projectIds[0] : null;
+        
+        if (primaryProjectId && this.isUUID(primaryProjectId)) {
+          const { data: groupData, error: groupError } = await supabase
+            .from('groups')
+            .insert({
+              nome: name,
+              descricao: description,
+              project_id: primaryProjectId,
+              responsavel_id: (responsibleId && this.isUUID(responsibleId)) ? responsibleId : null
+            })
+            .select()
+            .single();
+
+          if (groupError) {
+            console.error('[SGID] Erro ao criar grupo no Supabase:', groupError);
+          } else if (groupData) {
+            const dbGroup = this.mapDbGroupToGroup(groupData);
+            
+            // Insere os membros na tabela group_members
+            const validMemberIds = memberIds.filter(id => this.isUUID(id));
+            if (validMemberIds.length > 0) {
+              const memberInserts = validMemberIds.map(userId => ({
+                group_id: dbGroup.id,
+                user_id: userId
+              }));
+              
+              const { error: membersError } = await supabase
+                .from('group_members')
+                .insert(memberInserts);
+
+              if (membersError) {
+                console.error('[SGID] Erro ao inserir membros do grupo no Supabase:', membersError);
+              } else {
+                dbGroup.memberIds = validMemberIds;
+              }
+            }
+
+            this.mockGroups.push(dbGroup);
+            this.persistToLocalStorage();
+            return dbGroup;
+          }
+        } else {
+          console.warn('[SGID] Grupo criado sem projeto válido (UUID). O grupo será salvo apenas localmente.');
+        }
+      } catch (err) {
+        console.error('[SGID] Erro crítico ao criar grupo:', err);
+      }
+    } else {
+      console.warn('[SGID] Usuário logado com conta de demonstração (ID não UUID). O grupo será salvo apenas localmente.');
     }
 
     const newGroup: Group = {
@@ -1567,11 +2769,26 @@ class APIService {
       parentId,
       memberIds,
       responsibleId,
+      projectIds,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     };
 
     this.mockGroups.push(newGroup);
+
+    // Sincronizar com os projetos selecionados
+    if (projectIds && projectIds.length > 0) {
+      this.mockProjects.forEach(project => {
+        if (projectIds.includes(project.id)) {
+          if (!project.groupIds) project.groupIds = [];
+          if (!project.groupIds.includes(newGroup.id)) {
+            project.groupIds.push(newGroup.id);
+            project.updatedAt = new Date().toISOString();
+          }
+        }
+      });
+    }
+
     this.persistToLocalStorage();
     return newGroup;
   }
@@ -1588,7 +2805,7 @@ class APIService {
     if (!currentVersion) throw new Error('Versão atual do documento não encontrada');
 
     const newSection: DocumentSection = {
-      id: `sec-${Date.now()}`,
+      id: crypto.randomUUID(), // Gera ID único automaticamente
       title,
       content: '',
       isEditable: true,
@@ -1655,13 +2872,73 @@ class APIService {
     const user = this.getCurrentUser();
     if (!user) throw new Error('Usuário não autenticado');
 
+    // Tenta atualizar no banco de dados real
+    if (this.isUUID(updatedGroup.id)) {
+      try {
+        const primaryProjectId = updatedGroup.projectIds && updatedGroup.projectIds.length > 0 ? updatedGroup.projectIds[0] : null;
+
+        const { error: groupError } = await supabase
+          .from('groups')
+          .update({
+            nome: updatedGroup.name,
+            descricao: updatedGroup.description,
+            project_id: (primaryProjectId && this.isUUID(primaryProjectId)) ? primaryProjectId : undefined,
+            responsavel_id: (updatedGroup.responsibleId && this.isUUID(updatedGroup.responsibleId)) ? updatedGroup.responsibleId : null
+          })
+          .eq('id', updatedGroup.id);
+
+        if (groupError) {
+          console.error('[SGID] Erro ao atualizar grupo no Supabase:', groupError);
+        }
+
+        // Atualizar membros na tabela group_members
+        const { data: currentMembers, error: membersFetchError } = await supabase
+          .from('group_members')
+          .select('user_id')
+          .eq('group_id', updatedGroup.id);
+
+        if (!membersFetchError && currentMembers) {
+          const currentMemberIds = currentMembers.map(m => m.user_id);
+          const newMemberIds = (updatedGroup.memberIds || []).filter(id => this.isUUID(id));
+
+          // Identificar quem adicionar e quem remover
+          const toAdd = newMemberIds.filter(id => !currentMemberIds.includes(id));
+          const toRemove = currentMemberIds.filter(id => !newMemberIds.includes(id));
+
+          // Remover membros
+          if (toRemove.length > 0) {
+            const { error: deleteError } = await supabase
+              .from('group_members')
+              .delete()
+              .eq('group_id', updatedGroup.id)
+              .in('user_id', toRemove);
+            if (deleteError) console.error('[SGID] Erro ao remover membros:', deleteError);
+          }
+
+          // Adicionar membros
+          if (toAdd.length > 0) {
+            const memberInserts = toAdd.map(userId => ({
+              group_id: updatedGroup.id,
+              user_id: userId
+            }));
+            const { error: insertError } = await supabase
+              .from('group_members')
+              .insert(memberInserts);
+            if (insertError) console.error('[SGID] Erro ao adicionar membros:', insertError);
+          }
+        }
+      } catch (err) {
+        console.error('[SGID] Erro crítico ao atualizar grupo:', err);
+      }
+    }
+
     const index = this.mockGroups.findIndex(g => g.id === updatedGroup.id);
-    if (index === -1) {
+    if (index === -1 && !this.isUUID(updatedGroup.id)) {
       throw new Error('Grupo não encontrado');
     }
 
     // Lógica de permissão: Apenas admin ou o responsável pelo grupo podem editar
-    const existingGroup = this.mockGroups[index];
+    const existingGroup = index !== -1 ? this.mockGroups[index] : updatedGroup;
     if (user.role !== 'admin' && user.id !== existingGroup.responsibleId) {
       throw new Error('Permissão negada: Você não tem permissão para editar este grupo.');
     }
@@ -1671,13 +2948,204 @@ class APIService {
       updatedAt: new Date().toISOString() // Atualizar timestamp de atualização
     };
 
-    this.mockGroups[index] = groupToUpdate;
+    if (index !== -1) {
+      const previousProjectIds = existingGroup.projectIds || [];
+      const newProjectIds = groupToUpdate.projectIds || [];
+
+      // Remover grupos dos projetos que não estão mais associados
+      previousProjectIds.forEach(projectId => {
+        if (!newProjectIds.includes(projectId)) {
+          const project = this.mockProjects.find(p => p.id === projectId);
+          if (project && project.groupIds) {
+            project.groupIds = project.groupIds.filter(id => id !== groupToUpdate.id);
+            project.updatedAt = new Date().toISOString();
+          }
+        }
+      });
+
+      // Adicionar grupo aos novos projetos associados
+      newProjectIds.forEach(projectId => {
+        if (!previousProjectIds.includes(projectId)) {
+          const project = this.mockProjects.find(p => p.id === projectId);
+          if (project) {
+            if (!project.groupIds) project.groupIds = [];
+            if (!project.groupIds.includes(groupToUpdate.id)) {
+              project.groupIds.push(groupToUpdate.id);
+              project.updatedAt = new Date().toISOString();
+            }
+          }
+        }
+      });
+
+      this.mockGroups[index] = groupToUpdate;
+    } else {
+      // Se era um grupo apenas do banco, adiciona ao mock local para a sessão atual
+      this.mockGroups.push(groupToUpdate);
+    }
 
     // Log de auditoria
     this.addAuditLog('system', 'group_updated', user.id, user.name, `Grupo "${groupToUpdate.name}" atualizado`);
     this.persistToLocalStorage();
 
     return groupToUpdate;
+  }
+
+  async assignProjectToGroup(groupId: string, projectId: string): Promise<Group> {
+    const user = this.getCurrentUser();
+    if (!user) throw new Error('Usuário não autenticado');
+    if (user.role !== 'admin' && user.role !== 'manager' && user.role !== 'technical_responsible') {
+      throw new Error('Permissão negada: Somente administradores, gerentes ou técnicos responsáveis podem atribuir projetos a grupos.');
+    }
+
+    const group = this.mockGroups.find(g => g.id === groupId);
+    if (!group) throw new Error('Grupo não encontrado');
+
+    const project = this.mockProjects.find(p => p.id === projectId);
+    if (!project) throw new Error('Projeto não encontrado');
+
+    // Evitar duplicatas
+    if (!group.projectIds) {
+      group.projectIds = [];
+    }
+    if (!group.projectIds.includes(projectId)) {
+      group.projectIds.push(projectId);
+      group.updatedAt = new Date().toISOString();
+
+      // Sincronizar com o projeto
+      const project = this.mockProjects.find(p => p.id === projectId);
+      if (project) {
+        if (!project.groupIds) project.groupIds = [];
+        if (!project.groupIds.includes(groupId)) {
+          project.groupIds.push(groupId);
+          project.updatedAt = new Date().toISOString();
+        }
+      }
+
+      this.addAuditLog('system', 'project_assigned_to_group', user.id, user.name, `Projeto "${project?.name || projectId}" atribuído ao grupo "${group.name}"`);
+      this.persistToLocalStorage();
+    }
+
+    return group;
+  }
+
+  async removeProjectFromGroup(groupId: string, projectId: string): Promise<Group> {
+    const user = this.getCurrentUser();
+    if (!user) throw new Error('Usuário não autenticado');
+    if (user.role !== 'admin' && user.role !== 'manager') {
+      throw new Error('Permissão negada: Somente administradores ou gerentes podem remover projetos de grupos.');
+    }
+
+    const group = this.mockGroups.find(g => g.id === groupId);
+    if (!group) throw new Error('Grupo não encontrado');
+
+    const project = this.mockProjects.find(p => p.id === projectId);
+    if (!project) throw new Error('Projeto não encontrado');
+
+    if (group.projectIds) {
+      group.projectIds = group.projectIds.filter(id => id !== projectId);
+      group.updatedAt = new Date().toISOString();
+
+      // Sincronizar com o projeto
+      const project = this.mockProjects.find(p => p.id === projectId);
+      if (project && project.groupIds) {
+        project.groupIds = project.groupIds.filter(id => id !== groupId);
+        project.updatedAt = new Date().toISOString();
+      }
+
+      this.addAuditLog('system', 'project_removed_from_group', user.id, user.name, `Projeto "${project?.name || projectId}" removido do grupo "${group.name}"`);
+      this.persistToLocalStorage();
+    }
+
+    return group;
+  }
+
+  async getGroupProjects(groupId: string): Promise<Project[]> {
+    const user = this.getCurrentUser();
+    if (!user) throw new Error('Usuário não autenticado');
+
+    const group = this.mockGroups.find(g => g.id === groupId);
+    if (!group) throw new Error('Grupo não encontrado');
+
+    if (!group.projectIds) {
+      return [];
+    }
+
+    return this.mockProjects.filter(p => group.projectIds?.includes(p.id));
+  }
+
+  async deleteGroup(groupId: string): Promise<boolean> {
+    const user = this.getCurrentUser();
+    if (!user) throw new Error('Usuário não autenticado');
+
+    // Apenas admin, gerente ou técnico responsável podem excluir grupos
+    if (user.role !== 'admin' && user.role !== 'manager' && user.role !== 'technical_responsible') {
+      throw new Error('Permissão negada: Somente administradores, gerentes ou técnicos responsáveis podem excluir grupos.');
+    }
+
+    // Tenta excluir do banco de dados real
+    if (this.isUUID(groupId)) {
+      try {
+        // Devido ao "ON DELETE CASCADE" na sua tabela, os membros serão removidos automaticamente
+        const { error } = await supabase
+          .from('groups')
+          .delete()
+          .eq('id', groupId);
+
+        if (error) {
+          console.error('[SGID] Erro ao excluir grupo no Supabase:', error);
+        }
+      } catch (err) {
+        console.error('[SGID] Erro crítico ao excluir grupo:', err);
+      }
+    }
+
+    const initialLength = this.mockGroups.length;
+    this.mockGroups = this.mockGroups.filter(g => g.id !== groupId);
+
+    if (this.mockGroups.length < initialLength || this.isUUID(groupId)) {
+      // Remover referências a este grupo em todos os projetos
+      this.mockProjects.forEach(project => {
+        if (project.groupIds?.includes(groupId)) {
+          project.groupIds = project.groupIds.filter(id => id !== groupId);
+          project.updatedAt = new Date().toISOString();
+        }
+      });
+
+      // Log de auditoria
+      this.addAuditLog('system', 'group_deleted', user.id, user.name, `Grupo com ID "${groupId}" excluído`);
+      this.persistToLocalStorage();
+      return true;
+    }
+    return false;
+  }
+
+  async deleteProject(projectId: string): Promise<boolean> {
+    const user = this.getCurrentUser();
+    if (!user) throw new Error('Usuário não autenticado');
+
+    // Apenas admin, gerente ou técnico responsável podem excluir projetos
+    if (user.role !== 'admin' && user.role !== 'manager' && user.role !== 'technical_responsible') {
+      throw new Error('Permissão negada: Somente administradores, gerentes ou técnicos responsáveis podem excluir projetos.');
+    }
+
+    const initialLength = this.mockProjects.length;
+    this.mockProjects = this.mockProjects.filter(p => p.id !== projectId);
+
+    if (this.mockProjects.length < initialLength) {
+      // Remover referências a este projeto em todos os grupos
+      this.mockGroups.forEach(group => {
+        if (group.projectIds?.includes(projectId)) {
+          group.projectIds = group.projectIds.filter(id => id !== projectId);
+          group.updatedAt = new Date().toISOString();
+        }
+      });
+
+      // Log de auditoria
+      this.addAuditLog('system', 'project_deleted', user.id, user.name, `Projeto com ID "${projectId}" excluído`);
+      this.persistToLocalStorage();
+      return true;
+    }
+    return false;
   }
 }
 

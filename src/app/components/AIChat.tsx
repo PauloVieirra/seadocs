@@ -14,9 +14,10 @@ interface Message {
 
 interface AIChatProps {
   projectId: string;
+  documentId?: string;
 }
 
-export function AIChat({ projectId }: AIChatProps) {
+export function AIChat({ projectId, documentId }: AIChatProps) {
   const [messages, setMessages] = useState<Message[]>([
     {
       id: '1',
@@ -50,8 +51,8 @@ export function AIChat({ projectId }: AIChatProps) {
     setLoading(true);
 
     try {
-      console.log('Enviando mensagem para IA:', { projectId, message: input });
-      const response = await apiService.chatWithAI(projectId, input);
+      console.log('Enviando mensagem para IA:', { projectId, documentId, message: input });
+      const response = await apiService.chatWithAI(projectId, input, { documentId });
       console.log('Resposta recebida da IA:', response);
       
       const assistantMessage: Message = {

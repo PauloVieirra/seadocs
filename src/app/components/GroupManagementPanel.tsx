@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { apiService, type Group, type User } from '../../services/api';
+import { apiService, type Group, type User, type Project } from '../../services/api';
 import { Button } from './ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from './ui/card';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from './ui/dialog';
@@ -8,6 +8,8 @@ import { Label } from './ui/label';
 import { Textarea } from './ui/textarea';
 import { Plus } from 'lucide-react';
 import { MultiSelect } from './ui/multi-select';
+import { UserSearchSelect } from './UserSearchSelect'; // Importar novo componente
+import { ProjectSearchSelect } from './ProjectSearchSelect'; // Importar componente de busca de projetos
 import { GroupEditDialog } from './GroupEditDialog'; // Importar GroupEditDialog
 
 interface GroupManagementPanelProps {
@@ -23,21 +25,21 @@ export function GroupManagementPanel({ user }: GroupManagementPanelProps) {
   const [newGroupName, setNewGroupName] = useState('');
   const [newGroupDescription, setNewGroupDescription] = useState('');
   const [allUsers, setAllUsers] = useState<User[]>([]);
+  const [allProjects, setAllProjects] = useState<Project[]>([]);
   const [selectedMemberIds, setSelectedMemberIds] = useState<string[]>([]);
   const [selectedResponsibleId, setSelectedResponsibleId] = useState<string | undefined>(undefined);
-  const [parentGroups, setParentGroups] = useState<Group[]>([]);
-  const [selectedParentId, setSelectedParentId] = useState<string | undefined>(undefined);
+  const [selectedProjectIds, setSelectedProjectIds] = useState<string[]>([]);
 
   useEffect(() => {
     loadGroups();
     loadUsers();
+    loadProjects();
   }, []);
 
   const loadGroups = async () => {
     setLoading(true);
     const data = await apiService.getGroups();
     setGroups(data);
-    setParentGroups(data); // Grupos existentes podem ser pais
     setLoading(false);
   };
 
@@ -46,20 +48,25 @@ export function GroupManagementPanel({ user }: GroupManagementPanelProps) {
     setAllUsers(users);
   };
 
+  const loadProjects = async () => {
+    const projects = await apiService.getProjects();
+    setAllProjects(projects);
+  };
+
   const handleCreateGroup = async (e: React.FormEvent) => {
     e.preventDefault();
     try {
-      // Permissão para criar grupo: Apenas Admin ou Gerente
-      if (user.role !== 'admin' && user.role !== 'manager') {
-        alert('Permissão negada: Somente administradores ou gerentes podem criar grupos.');
+      // Permissão para criar grupo: Apenas Admin, Gerente ou Técnico Responsável
+      if (user.role !== 'admin' && user.role !== 'manager' && user.role !== 'technical_responsible') {
+        alert('Permissão negada: Somente administradores, gerentes ou técnicos responsáveis podem criar grupos.');
         return;
       }
-      await apiService.createGroup(newGroupName, newGroupDescription, selectedParentId, selectedMemberIds, selectedResponsibleId);
+      await apiService.createGroup(newGroupName, newGroupDescription, undefined, selectedMemberIds, selectedResponsibleId, selectedProjectIds);
       setNewGroupName('');
       setNewGroupDescription('');
       setSelectedMemberIds([]);
       setSelectedResponsibleId(undefined);
-      setSelectedParentId(undefined);
+      setSelectedProjectIds([]);
       setDialogOpen(false);
       loadGroups();
     } catch (error: any) {
@@ -68,9 +75,9 @@ export function GroupManagementPanel({ user }: GroupManagementPanelProps) {
   };
 
   const handleEditGroupClick = (group: Group) => {
-    // Permissão para editar grupo: Apenas Admin ou responsável pelo grupo
-    if (user.role !== 'admin' && user.id !== group.responsibleId) {
-      alert('Permissão negada: Somente administradores ou o responsável pelo grupo podem editar.');
+    // Permissão para editar grupo: Apenas Admin, Gerente, Técnico Responsável ou responsável pelo grupo
+    if (user.role !== 'admin' && user.role !== 'manager' && user.role !== 'technical_responsible' && user.id !== group.responsibleId) {
+      alert('Permissão negada: Você não tem permissão para editar este grupo.');
       return;
     }
     setSelectedGroupForEdit(group);
@@ -83,8 +90,8 @@ export function GroupManagementPanel({ user }: GroupManagementPanelProps) {
         <h3 className="text-lg font-medium">Gerenciamento de Grupos</h3>
         <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
           <DialogTrigger asChild>
-            {/* Apenas Admin ou Gerente podem ver o botão de criar grupo */}
-            {(user.role === 'admin' || user.role === 'manager') && (
+            {/* Apenas Admin, Gerente ou Técnico Responsável podem ver o botão de criar grupo */}
+            {(user.role === 'admin' || user.role === 'manager' || user.role === 'technical_responsible') && (
               <Button>
                 <Plus className="mr-2 h-4 w-4" /> Criar Novo Grupo
               </Button>
@@ -119,31 +126,32 @@ export function GroupManagementPanel({ user }: GroupManagementPanelProps) {
               </div>
               <div className="space-y-2">
                 <Label htmlFor="group-members">Membros</Label>
-                <MultiSelect
-                  options={allUsers.map(u => ({ label: u.name, value: u.id }))}
-                  selected={selectedMemberIds}
+                <UserSearchSelect
+                  users={allUsers}
+                  selectedIds={selectedMemberIds}
                   onSelectedChange={setSelectedMemberIds}
-                  placeholder="Selecione os membros do grupo..."
+                  placeholder="Busque por nome ou email..."
+                  maxResults={8}
                 />
               </div>
               <div className="space-y-2">
                 <Label htmlFor="group-responsible">Responsável pelo Grupo (opcional)</Label>
-                <MultiSelect
-                  options={allUsers.map(u => ({ label: u.name, value: u.id }))}
-                  selected={selectedResponsibleId ? [selectedResponsibleId] : []}
+                <UserSearchSelect
+                  users={allUsers}
+                  selectedIds={selectedResponsibleId ? [selectedResponsibleId] : []}
                   onSelectedChange={(ids) => setSelectedResponsibleId(ids[0])}
-                  placeholder="Selecione o responsável pelo grupo..."
-                  maxSelected={1}
+                  placeholder="Busque por nome ou email..."
+                  maxResults={8}
                 />
               </div>
               <div className="space-y-2">
-                <Label htmlFor="group-parent">Grupo Pai (opcional)</Label>
-                <MultiSelect
-                  options={parentGroups.filter(g => g.id !== selectedParentId).map(g => ({ label: g.name, value: g.id }))}
-                  selected={selectedParentId ? [selectedParentId] : []}
-                  onSelectedChange={(ids) => setSelectedParentId(ids[0])}
-                  placeholder="Selecione um grupo pai..."
-                  maxSelected={1}
+                <Label htmlFor="group-projects">Projetos Atribuídos (opcional)</Label>
+                <ProjectSearchSelect
+                  projects={allProjects}
+                  selectedIds={selectedProjectIds}
+                  onSelectedChange={setSelectedProjectIds}
+                  placeholder="Busque por nome do projeto..."
+                  maxResults={8}
                 />
               </div>
               <div className="flex justify-end gap-2">
@@ -179,8 +187,8 @@ export function GroupManagementPanel({ user }: GroupManagementPanelProps) {
             <p className="text-sm text-gray-600 mb-4">
               Comece criando seu primeiro grupo de trabalho.
             </p>
-            {/* Apenas Admin ou Gerente podem ver o botão de criar primeiro grupo */}
-            {(user.role === 'admin' || user.role === 'manager') && (
+            {/* Apenas Admin, Gerente ou Técnico Responsável podem ver o botão de criar primeiro grupo */}
+            {(user.role === 'admin' || user.role === 'manager' || user.role === 'technical_responsible') && (
               <Button onClick={() => setDialogOpen(true)}>
                 <Plus className="mr-2 h-4 w-4" /> Criar primeiro grupo
               </Button>
@@ -230,6 +238,17 @@ export function GroupManagementPanel({ user }: GroupManagementPanelProps) {
                   </span>
                 </div>
                 <div>
+                  <span>Projetos: </span>
+                  <span className="font-medium">
+                    {group.projectIds && group.projectIds.length > 0
+                      ? group.projectIds
+                          .map(id => allProjects.find(p => p.id === id)?.name || '')
+                          .filter(name => name !== '')
+                          .join(', ')
+                      : 'Nenhum'}
+                  </span>
+                </div>
+                <div>
                   <span>Criado em: </span>
                   <span className="font-medium">{new Date(group.createdAt).toLocaleDateString('pt-BR')}</span>
                 </div>
@@ -246,7 +265,8 @@ export function GroupManagementPanel({ user }: GroupManagementPanelProps) {
           onOpenChange={setEditDialogOpen}
           onUpdateSuccess={loadGroups}
           allUsers={allUsers}
-          allGroups={groups} // Passar todos os grupos para a lógica de grupo pai
+          allGroups={groups}
+          allProjects={allProjects}
         />
       )}
     </div>

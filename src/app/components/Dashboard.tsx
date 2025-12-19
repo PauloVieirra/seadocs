@@ -3,13 +3,16 @@ import { Button } from './ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from './ui/card';
 import { Badge } from './ui/badge';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from './ui/dialog';
+import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from './ui/alert-dialog';
 import { Input } from './ui/input';
 import { Label } from './ui/label';
 import { Textarea } from './ui/textarea';
-import { Plus, FileText } from 'lucide-react'; // Removido LogOut, Settings
-import { apiService, type Project, type User, type Group, type DocumentModel } from '../../services/api';
+import { Plus, FileText, Search, Trash2, Settings } from 'lucide-react'; // Adicionado Trash2, Settings
+import { apiService, type Project, type User, type Group } from '../../services/api';
 import { DatabaseConfigDialog } from './DatabaseConfigDialog';
 import { MultiSelect } from './ui/multi-select'; // Importar MultiSelect
+import { UserSearchSelect } from './UserSearchSelect'; // Importar novo componente
+import { ProjectSettingsDialog } from './ProjectSettingsDialog'; // Importar ProjectSettingsDialog
 // Removido Tabs, TabsContent, TabsList, TabsTrigger, UserManagementPanel, DocumentModelManagementPanel
 
 interface DashboardProps {
@@ -20,6 +23,8 @@ interface DashboardProps {
 
 export function Dashboard({ user, onProjectSelect }: DashboardProps) { // Removido onLogout
   const [projects, setProjects] = useState<Project[]>([]);
+  const [filteredProjects, setFilteredProjects] = useState<Project[]>([]);
+  const [searchQuery, setSearchQuery] = useState('');
   const [loading, setLoading] = useState(true);
   const [newProjectName, setNewProjectName] = useState('');
   const [newProjectDescription, setNewProjectDescription] = useState('');
@@ -29,21 +34,38 @@ export function Dashboard({ user, onProjectSelect }: DashboardProps) { // Removi
   const [selectedResponsibleIds, setSelectedResponsibleIds] = useState<string[]>([]); // Novo estado para IDs de responsáveis selecionados
   const [allGroups, setAllGroups] = useState<Group[]>([]); // Novo estado para todos os grupos
   const [selectedGroupIds, setSelectedGroupIds] = useState<string[]>([]); // Novo estado para IDs de grupos selecionados
-  const [allDocumentModels, setAllDocumentModels] = useState<DocumentModel[]>([]); // Novo estado para todos os modelos de documento
-  const [selectedDocumentModelId, setSelectedDocumentModelId] = useState<string | undefined>(undefined); // Novo estado para o ID do modelo de documento selecionado
+  const [deletingProjectId, setDeletingProjectId] = useState<string | null>(null);
+  const [settingsProjectId, setSettingsProjectId] = useState<string | null>(null);
+  const [settingsDialogOpen, setSettingsDialogOpen] = useState(false);
 
   useEffect(() => {
     loadProjects();
     loadUsers(); // Carregar usuários ao montar
     loadGroups(); // Carregar grupos ao montar
-    loadDocumentModels(); // Carregar modelos de documento ao montar
   }, []);
 
   const loadProjects = async () => {
     setLoading(true);
     const data = await apiService.getProjects();
     setProjects(data);
+    setFilteredProjects(data);
     setLoading(false);
+  };
+
+  const handleSearchChange = (value: string) => {
+    setSearchQuery(value);
+    
+    // Filtrar apenas se tiver 3 ou mais caracteres
+    if (value.length >= 3) {
+      const filtered = projects.filter(project =>
+        project.name.toLowerCase().includes(value.toLowerCase())
+      );
+      setFilteredProjects(filtered);
+    } else if (value.length === 0) {
+      // Se limpar a busca, mostrar todos os projetos
+      setFilteredProjects(projects);
+    }
+    // Se tiver 1-2 caracteres, manter o filtro anterior
   };
 
   const loadUsers = async () => {
@@ -56,22 +78,28 @@ export function Dashboard({ user, onProjectSelect }: DashboardProps) { // Removi
     setAllGroups(groups);
   };
 
-  const loadDocumentModels = async () => {
-    const models = await apiService.getDocumentModels();
-    setAllDocumentModels(models);
-  };
-
   const handleCreateProject = async (e: React.FormEvent) => {
     e.preventDefault();
     
-    await apiService.createProject(newProjectName, newProjectDescription, selectedResponsibleIds, selectedGroupIds, selectedDocumentModelId);
+    await apiService.createProject(newProjectName, newProjectDescription, selectedResponsibleIds, selectedGroupIds);
     setNewProjectName('');
     setNewProjectDescription('');
     setSelectedResponsibleIds([]); // Limpar seleção após criar projeto
     setSelectedGroupIds([]); // Limpar seleção de grupos após criar projeto
-    setSelectedDocumentModelId(undefined); // Limpar seleção de modelo de documento
     setDialogOpen(false);
     loadProjects();
+  };
+
+  const handleDeleteProject = async (projectId: string) => {
+    setDeletingProjectId(projectId);
+    try {
+      await apiService.deleteProject(projectId);
+      loadProjects();
+    } catch (error: any) {
+      console.error('Erro ao deletar projeto:', error);
+    } finally {
+      setDeletingProjectId(null);
+    }
   };
 
   const getStatusBadge = (status: Project['status']) => {
@@ -88,12 +116,11 @@ export function Dashboard({ user, onProjectSelect }: DashboardProps) { // Removi
 
   const getRoleBadge = (role: User['role']) => {
     const labels: Record<User['role'], string> = {
-      'user': 'Usuário',
-      'manager': 'Gerente',
       'admin': 'Administrador',
-      'director': 'Diretor',
-      'technical_responsible': 'Responsável Técnico',
+      'manager': 'Gerente',
+      'technical_responsible': 'Técnico Operacional',
       'operational': 'Operacional',
+      'external': 'Usuário Externo'
     };
     return labels[role];
   };
@@ -129,80 +156,87 @@ export function Dashboard({ user, onProjectSelect }: DashboardProps) { // Removi
 
       {/* Main Content */}
       <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-        <div className="flex items-center justify-between mb-6">
-          <h2 className="text-xl font-semibold">Meus Projetos</h2>
-          <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
-            <DialogTrigger asChild>
-              <Button>
-                <Plus className="w-4 h-4 mr-2" />
-                Criar novo projeto
-              </Button>
-            </DialogTrigger>
-            <DialogContent>
-              <DialogHeader>
-                <DialogTitle>Criar Novo Projeto</DialogTitle>
-                <DialogDescription>
-                  Crie um novo projeto de especificação de requisitos
-                </DialogDescription>
-              </DialogHeader>
-              <form onSubmit={handleCreateProject} className="space-y-4 mt-4">
-                <div className="space-y-2">
-                  <Label htmlFor="project-name">Nome do Projeto *</Label>
-                  <Input
-                    id="project-name"
-                    placeholder="Ex: Sistema de Gestão Financeira"
-                    value={newProjectName}
-                    onChange={(e) => setNewProjectName(e.target.value)}
-                    required
-                  />
-                </div>
-                <div className="space-y-2">
-                  <Label htmlFor="project-description">Descrição (opcional)</Label>
-                  <Textarea
-                    id="project-description"
-                    placeholder="Descreva brevemente o objetivo do projeto..."
-                    rows={3}
-                    value={newProjectDescription}
-                    onChange={(e) => setNewProjectDescription(e.target.value)}
-                  />
-                </div>
-                <div className="space-y-2">
-                  <Label htmlFor="project-responsibles">Responsáveis (opcional)</Label>
-                  <MultiSelect
-                    options={allUsers.map(user => ({ label: user.name, value: user.id }))}
-                    selected={selectedResponsibleIds}
-                    onSelectedChange={setSelectedResponsibleIds}
-                    placeholder="Selecione responsáveis..."
-                  />
-                </div>
-                <div className="space-y-2">
-                  <Label htmlFor="project-groups">Grupos (opcional)</Label>
-                  <MultiSelect
-                    options={allGroups.map(group => ({ label: group.name, value: group.id }))}
-                    selected={selectedGroupIds}
-                    onSelectedChange={setSelectedGroupIds}
-                    placeholder="Selecione os grupos do projeto..."
-                  />
-                </div>
-                <div className="space-y-2">
-                  <Label htmlFor="project-document-model">Modelo de Documento (opcional)</Label>
-                  <MultiSelect
-                    options={allDocumentModels.map(model => ({ label: model.name, value: model.id }))}
-                    selected={selectedDocumentModelId ? [selectedDocumentModelId] : []}
-                    onSelectedChange={(ids) => setSelectedDocumentModelId(ids[0])}
-                    placeholder="Selecione um modelo de documento..."
-                    maxSelected={1}
-                  />
-                </div>
-                <div className="flex justify-end gap-2">
-                  <Button type="button" variant="outline" onClick={() => setDialogOpen(false)}>
-                    Cancelar
+        <div className="mb-6">
+          <div className="flex items-center justify-between mb-4">
+            <h2 className="text-xl font-semibold">Meus Projetos</h2>
+            {(user.role === 'admin' || user.role === 'manager' || user.role === 'technical_responsible') && (
+              <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
+                <DialogTrigger asChild>
+                  <Button>
+                    <Plus className="w-4 h-4 mr-2" />
+                    Criar novo projeto
                   </Button>
-                  <Button type="submit">Criar Projeto</Button>
-                </div>
-              </form>
-            </DialogContent>
-          </Dialog>
+                </DialogTrigger>
+                <DialogContent>
+                  <DialogHeader>
+                    <DialogTitle>Criar Novo Projeto</DialogTitle>
+                    <DialogDescription>
+                      Crie um novo projeto de especificação de requisitos
+                    </DialogDescription>
+                  </DialogHeader>
+                  <form onSubmit={handleCreateProject} className="space-y-4 mt-4">
+                    <div className="space-y-2">
+                      <Label htmlFor="project-name">Nome do Projeto *</Label>
+                      <Input
+                        id="project-name"
+                        placeholder="Ex: Sistema de Gestão Financeira"
+                        value={newProjectName}
+                        onChange={(e) => setNewProjectName(e.target.value)}
+                        required
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <Label htmlFor="project-description">Descrição (opcional)</Label>
+                      <Textarea
+                        id="project-description"
+                        placeholder="Descreva brevemente o objetivo do projeto..."
+                        rows={3}
+                        value={newProjectDescription}
+                        onChange={(e) => setNewProjectDescription(e.target.value)}
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <Label htmlFor="project-responsibles">Responsáveis (opcional)</Label>
+                      <UserSearchSelect
+                        users={allUsers}
+                        selectedIds={selectedResponsibleIds}
+                        onSelectedChange={setSelectedResponsibleIds}
+                        placeholder="Busque por nome ou email..."
+                        maxResults={8}
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <Label htmlFor="project-groups">Grupos (opcional)</Label>
+                      <MultiSelect
+                        options={allGroups.map(group => ({ label: group.name, value: group.id }))}
+                        selected={selectedGroupIds}
+                        onSelectedChange={setSelectedGroupIds}
+                        placeholder="Selecione os grupos do projeto..."
+                      />
+                    </div>
+                    <div className="flex justify-end gap-2">
+                      <Button type="button" variant="outline" onClick={() => setDialogOpen(false)}>
+                        Cancelar
+                      </Button>
+                      <Button type="submit">Criar Projeto</Button>
+                    </div>
+                  </form>
+                </DialogContent>
+              </Dialog>
+            )}
+          </div>
+
+          {/* Search Bar */}
+          <div className="relative">
+            <Search className="absolute left-3 top-3 w-4 h-4 text-gray-400" />
+            <Input
+              type="text"
+              placeholder="Buscar projetos pelo título (mínimo 3 caracteres)..."
+              value={searchQuery}
+              onChange={(e) => handleSearchChange(e.target.value)}
+              className="pl-10 w-full"
+            />
+          </div>
         </div>
             
         {loading ? (
@@ -226,26 +260,106 @@ export function Dashboard({ user, onProjectSelect }: DashboardProps) { // Removi
               <FileText className="w-12 h-12 mx-auto text-gray-400 mb-4" />
               <h3 className="text-lg mb-2">Nenhum projeto encontrado</h3>
               <p className="text-sm text-gray-600 mb-4">
-                Comece criando seu primeiro projeto de especificação
+                {user.role === 'admin' 
+                  ? 'Comece criando seu primeiro projeto de especificação' 
+                  : 'Você ainda não foi incluído em nenhum projeto.'}
               </p>
-              <Button onClick={() => setDialogOpen(true)}>
-                <Plus className="w-4 h-4 mr-2" />
-                Criar primeiro projeto
-              </Button>
+              {user.role === 'admin' && (
+                <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
+                  <DialogTrigger asChild>
+                    <Button>
+                      <Plus className="w-4 h-4 mr-2" />
+                      Criar primeiro projeto
+                    </Button>
+                  </DialogTrigger>
+                </Dialog>
+              )}
+            </CardContent>
+          </Card>
+        ) : filteredProjects.length === 0 ? (
+          <Card className="text-center py-12">
+            <CardContent>
+              <FileText className="w-12 h-12 mx-auto text-gray-400 mb-4" />
+              <h3 className="text-lg mb-2">Nenhum projeto encontrado</h3>
+              <p className="text-sm text-gray-600">
+                Nenhum projeto corresponde à sua busca.
+              </p>
             </CardContent>
           </Card>
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-            {projects.map(project => (
+            {filteredProjects.map(project => (
               <Card 
                 key={project.id} 
-                className="hover:shadow-lg transition-shadow cursor-pointer"
+                className="hover:shadow-lg transition-shadow cursor-pointer group relative"
                 onClick={() => onProjectSelect(project.id)}
               >
                 <CardHeader>
-                  <div className="flex items-start justify-between">
-                    <CardTitle className="text-lg">{project.name}</CardTitle>
-                    {getStatusBadge(project.status)}
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="flex-1">
+                      <CardTitle className="text-lg">{project.name}</CardTitle>
+                      {project.groupIds && project.groupIds.length > 0 && (
+                        <div className="flex flex-wrap gap-1 mt-1">
+                          {project.groupIds
+                            .map(id => allGroups.find(g => g.id === id)?.name || '')
+                            .filter(name => name !== '')
+                            .map(name => (
+                              <Badge key={name} variant="outline" className="text-[10px] py-0 px-1 font-normal bg-blue-50 text-blue-700 border-blue-200">
+                                {name}
+                              </Badge>
+                            ))
+                          }
+                        </div>
+                      )}
+                    </div>
+                    <div className="flex items-center gap-2">
+                      {getStatusBadge(project.status)}
+                      {(user.role === 'admin' || user.role === 'manager' || user.role === 'technical_responsible') && (
+                        <div className="flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="text-gray-500 hover:text-blue-600 hover:bg-blue-50"
+                            onClick={() => {
+                              setSettingsProjectId(project.id);
+                              setSettingsDialogOpen(true);
+                            }}
+                          >
+                            <Settings className="w-4 h-4" />
+                          </Button>
+                          <AlertDialog>
+                            <AlertDialogTrigger asChild>
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                className="text-red-600 hover:text-red-700 hover:bg-red-50"
+                                disabled={deletingProjectId === project.id}
+                              >
+                                <Trash2 className="w-4 h-4" />
+                              </Button>
+                            </AlertDialogTrigger>
+                            <AlertDialogContent>
+                              <AlertDialogHeader>
+                                <AlertDialogTitle>Você tem certeza?</AlertDialogTitle>
+                                <AlertDialogDescription>
+                                  Esta ação não pode ser desfeita. Isso excluirá permanentemente o projeto "{project.name}" e todos os seus documentos.
+                                </AlertDialogDescription>
+                              </AlertDialogHeader>
+                              <AlertDialogFooter>
+                                <AlertDialogCancel>Cancelar</AlertDialogCancel>
+                                <AlertDialogAction
+                                  onClick={() => handleDeleteProject(project.id)}
+                                  disabled={deletingProjectId === project.id}
+                                  className="bg-red-600 hover:bg-red-700"
+                                >
+                                  {deletingProjectId === project.id ? 'Deletando...' : 'Deletar'}
+                                </AlertDialogAction>
+                              </AlertDialogFooter>
+                            </AlertDialogContent>
+                          </AlertDialog>
+                        </div>
+                      )}
+                    </div>
                   </div>
                   {project.description && (
                     <CardDescription className="line-clamp-2">
@@ -289,14 +403,6 @@ export function Dashboard({ user, onProjectSelect }: DashboardProps) { // Removi
                         </span>
                       </div>
                     )}
-                    {project.documentModelId && (
-                      <div className="flex items-center justify-between">
-                        <span>Modelo:</span>
-                        <span>
-                          {allDocumentModels.find(m => m.id === project.documentModelId)?.name || 'N/A'}
-                        </span>
-                      </div>
-                    )}
                   </div>
                 </CardContent>
               </Card>
@@ -306,6 +412,15 @@ export function Dashboard({ user, onProjectSelect }: DashboardProps) { // Removi
       </main>
 
       <DatabaseConfigDialog open={configDialogOpen} onOpenChange={setConfigDialogOpen} />
+      
+      {settingsProjectId && (
+        <ProjectSettingsDialog
+          projectId={settingsProjectId}
+          open={settingsDialogOpen}
+          onOpenChange={setSettingsDialogOpen}
+          onUpdateSuccess={loadProjects}
+        />
+      )}
     </div>
   );
 }

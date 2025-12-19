@@ -1,11 +1,14 @@
 import React, { useState, useEffect } from 'react';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogFooter } from './ui/dialog';
+import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from './ui/alert-dialog';
 import { Button } from './ui/button';
 import { Input } from './ui/input';
 import { Label } from './ui/label';
 import { Textarea } from './ui/textarea';
 import { MultiSelect } from './ui/multi-select';
-import { Group, User, apiService } from '../../services/api';
+import { UserSearchSelect } from './UserSearchSelect'; // Importar novo componente
+import { ProjectSearchSelect } from './ProjectSearchSelect'; // Importar componente de busca de projetos
+import { Group, User, Project, apiService } from '../../services/api';
 import { toast } from 'sonner';
 
 interface GroupEditDialogProps {
@@ -15,6 +18,7 @@ interface GroupEditDialogProps {
   onUpdateSuccess: () => void; // Callback para recarregar grupos após sucesso
   allUsers: User[];
   allGroups: Group[];
+  allProjects?: Project[];
 }
 
 export function GroupEditDialog({
@@ -24,13 +28,16 @@ export function GroupEditDialog({
   onUpdateSuccess,
   allUsers,
   allGroups,
+  allProjects = [],
 }: GroupEditDialogProps) {
   const [editedName, setEditedName] = useState(group?.name || '');
   const [editedDescription, setEditedDescription] = useState(group?.description || '');
   const [editedMemberIds, setEditedMemberIds] = useState<string[]>(group?.memberIds || []);
   const [editedResponsibleId, setEditedResponsibleId] = useState<string | undefined>(group?.responsibleId);
   const [editedParentId, setEditedParentId] = useState<string | undefined>(group?.parentId);
+  const [editedProjectIds, setEditedProjectIds] = useState<string[]>(group?.projectIds || []);
   const [loading, setLoading] = useState(false);
+  const [isDeleting, setIsDeleting] = useState(false);
 
   useEffect(() => {
     if (group) {
@@ -39,6 +46,7 @@ export function GroupEditDialog({
       setEditedMemberIds(group.memberIds || []);
       setEditedResponsibleId(group.responsibleId);
       setEditedParentId(group.parentId);
+      setEditedProjectIds(group.projectIds || []);
     }
   }, [group]);
 
@@ -55,6 +63,7 @@ export function GroupEditDialog({
         memberIds: editedMemberIds,
         responsibleId: editedResponsibleId,
         parentId: editedParentId,
+        projectIds: editedProjectIds,
       };
       await apiService.updateGroup(updatedGroup);
       toast.success('Grupo atualizado com sucesso!');
@@ -64,6 +73,23 @@ export function GroupEditDialog({
       toast.error(`Erro ao atualizar grupo: ${error.message}`);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleDeleteGroup = async () => {
+    if (!group) return;
+    setIsDeleting(true);
+    try {
+      const result = await apiService.deleteGroup(group.id);
+      if (result) {
+        toast.success('Grupo deletado com sucesso!');
+        onUpdateSuccess();
+        onOpenChange(false);
+      }
+    } catch (error: any) {
+      toast.error(`Erro ao deletar grupo: ${error.message}`);
+    } finally {
+      setIsDeleting(false);
     }
   };
 
@@ -88,7 +114,7 @@ export function GroupEditDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-[425px]">
+      <DialogContent className="sm:max-w-[500px] max-h-[80vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle>Editar Grupo</DialogTitle>
           <DialogDescription>
@@ -116,21 +142,22 @@ export function GroupEditDialog({
           </div>
           <div className="space-y-2">
             <Label htmlFor="edit-group-members">Membros</Label>
-            <MultiSelect
-              options={allUsers.map(u => ({ label: u.name, value: u.id }))}
-              selected={editedMemberIds}
+            <UserSearchSelect
+              users={allUsers}
+              selectedIds={editedMemberIds}
               onSelectedChange={setEditedMemberIds}
-              placeholder="Selecione os membros do grupo..."
+              placeholder="Busque por nome ou email..."
+              maxResults={8}
             />
           </div>
           <div className="space-y-2">
             <Label htmlFor="edit-group-responsible">Responsável pelo Grupo (opcional)</Label>
-            <MultiSelect
-              options={allUsers.map(u => ({ label: u.name, value: u.id }))}
-              selected={editedResponsibleId ? [editedResponsibleId] : []}
+            <UserSearchSelect
+              users={allUsers}
+              selectedIds={editedResponsibleId ? [editedResponsibleId] : []}
               onSelectedChange={(ids) => setEditedResponsibleId(ids[0])}
-              placeholder="Selecione o responsável pelo grupo..."
-              maxSelected={1}
+              placeholder="Busque por nome ou email..."
+              maxResults={8}
             />
           </div>
           <div className="space-y-2">
@@ -143,6 +170,16 @@ export function GroupEditDialog({
               maxSelected={1}
             />
           </div>
+          <div className="space-y-2">
+            <Label htmlFor="edit-group-projects">Projetos Atribuídos (opcional)</Label>
+            <ProjectSearchSelect
+              projects={allProjects}
+              selectedIds={editedProjectIds}
+              onSelectedChange={setEditedProjectIds}
+              placeholder="Busque por nome do projeto..."
+              maxResults={8}
+            />
+          </div>
           <DialogFooter className="mt-4">
             <Button type="button" variant="outline" onClick={() => onOpenChange(false)} disabled={loading}>
               Cancelar
@@ -152,6 +189,29 @@ export function GroupEditDialog({
             </Button>
           </DialogFooter>
         </form>
+        <div className="mt-6 pt-4 border-t">
+          <AlertDialog>
+            <AlertDialogTrigger asChild>
+              <Button variant="destructive" className="w-full" disabled={isDeleting}>
+                Deletar Grupo
+              </Button>
+            </AlertDialogTrigger>
+            <AlertDialogContent>
+              <AlertDialogHeader>
+                <AlertDialogTitle>Você tem certeza?</AlertDialogTitle>
+                <AlertDialogDescription>
+                  Esta ação não pode ser desfeita. Isso excluirá permanentemente o grupo "{group?.name}".
+                </AlertDialogDescription>
+              </AlertDialogHeader>
+              <AlertDialogFooter>
+                <AlertDialogCancel>Cancelar</AlertDialogCancel>
+                <AlertDialogAction onClick={handleDeleteGroup} disabled={isDeleting}>
+                  {isDeleting ? 'Deletando...' : 'Deletar'}
+                </AlertDialogAction>
+              </AlertDialogFooter>
+            </AlertDialogContent>
+          </AlertDialog>
+        </div>
       </DialogContent>
     </Dialog>
   );
