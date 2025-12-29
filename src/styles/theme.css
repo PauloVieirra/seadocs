@@ -181,6 +181,161 @@
 }
 
 /* --- Quill: placeholder visual para "Campo (metadado)" no criador de modelo --- */
+/* --- Quill: Tópico (Topic) no criador de modelo --- */
+.ql-editor .sgid-topic {
+  padding: 16px;
+  margin: 12px 0;
+  border-radius: 12px;
+  background-color: rgba(135, 206, 250, 0.1); /* Light pastel blue, almost transparent */
+  border: 1px dashed rgba(135, 206, 250, 0.3);
+  position: relative;
+}
+
+.ql-editor .sgid-topic::before {
+  content: "TÓPICO";
+  position: absolute;
+  top: -10px;
+  left: 12px;
+  font-size: 9px;
+  font-weight: 700;
+  background: white;
+  padding: 0 6px;
+  border-radius: 4px;
+  border: 1px solid rgba(135, 206, 250, 0.5);
+  color: #4682B4;
+  pointer-events: none;
+}
+
+/* --- Floating Toolbar Bottom Refinado --- */
+.sgid-floating-toolbar {
+  position: fixed;
+  bottom: 24px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 1000;
+  background: white;
+  border-radius: 999px;
+  padding: 0 12px; /* Reduzido padding lateral do pai */
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.2);
+  border: 1px solid rgba(0, 0, 0, 0.1);
+  display: inline-flex !important; /* Muda para inline-flex para abraçar o conteúdo */
+  flex-direction: row !important;
+  align-items: center !important;
+  justify-content: flex-start !important;
+  gap: 0;
+  transition: all 0.2s ease;
+  width: max-content !important; /* Força largura do conteúdo */
+  max-width: 98vw;
+  white-space: nowrap;
+  overflow: visible;
+}
+
+.sgid-floating-toolbar .ql-toolbar.ql-snow {
+  border: none !important;
+  background: transparent !important;
+  padding: 8px 0 !important; /* Padding vertical no interno */
+  display: flex !important;
+  flex-direction: row !important;
+  align-items: center !important;
+  flex-wrap: nowrap !important;
+  width: auto !important; /* Impede width 100% */
+}
+
+/* Forçar ferramentas em linha */
+.sgid-floating-toolbar .ql-formats {
+  display: flex !important;
+  flex-direction: row !important;
+  align-items: center !important;
+  margin-right: 12px !important;
+  margin-bottom: 0 !important;
+  padding: 0 !important;
+  float: none !important; /* Quill usa float às vezes */
+}
+
+.sgid-floating-toolbar .ql-snow.ql-toolbar button,
+.sgid-floating-toolbar .ql-snow .ql-toolbar button {
+  display: flex !important;
+  flex-direction: row !important;
+  align-items: center !important;
+  justify-content: center !important;
+  float: none !important;
+  width: 28px !important;
+  height: 28px !important;
+  padding: 4px !important;
+  color: #444 !important; /* Cor de fallback se o SVG falhar */
+}
+
+.sgid-floating-toolbar .ql-snow.ql-toolbar button:hover {
+  background-color: rgba(0, 0, 0, 0.05) !important;
+  border-radius: 4px;
+}
+
+.sgid-floating-toolbar .ql-snow .ql-picker.ql-header {
+  width: 90px !important;
+}
+
+.sgid-floating-toolbar .ql-snow .ql-picker.ql-size {
+  width: 70px !important;
+}
+
+.sgid-floating-toolbar .ql-snow .ql-picker {
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  height: 28px !important;
+}
+
+.sgid-toolbar-custom-btn {
+  display: flex !important;
+  flex-direction: row !important;
+  align-items: center !important;
+  gap: 8px;
+  padding: 8px 16px;
+  border-radius: 999px;
+  font-size: 13px;
+  font-weight: 600;
+  color: #374151;
+  transition: all 0.2s;
+  background: transparent;
+  border: 1px solid transparent;
+  white-space: nowrap;
+  flex-shrink: 0 !important; /* Essencial para evitar sobreposição */
+}
+
+.sgid-toolbar-custom-btn:hover {
+  background: rgba(0, 0, 0, 0.05);
+}
+
+.sgid-toolbar-custom-btn svg {
+  width: 16px;
+  height: 16px;
+}
+
+.sgid-toolbar-custom-btn.primary {
+  background: #030213;
+  color: white;
+  padding: 8px 20px;
+  flex-shrink: 0 !important;
+}
+
+.sgid-toolbar-custom-btn.primary:hover {
+  background: #1a1a2e;
+}
+
+/* Forçar os dropdowns do Quill a abrirem para cima */
+.sgid-floating-toolbar .ql-snow .ql-picker-options {
+  top: auto !important;
+  bottom: 100% !important;
+  margin-bottom: 12px !important;
+  border-radius: 12px !important;
+  box-shadow: 0 -4px 12px rgba(0,0,0,0.1) !important;
+  padding: 8px !important;
+}
+
+.ql-editor {
+  padding: 40px 60px 120px !important; /* Padding lateral interno da folha e espaço para a barra */
+}
+
 .ql-editor .sgid-metadata-field {
   display: flex;
   flex-direction: column;

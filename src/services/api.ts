@@ -704,19 +704,7 @@ class APIService {
           .order('created_at', { ascending: false });
 
         if (!error && data) {
-          return data.map(p => ({
-            id: p.id,
-            name: p.name,
-            description: p.description,
-            creatorId: p.creator_id,
-            creatorName: 'Usuário do Sistema',
-            status: p.status as any,
-            createdAt: p.created_at,
-            updatedAt: p.updated_at,
-            responsibleIds: p.responsible_ids || [],
-            groupIds: p.group_ids || [],
-            documentIds: [],
-          }));
+          return data.map(p => this.mapDbProjectToProject(p));
         }
       }
 
@@ -828,20 +816,7 @@ class APIService {
         if (error) {
           console.error('[SGID] Erro ao gravar no Supabase:', error);
         } else if (data) {
-          const dbProject: Project = {
-            id: data.id,
-            name: data.name,
-            description: data.description,
-            creatorId: data.creator_id,
-            creatorName: user.name,
-            status: data.status as any,
-            createdAt: data.created_at,
-            updatedAt: data.updated_at,
-            responsibleIds: data.responsible_ids || [],
-            groupIds: data.group_ids || [],
-            documentIds: [],
-          };
-
+          const dbProject = this.mapDbProjectToProject(data);
           this.mockProjects.push(dbProject);
           this.persistToLocalStorage();
           return dbProject;
@@ -1082,19 +1057,7 @@ class APIService {
           .single();
 
         if (!error && p) {
-          const project: Project = {
-            id: p.id,
-            name: p.name,
-            description: p.description,
-            creatorId: p.creator_id,
-            creatorName: 'Usuário do Sistema',
-            status: p.status as any,
-            createdAt: p.created_at,
-            updatedAt: p.updated_at,
-            responsibleIds: p.responsible_ids || [],
-            groupIds: p.group_ids || [],
-            documentIds: [],
-          };
+          const project = this.mapDbProjectToProject(p);
 
           // 2. Verificar permissão de acesso
           if (user.role === 'admin') return project;
@@ -1638,6 +1601,22 @@ class APIService {
   }
 
   // Função auxiliar para mapear o documento do banco para a interface do frontend
+  private mapDbProjectToProject(p: any): Project {
+    return {
+      id: p.id,
+      name: p.name,
+      description: p.description,
+      creatorId: p.creator_id,
+      creatorName: 'Usuário do Sistema',
+      status: p.status as any,
+      createdAt: p.created_at,
+      updatedAt: p.updated_at,
+      responsibleIds: p.responsible_ids || [],
+      groupIds: p.group_ids || [],
+      documentIds: [],
+    };
+  }
+
   private mapDbDocumentToDocument(d: any): Document {
     let content: DocumentContent | undefined;
     
@@ -1653,13 +1632,21 @@ class APIService {
       }
     }
 
+    // Mapeamento de status do banco (PT) para o frontend (EN)
+    const statusMap: Record<string, Document['status']> = {
+      'RASCUNHO': 'draft',
+      'EM_APROVACAO': 'review',
+      'APROVADO': 'approved',
+      'RECUSADO': 'in-progress'
+    };
+
     return {
       id: d.id,
       name: d.nome,
       projectId: d.project_id,
       templateId: d.template_id || undefined,
       securityLevel: d.nivel_sigilo || 'public', 
-      status: d.status,
+      status: statusMap[d.status] || (d.status?.toLowerCase() as any) || 'draft',
       creatorId: d.created_by,
       creatorName: 'Usuário', // Nome será carregado via join ou separadamente
       currentVersionId: d.id, // Simplificação: usando o ID do doc como versão atual
@@ -2525,8 +2512,9 @@ class APIService {
       try {
         console.log(`[SUPABASE] Enviando arquivo "${file.name}" para o bucket "Documentos"...`);
         
-        // Caminho no bucket: id_projeto/nome_arquivo
-        const filePath = `${projectId}/${file.name}`;
+        // Caminho no bucket: id_projeto/nome_arquivo (sanitizado)
+        const sanitizedName = this.sanitizeFilename(file.name);
+        const filePath = `${projectId}/${sanitizedName}`;
         
         const { error } = await supabase.storage
           .from('Documentos')
@@ -2609,7 +2597,8 @@ class APIService {
       try {
         console.log(`[SUPABASE] Enviando MODELO "${file.name}" para o bucket "Modelos"...`);
         // O caminho deve ser projectId/fileName para criar a pasta com o ID do projeto no bucket Modelos
-        const filePath = `${projectId}/${file.name}`;
+        const sanitizedName = this.sanitizeFilename(file.name);
+        const filePath = `${projectId}/${sanitizedName}`;
         console.log(`[SUPABASE] Caminho do arquivo: ${filePath}`);
         
         const { error } = await supabase.storage
@@ -2713,9 +2702,10 @@ class APIService {
    * Obtém a URL pública de um arquivo no Supabase Storage
    */
   async getFilePublicUrl(projectId: string, fileName: string): Promise<string> {
+    const sanitizedName = this.sanitizeFilename(fileName);
     const { data } = supabase.storage
       .from('Documentos')
-      .getPublicUrl(`${projectId}/${fileName}`);
+      .getPublicUrl(`${projectId}/${sanitizedName}`);
     
     return data.publicUrl;
   }
@@ -2738,7 +2728,8 @@ class APIService {
     // 1. Se for um projeto real (UUID), tenta remover do Supabase Storage
     if (fileToDelete && this.isUUID(projectId)) {
       try {
-        const filePath = `${projectId}/${fileToDelete.name}`;
+        const sanitizedName = this.sanitizeFilename(fileToDelete.name);
+        const filePath = `${projectId}/${sanitizedName}`;
         const { error } = await supabase.storage
           .from('Documentos')
           .remove([filePath]);
@@ -2774,6 +2765,23 @@ class APIService {
       timestamp: new Date().toISOString()
     };
 
+    // Tenta gravar no Supabase
+    if (this.isUUID(userId)) {
+      supabase.from('audit_logs').insert({
+        user_id: userId,
+        acao: action,
+        entidade: projectId === 'system' ? 'SYSTEM' : 'PROJECT',
+        entidade_id: this.isUUID(projectId) ? projectId : null,
+        detalhes: {
+          userName,
+          details,
+          timestamp: log.timestamp
+        }
+      }).then(({ error }) => {
+        if (error) console.error('[SGID] Erro ao gravar log de auditoria no Supabase:', error);
+      });
+    }
+
     const logs = this.mockAuditLogs.get(projectId) || [];
     logs.unshift(log);
     this.mockAuditLogs.set(projectId, logs);
@@ -2781,6 +2789,29 @@ class APIService {
   }
 
   async getAuditLogs(projectId: string): Promise<AuditLog[]> {
+    if (this.isUUID(projectId)) {
+      try {
+        const { data, error } = await supabase
+          .from('audit_logs')
+          .select('*')
+          .eq('entidade_id', projectId)
+          .order('created_at', { ascending: false });
+
+        if (!error && data) {
+          return data.map(log => ({
+            id: log.id,
+            projectId: log.entidade_id || projectId,
+            action: log.acao,
+            userId: log.user_id,
+            userName: log.detalhes?.userName || 'Usuário',
+            details: log.detalhes?.details || '',
+            timestamp: log.created_at
+          }));
+        }
+      } catch (err) {
+        console.error('[SGID] Erro ao buscar logs de auditoria:', err);
+      }
+    }
     return this.mockAuditLogs.get(projectId) || [];
   }
 
@@ -2820,15 +2851,25 @@ class APIService {
     return uuidRegex.test(id);
   }
 
+  // Função auxiliar para sanitizar nomes de arquivos para o Storage do Supabase
+  private sanitizeFilename(name: string): string {
+    return name
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '') // Remove acentos
+      .replace(/[^\w\s.-]/g, '_')     // Substitui caracteres especiais por _
+      .replace(/\s+/g, '_');           // Substitui espaços por _
+  }
+
   // Função auxiliar para mapear o usuário do banco para a interface do frontend
   private mapDbUserToUser(u: any): User {
     // Mapeamento de tipos do banco para roles do frontend
     const roleMap: Record<string, User['role']> = {
       'ADM': 'admin',
-      'GER': 'manager',
-      'TEC': 'technical_responsible',
-      'OPE': 'operational',
-      'EXT': 'external'
+      'DIRETOR': 'admin',
+      'GERENTE': 'manager',
+      'TECNICO': 'technical_responsible',
+      'OPERACIONAL': 'operational',
+      'EXTERNO': 'external'
     };
 
     return {

@@ -8,36 +8,37 @@ import { DocumentModel } from '../../services/api';
 import { toast } from 'sonner';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from './ui/dialog';
 import { Textarea } from './ui/textarea';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select';
+import { Layout, Type, Save, X, PlusCircle, Database, ChevronUp, ChevronDown, Trash2 } from 'lucide-react';
 
-let metadataFieldBlotRegistered = false;
+let customBlotsRegistered = false;
 
-function ensureMetadataFieldBlotRegistered() {
-  if (metadataFieldBlotRegistered) return;
+function ensureCustomBlotsRegistered() {
+  if (customBlotsRegistered) return;
 
-  // Quill typings can be a bit loose around custom blots; keep this localized.
   const QuillAny: any = Quill;
   const BlockEmbed = QuillAny.import('blots/block/embed');
+  const Block = QuillAny.import('blots/block');
 
+  // Blot para Metadado (Campo Editável)
   class MetadataFieldBlot extends BlockEmbed {
     static blotName = 'metadataField';
     static tagName = 'div';
     static className = 'sgid-metadata-field';
 
-    static create(value: { id?: string; title?: string; help?: string }) {
+    static create(value: { id?: string; title?: string; help?: string; topicId?: string }) {
       const node: HTMLElement = super.create();
       const id = value?.id || `field-${Date.now()}`;
       const title = value?.title || 'Campo';
       const help = value?.help || '';
+      const topicId = value?.topicId || '';
 
       node.setAttribute('contenteditable', 'false');
       node.setAttribute('data-field-id', id);
       node.setAttribute('data-field-title', title);
       node.setAttribute('data-field-help', help);
-      node.setAttribute('draggable', 'true');
-      node.setAttribute('role', 'group');
-      node.setAttribute('aria-label', `Campo de metadado: ${title}`);
+      node.setAttribute('data-topic-id', topicId);
 
-      // Estrutura visual: "frame" + um pseudo textarea dentro (placeholder).
       const header = document.createElement('div');
       header.className = 'sgid-metadata-field__header';
 
@@ -45,6 +46,13 @@ function ensureMetadataFieldBlotRegistered() {
       titleEl.className = 'sgid-metadata-field__title';
       titleEl.innerText = title;
       header.appendChild(titleEl);
+
+      if (topicId) {
+        const topicTag = document.createElement('span');
+        topicTag.className = 'text-[9px] bg-blue-100 text-blue-700 px-1.5 py-0.5 rounded-full ml-2';
+        topicTag.innerText = `Tópico: ${topicId}`;
+        titleEl.appendChild(topicTag);
+      }
 
       if (help) {
         const helpEl = document.createElement('div');
@@ -70,13 +78,51 @@ function ensureMetadataFieldBlotRegistered() {
         id: node.getAttribute('data-field-id') || '',
         title: node.getAttribute('data-field-title') || '',
         help: node.getAttribute('data-field-help') || '',
+        topicId: node.getAttribute('data-topic-id') || '',
       };
     }
   }
 
+  // Blot para Tópico (Container Pastel)
+  class TopicBlot extends Block {
+    static blotName = 'topic';
+    static tagName = 'div';
+    static className = 'sgid-topic';
+
+    static create(value: any) {
+      const node = super.create();
+      if (value && typeof value === 'string') {
+        node.setAttribute('data-topic-id', value);
+      } else {
+        node.setAttribute('data-topic-id', `topic-${Date.now()}`);
+      }
+      return node;
+    }
+
+    static formats(node: HTMLElement) {
+      return node.getAttribute('data-topic-id');
+    }
+
+    format(name: string, value: any) {
+      if (name === 'topic') {
+        if (value) {
+          this.domNode.setAttribute('data-topic-id', value);
+        } else {
+          this.domNode.removeAttribute('data-topic-id');
+        }
+      } else {
+        super.format(name, value);
+      }
+    }
+  }
+
   QuillAny.register(MetadataFieldBlot);
-  metadataFieldBlotRegistered = true;
+  QuillAny.register(TopicBlot);
+  customBlotsRegistered = true;
 }
+
+// Registro imediato fora do componente
+ensureCustomBlotsRegistered();
 
 function slugify(input: string) {
   return (input || '')
@@ -105,10 +151,97 @@ export function RichTextDocumentModelEditor({
   const [type, setType] = useState(initialData?.type || '');
   const [editorData, setEditorData] = useState(initialData?.templateContent || '');
 
+  // Metadado State
   const [fieldDialogOpen, setFieldDialogOpen] = useState(false);
   const [fieldTitle, setFieldTitle] = useState('');
   const [fieldId, setFieldId] = useState('');
   const [fieldHelp, setFieldHelp] = useState('');
+  const [associatedTopic, setAssociatedTopic] = useState<string>('none');
+
+  // Tópico State
+  const [existingTopics, setExistingTopics] = useState<{id: string, name: string}[]>([]);
+
+  // Extrair a estrutura (tópicos e metadados) na ordem em que aparecem
+  const [structure, setStructure] = useState<{type: 'topic' | 'field', id: string, name: string}[]>([]);
+
+  useEffect(() => {
+    const parser = new DOMParser();
+    const doc = parser.parseFromString(editorData, 'text/html');
+    const nodes = doc.querySelectorAll('.sgid-topic, .sgid-metadata-field');
+    const items = Array.from(nodes).map((node: any) => {
+      const isTopic = node.classList.contains('sgid-topic');
+      return {
+        type: isTopic ? 'topic' : 'field' as 'topic' | 'field',
+        id: isTopic ? node.getAttribute('data-topic-id') : node.getAttribute('data-field-id'),
+        name: isTopic ? node.innerText.trim().substring(0, 50) || 'Tópico sem nome' : node.getAttribute('data-field-title') || 'Campo sem título'
+      };
+    });
+    setStructure(items);
+    setExistingTopics(items.filter(i => i.type === 'topic').map(i => ({ id: i.id, name: i.name })));
+  }, [editorData]);
+
+  const removeItem = (id: string, type: 'topic' | 'field') => {
+    const editor = quillRef.current?.getEditor();
+    if (!editor) return;
+
+    const selector = type === 'topic' ? `[data-topic-id="${id}"]` : `[data-field-id="${id}"]`;
+    const element = editor.root.querySelector(selector);
+    if (element) {
+      const blot = Quill.find(element) as any;
+      if (blot && typeof blot.getIndex === 'function' || blot) {
+        const index = editor.getIndex(blot);
+        const length = blot.length();
+        editor.deleteText(index, length, 'user');
+        toast.success('Item removido.');
+      }
+    }
+  };
+
+  const moveItem = (index: number, direction: 'up' | 'down') => {
+    const editor = quillRef.current?.getEditor();
+    if (!editor) return;
+
+    const targetIndex = direction === 'up' ? index - 1 : index + 1;
+    if (targetIndex < 0 || targetIndex >= structure.length) return;
+
+    const itemA = structure[index];
+    const itemB = structure[targetIndex];
+
+    const selA = itemA.type === 'topic' ? `[data-topic-id="${itemA.id}"]` : `[data-field-id="${itemA.id}"]`;
+    const selB = itemB.type === 'topic' ? `[data-topic-id="${itemB.id}"]` : `[data-field-id="${itemB.id}"]`;
+
+    const elA = editor.root.querySelector(selA);
+    const elB = editor.root.querySelector(selB);
+
+    if (elA && elB) {
+      const blotA = Quill.find(elA) as any;
+      const blotB = Quill.find(elB) as any;
+      
+      if (blotA && blotB) {
+        const indexA = editor.getIndex(blotA);
+        const lenA = blotA.length();
+        
+        const indexB = editor.getIndex(blotB);
+        const lenB = blotB.length();
+
+        const deltaA = editor.getContents(indexA, lenA);
+
+        // Remover A primeiro
+        editor.deleteText(indexA, lenA, 'user');
+
+        let insertAt = indexB;
+        if (direction === 'down') {
+          // Se A estava antes de B, B recuou lenA posições após a deleção
+          insertAt = indexB - lenA + lenB;
+        }
+
+        // Inserir A na nova posição usando updateContents com retain
+        editor.updateContents({ ops: [{ retain: insertAt }, ...deltaA.ops] } as any, 'user');
+        
+        toast.success('Posição alterada.');
+      }
+    }
+  };
 
   useEffect(() => {
     if (initialData) {
@@ -119,7 +252,7 @@ export function RichTextDocumentModelEditor({
   }, [initialData]);
 
   useEffect(() => {
-    ensureMetadataFieldBlotRegistered();
+    ensureCustomBlotsRegistered();
   }, []);
 
   const toolbarId = useMemo(() => `model-toolbar-${Math.random().toString(16).slice(2)}`, []);
@@ -137,7 +270,40 @@ export function RichTextDocumentModelEditor({
     setFieldTitle('');
     setFieldId('');
     setFieldHelp('');
+    setAssociatedTopic('none');
     setFieldDialogOpen(true);
+  };
+
+  const insertTopic = () => {
+    const editor = quillRef.current?.getEditor();
+    if (!editor) {
+      toast.error('Editor não carregado completamente.');
+      return;
+    }
+
+    const range = editor.getSelection(true);
+    const topicId = `topic-${Date.now()}`;
+    
+    // 1. Garantir que estamos em uma nova linha
+    let insertAt = range ? range.index : editor.getLength();
+    if (insertAt > 0) {
+      const prevChar = editor.getText(insertAt - 1, 1);
+      if (prevChar !== '\n') {
+        editor.insertText(insertAt, '\n', 'user');
+        insertAt += 1;
+      }
+    }
+
+    // 2. Inserir o texto do tópico
+    editor.insertText(insertAt, 'Novo Tópico', 'user');
+    
+    // 3. Aplicar o formato de tópico na linha inteira
+    editor.formatLine(insertAt, 1, 'topic', topicId);
+    
+    // 4. Mover o cursor para o final do texto inserido e selecionar para facilitar a edição
+    editor.setSelection(insertAt, 11, 'user');
+    
+    toast.success('Tópico adicionado.');
   };
 
   const generateUniqueId = (baseId: string) => {
@@ -170,8 +336,6 @@ export function RichTextDocumentModelEditor({
     const range = editor.getSelection(true);
     let insertAt = range ? range.index : editor.getLength();
 
-    // Garante que o campo entra como um "bloco" bem separado, permitindo inserir um novo título em seguida.
-    // Se não estivermos no início de linha, insere uma quebra antes.
     if (insertAt > 0) {
       const prevChar = editor.getText(insertAt - 1, 1);
       if (prevChar && prevChar !== '\n') {
@@ -183,53 +347,160 @@ export function RichTextDocumentModelEditor({
     editor.insertEmbed(insertAt, 'metadataField', { 
       id: uniqueId, 
       title: fieldTitle.trim(),
-      help: fieldHelp.trim()
+      help: fieldHelp.trim(),
+      topicId: associatedTopic !== 'none' ? associatedTopic : ''
     }, 'user');
-    // Quebra depois do bloco para o próximo título/linha
+    
     editor.insertText(insertAt + 1, '\n', 'user');
     editor.setSelection(insertAt + 2, 0, 'user');
 
     setFieldDialogOpen(false);
-    toast.success(`Campo "${fieldTitle.trim()}" adicionado ao modelo.`);
+    toast.success(`Metadado "${fieldTitle.trim()}" adicionado.`);
   };
 
   return (
-    <form onSubmit={handleSubmit} className="space-y-6">
-      <div className="space-y-2">
-        <Label htmlFor="model-name">Nome do Modelo *</Label>
-        <Input
-          id="model-name"
-          placeholder="Ex: Contrato de Serviço"
-          value={name}
-          onChange={(e) => setName(e.target.value)}
-          required
-          disabled={isLoading}
-        />
+    <div className="sgid-model-editor-container h-full flex flex-col bg-white">
+      {/* Header Info */}
+      <div className="p-6 border-b bg-white shrink-0">
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-6 max-w-[1440px] mx-auto">
+          <div className="space-y-2">
+            <Label htmlFor="model-name" className="text-sm font-semibold text-gray-700">Nome do Modelo *</Label>
+            <div className="relative">
+              <Type className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+              <Input
+                id="model-name"
+                className="pl-10 h-11 border-gray-200 focus:ring-blue-500 rounded-lg"
+                placeholder="Ex: Contrato de Serviço"
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                required
+                disabled={isLoading}
+              />
+            </div>
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="model-type" className="text-sm font-semibold text-gray-700">Tipo de Documento *</Label>
+            <div className="relative">
+              <Layout className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+              <Input
+                id="model-type"
+                className="pl-10 h-11 border-gray-200 focus:ring-blue-500 rounded-lg"
+                placeholder="Ex: Jurídico, Técnico, Financeiro"
+                value={type}
+                onChange={(e) => setType(e.target.value)}
+                required
+                disabled={isLoading}
+              />
+            </div>
+          </div>
+        </div>
       </div>
-      <div className="space-y-2">
-        <Label htmlFor="model-type">Tipo de Documento *</Label>
-        <Input
-          id="model-type"
-          placeholder="Ex: Jurídico, Técnico, Financeiro"
-          value={type}
-          onChange={(e) => setType(e.target.value)}
-          required
-          disabled={isLoading}
-        />
-      </div>
-      <div className="space-y-2">
-        <Label>Conteúdo do Modelo *</Label>
-        {/* Toolbar customizada (inclui o botão de Campo/metadado) */}
-        <div id={toolbarId} className="border border-input rounded-t-md bg-white">
-          <div className="ql-toolbar ql-snow border-0">
+
+      {/* Editor Area */}
+      <div className="flex-1 overflow-hidden relative bg-gray-100 flex flex-row">
+        {/* Sidebar de Estrutura */}
+        <div className="w-80 border-r bg-white flex flex-col shrink-0">
+          <div className="p-4 border-b font-bold flex items-center gap-2 bg-gray-50/50 text-gray-800">
+            <Layout className="w-4 h-4 text-blue-600" />
+            Estrutura do Modelo
+          </div>
+          <div className="flex-1 overflow-y-auto p-3 space-y-3">
+            {structure.map((item, index) => (
+              <div key={item.id} className="group p-3 rounded-xl border border-gray-200 bg-white hover:border-blue-300 hover:shadow-sm transition-all">
+                <div className="flex items-start justify-between gap-2">
+                  <div className="flex flex-col min-w-0">
+                    <div className="flex items-center gap-2 mb-1">
+                      <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded uppercase tracking-wider ${
+                        item.type === 'topic' ? 'bg-blue-100 text-blue-700' : 'bg-indigo-100 text-indigo-700'
+                      }`}>
+                        {item.type === 'topic' ? 'Tópico' : 'Metadado'}
+                      </span>
+                    </div>
+                    <span className="text-sm font-semibold text-gray-700 truncate" title={item.name}>
+                      {item.name}
+                    </span>
+                  </div>
+                  <div className="flex flex-col gap-1 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
+                    <div className="flex items-center gap-1">
+                      <Button 
+                        variant="ghost" 
+                        size="icon" 
+                        className="h-7 w-7 hover:bg-blue-50 hover:text-blue-600" 
+                        onClick={() => moveItem(index, 'up')} 
+                        disabled={index === 0}
+                        title="Mover para cima"
+                      >
+                        <ChevronUp className="w-4 h-4" />
+                      </Button>
+                      <Button 
+                        variant="ghost" 
+                        size="icon" 
+                        className="h-7 w-7 hover:bg-blue-50 hover:text-blue-600" 
+                        onClick={() => moveItem(index, 'down')} 
+                        disabled={index === structure.length - 1}
+                        title="Mover para baixo"
+                      >
+                        <ChevronDown className="w-4 h-4" />
+                      </Button>
+                    </div>
+                    <Button 
+                      variant="ghost" 
+                      size="icon" 
+                      className="h-7 w-7 text-red-500 hover:text-red-600 hover:bg-red-50" 
+                      onClick={() => removeItem(item.id, item.type)}
+                      title="Remover item"
+                    >
+                      <Trash2 className="w-4 h-4" />
+                    </Button>
+                  </div>
+                </div>
+              </div>
+            ))}
+            {structure.length === 0 && (
+              <div className="flex flex-col items-center justify-center py-12 px-4 text-center opacity-60">
+                <Layout className="w-8 h-8 text-gray-300 mb-2" />
+                <p className="text-sm text-gray-500">Nenhum elemento inserido</p>
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* Editor Area */}
+        <div className="flex-1 overflow-y-auto p-4 md:p-8 flex flex-col items-center">
+          <div className="w-full max-w-[950px] bg-white shadow-2xl rounded-sm border border-gray-200 min-h-[1200px]">
+            <ReactQuill
+              ref={(instance) => {
+                quillRef.current = instance;
+              }}
+              theme="snow"
+              value={editorData}
+              onChange={setEditorData}
+              readOnly={isLoading}
+              modules={{
+                toolbar: {
+                  container: `#${toolbarId}`,
+                },
+              }}
+              formats={[
+                'header', 'bold', 'italic', 'underline', 'strike', 'blockquote',
+                'list', 'bullet', 'indent', 'link', 'image', 'video',
+                'color', 'background', 'align', 'metadataField', 'topic'
+              ]}
+              placeholder="Comece a criar seu modelo de documento..."
+              className="h-full border-none"
+            />
+          </div>
+        </div>
+
+        {/* Floating Toolbar Bottom */}
+        <div className="sgid-floating-toolbar shadow-2xl">
+          {/* Ferramentas Padrão (Interno 1) */}
+          <div id={toolbarId} className="ql-toolbar ql-snow flex flex-row items-center flex-nowrap border-none bg-transparent">
             <span className="ql-formats">
               <select className="ql-header" defaultValue="">
                 <option value="1" />
                 <option value="2" />
                 <option value="3" />
-                <option value="4" />
-                <option value="5" />
-                <option value="6" />
                 <option value="" />
               </select>
             </span>
@@ -238,142 +509,127 @@ export function RichTextDocumentModelEditor({
               <button type="button" className="ql-italic" />
               <button type="button" className="ql-underline" />
               <button type="button" className="ql-strike" />
-              <button type="button" className="ql-blockquote" />
-            </span>
-            <span className="ql-formats">
-              <button type="button" className="ql-list" value="ordered" />
-              <button type="button" className="ql-list" value="bullet" />
-              <button type="button" className="ql-indent" value="-1" />
-              <button type="button" className="ql-indent" value="+1" />
-            </span>
-            <span className="ql-formats">
-              <button type="button" className="ql-link" />
-              <button type="button" className="ql-image" />
-              <button type="button" className="ql-video" />
             </span>
             <span className="ql-formats">
               <select className="ql-color" />
               <select className="ql-background" />
             </span>
             <span className="ql-formats">
+              <button type="button" className="ql-list" value="ordered" />
+              <button type="button" className="ql-list" value="bullet" />
+              <button type="button" className="ql-indent" value="-1" />
+              <button type="button" className="ql-indent" value="+1" />
               <select className="ql-align" />
             </span>
             <span className="ql-formats">
+              <button type="button" className="ql-link" />
+              <button type="button" className="ql-blockquote" />
               <button type="button" className="ql-clean" />
             </span>
+          </div>
 
-            <span className="ql-formats">
-              <button
-                type="button"
-                className="sgid-toolbar-btn"
-                onClick={openFieldDialog}
-                disabled={isLoading}
-                title="Inserir Campo (metadado) editável"
-              >
-                Campo
-              </button>
-            </span>
+          {/* Botões Customizados (Interno 2) */}
+          <div className="flex flex-row items-center gap-4 ml-4 border-l pl-4 border-gray-200">
+            <button
+              type="button"
+              className="sgid-toolbar-custom-btn hover:bg-blue-50 hover:text-blue-600"
+              onClick={insertTopic}
+              disabled={isLoading}
+              title="Adicionar Tópico (Seção Pastel)"
+            >
+              <PlusCircle className="w-4 h-4" />
+              Tópicos
+            </button>
+            <button
+              type="button"
+              className="sgid-toolbar-custom-btn hover:bg-indigo-50 hover:text-indigo-600"
+              onClick={openFieldDialog}
+              disabled={isLoading}
+              title="Inserir Metadado Editável"
+            >
+              <Database className="w-4 h-4" />
+              Metadado
+            </button>
+            
+            <div className="w-px h-6 bg-gray-200 mx-2"></div>
+
+            <button
+              type="button"
+              className="sgid-toolbar-custom-btn primary"
+              onClick={handleSubmit}
+              disabled={isLoading}
+            >
+              {isLoading ? <span className="animate-spin mr-2">...</span> : <Save className="w-4 h-4 mr-1.5" />}
+              Salvar Modelo
+            </button>
           </div>
         </div>
-        <ReactQuill
-          ref={(instance) => {
-            quillRef.current = instance;
-          }}
-          theme="snow"
-          value={editorData}
-          onChange={setEditorData}
-          readOnly={isLoading}
-          modules={{
-            toolbar: {
-              container: `#${toolbarId} .ql-toolbar`,
-            },
-          }}
-          formats={[
-            'header',
-            'bold', 'italic', 'underline', 'strike', 'blockquote',
-            'list', 'bullet', 'indent',
-            'link', 'image', 'video',
-            'color', 'background', 'align',
-            'metadataField',
-          ]}
-          placeholder="Comece a criar seu modelo de documento..."
-        />
-        <p className="text-xs text-gray-600">
-          Dica: use os títulos (H1/H2/...) e clique em <strong>Campo</strong> para inserir um espaço editável logo abaixo.
-        </p>
       </div>
 
-      <div className="flex justify-end gap-2">
-        <Button type="button" variant="outline" onClick={onCancel} disabled={isLoading}>
-          Cancelar
-        </Button>
-        <Button type="submit" disabled={isLoading}>
-          {isLoading ? 'Salvando...' : 'Salvar Modelo'}
-        </Button>
-      </div>
-
+      {/* Metadado Dialog */}
       <Dialog open={fieldDialogOpen} onOpenChange={setFieldDialogOpen}>
-        <DialogContent className="max-w-lg">
+        <DialogContent className="max-w-lg rounded-2xl">
           <DialogHeader>
-            <DialogTitle>Inserir Campo (metadado)</DialogTitle>
+            <DialogTitle className="flex items-center gap-2">
+              <Database className="w-5 h-5 text-indigo-600" />
+              Criar Metadado
+            </DialogTitle>
             <DialogDescription>
-              Este campo vira uma seção editável quando o modelo for usado em um projeto.
+              Campos de metadados tornam-se seções editáveis no documento final.
             </DialogDescription>
           </DialogHeader>
 
-          <div className="space-y-4">
+          <div className="space-y-4 py-4">
             <div className="space-y-2">
-              <Label htmlFor="field-title">Título do campo *</Label>
+              <Label htmlFor="field-title" className="text-sm font-medium">Título do metadado *</Label>
               <Input
                 id="field-title"
                 value={fieldTitle}
                 onChange={(e) => setFieldTitle(e.target.value)}
-                placeholder='Ex: "Introdução"'
-                disabled={isLoading}
+                placeholder='Ex: "Introdução do Projeto"'
+                className="rounded-lg"
               />
             </div>
 
             <div className="space-y-2">
-              <Label htmlFor="field-id">ID do campo (opcional)</Label>
-              <Input
-                id="field-id"
-                value={fieldId}
-                onChange={(e) => setFieldId(e.target.value)}
-                placeholder='Ex: "intro" (se vazio, será gerado a partir do título)'
-                disabled={isLoading}
-              />
-              <p className="text-xs text-gray-600">
-                O ID é usado para a IA e para identificar a seção (ex.: <code>intro</code>, <code>overview</code>).
-              </p>
+              <Label htmlFor="associated-topic" className="text-sm font-medium">Associar a um Tópico (opcional)</Label>
+              <Select value={associatedTopic} onValueChange={setAssociatedTopic}>
+                <SelectTrigger className="rounded-lg">
+                  <SelectValue placeholder="Selecione um tópico..." />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="none">Nenhum vínculo</SelectItem>
+                  {existingTopics.map(topic => (
+                    <SelectItem key={topic.id} value={topic.id}>{topic.name}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             </div>
 
             <div className="space-y-2">
-              <Label htmlFor="field-help">Instruções/observações (opcional)</Label>
+              <Label htmlFor="field-help" className="text-sm font-medium">Instruções para o preenchimento</Label>
               <Textarea
                 id="field-help"
                 value={fieldHelp}
                 onChange={(e) => setFieldHelp(e.target.value)}
-                placeholder="Opcional: descreva o que o usuário/IA deve escrever aqui..."
-                disabled={isLoading}
-                rows={3}
+                placeholder="Ex: Descreva aqui os objetivos principais..."
+                className="rounded-lg min-h-[80px]"
               />
-              <p className="text-xs text-gray-600">
-                (Por enquanto isso não é usado no documento final; fica pronto para evoluirmos depois.)
-              </p>
             </div>
-
-            <div className="flex justify-end gap-2">
-              <Button type="button" variant="outline" onClick={() => setFieldDialogOpen(false)} disabled={isLoading}>
+            
+            <div className="pt-4 flex justify-end gap-3">
+              <Button variant="outline" onClick={() => setFieldDialogOpen(false)} className="rounded-lg px-6">
                 Cancelar
               </Button>
-              <Button type="button" onClick={insertMetadataField} disabled={isLoading}>
-                Inserir campo
+              <Button onClick={insertMetadataField} className="rounded-lg px-6 bg-indigo-600 hover:bg-indigo-700">
+                Inserir Metadado
               </Button>
             </div>
           </div>
         </DialogContent>
       </Dialog>
-    </form>
+    </div>
   );
 }
+
 
