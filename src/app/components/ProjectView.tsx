@@ -3,9 +3,10 @@ import { Button } from './ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from './ui/card';
 import { Badge } from './ui/badge';
 import { Input } from './ui/input';
-import { ArrowLeft, Plus, FileText, Trash2, Search } from 'lucide-react';
+import { ArrowLeft, Plus, FileText, Trash2, Search, Settings } from 'lucide-react';
 import { apiService, type Project, type Document, type DocumentModel, type Group } from '../../services/api';
 import { CreateDocumentDialog } from './CreateDocumentDialog';
+import { ProjectSettingsDialog } from './ProjectSettingsDialog';
 import { toast } from 'sonner';
 
 interface ProjectViewProps {
@@ -21,6 +22,7 @@ export function ProjectView({ projectId, onBack, onSelectDocument }: ProjectView
   const [searchQuery, setSearchQuery] = useState('');
   const [loading, setLoading] = useState(true);
   const [createDialogOpen, setCreateDialogOpen] = useState(false);
+  const [settingsDialogOpen, setSettingsDialogOpen] = useState(false);
   const [allDocumentModels, setAllDocumentModels] = useState<DocumentModel[]>([]);
   const [allGroups, setAllGroups] = useState<Group[]>([]);
   const [deleting, setDeleting] = useState<string | null>(null);
@@ -173,10 +175,16 @@ export function ProjectView({ projectId, onBack, onSelectDocument }: ProjectView
             </div>
             {(project.creatorId === apiService.getCurrentUser()?.id || 
               ['admin', 'manager', 'technical_responsible'].includes(apiService.getCurrentUser()?.role || '')) && (
-              <Button onClick={() => setCreateDialogOpen(true)}>
-                <Plus className="w-4 h-4 mr-2" />
-                Novo Documento
-              </Button>
+              <div className="flex items-center gap-2">
+                <Button variant="outline" onClick={() => setSettingsDialogOpen(true)}>
+                  <Settings className="w-4 h-4 mr-2" />
+                  Configurações
+                </Button>
+                <Button onClick={() => setCreateDialogOpen(true)}>
+                  <Plus className="w-4 h-4 mr-2" />
+                  Novo Documento
+                </Button>
+              </div>
             )}
           </div>
         </div>
@@ -295,6 +303,14 @@ export function ProjectView({ projectId, onBack, onSelectDocument }: ProjectView
         onCreateDocument={handleCreateDocument}
         documentModels={allDocumentModels}
         groups={allGroups}
+      />
+
+      {/* Project Settings Dialog */}
+      <ProjectSettingsDialog
+        projectId={projectId}
+        open={settingsDialogOpen}
+        onOpenChange={setSettingsDialogOpen}
+        onUpdateSuccess={loadData}
       />
     </div>
   );

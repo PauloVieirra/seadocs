@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { Button } from './ui/button';
 import { Input } from './ui/input';
 import { Send, Bot, User, Loader2, Minimize2 } from 'lucide-react';
@@ -28,13 +28,58 @@ export function AIChat({ projectId, documentId }: AIChatProps) {
   ]);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
+  const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [analysisStatus, setAnalysisStatus] = useState('');
   const [minimized, setMinimized] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const hasAnalyzedRef = useRef(false);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
+
+  // Iniciar análise ao abrir o chat se for um projeto novo ou recém aberto
+  useEffect(() => {
+    if (hasAnalyzedRef.current) return;
+    
+    const startAnalysis = async () => {
+      try {
+        hasAnalyzedRef.current = true;
+        setIsAnalyzing(true);
+        
+        // 1. Tenta carregar o DNA de estilo já existente antes de analisar tudo
+        setAnalysisStatus('Verificando modelos de escrita...');
+        
+        // Pequena pausa para o componente estabilizar
+        await new Promise(resolve => setTimeout(resolve, 500));
+
+        // Analisa os modelos de estilo (Gera ou recupera o PADRAO_ESTILO_...txt)
+        await apiService.analyzeProjectModels(projectId);
+
+        // analyzeProjectMaterials já possui a lógica de recuperar do RAG se existir
+        setAnalysisStatus('Buscando inteligência técnica...');
+        const summary = await apiService.analyzeProjectMaterials(projectId, (status) => {
+          setAnalysisStatus(status);
+        });
+        
+        const analysisMessage: Message = {
+          id: 'analysis-' + Date.now(),
+          role: 'assistant',
+          content: summary,
+          timestamp: new Date()
+        };
+        
+        setMessages(prev => [...prev, analysisMessage]);
+      } catch (error) {
+        console.error('Erro na análise inicial:', error);
+      } finally {
+        setIsAnalyzing(false);
+      }
+    };
+
+    startAnalysis();
+  }, [projectId]);
 
   const handleSend = async () => {
     if (!input.trim() || loading) return;
@@ -186,13 +231,18 @@ export function AIChat({ projectId, documentId }: AIChatProps) {
             </div>
           ))}
           
-          {loading && (
+          {(loading || isAnalyzing) && (
             <div className="flex gap-3">
               <div className="w-8 h-8 rounded-full bg-gray-200 flex items-center justify-center">
                 <Bot className="w-4 h-4 text-gray-700" />
               </div>
-              <div className="bg-gray-100 p-3 rounded-lg">
+              <div className="bg-gray-100 p-3 rounded-lg flex items-center gap-2">
                 <Loader2 className="w-4 h-4 animate-spin text-gray-600" />
+                {isAnalyzing && (
+                  <span className="text-xs text-gray-600 animate-pulse">
+                    {analysisStatus}
+                  </span>
+                )}
               </div>
             </div>
           )}

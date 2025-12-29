@@ -227,7 +227,7 @@ export function DatabaseConfigDialog({ open, onOpenChange }: DatabaseConfigDialo
                 <Label htmlFor="ai-provider">Provedor de IA</Label>
                 <Select 
                   value={aiConfig.provider} 
-                  onValueChange={(value: 'openai' | 'anthropic' | 'manus' | 'custom') => 
+                  onValueChange={(value: 'openai' | 'anthropic' | 'manus' | 'ollama' | 'custom') => 
                     setAiConfig({ ...aiConfig, provider: value })
                   }
                 >
@@ -238,10 +238,34 @@ export function DatabaseConfigDialog({ open, onOpenChange }: DatabaseConfigDialo
                     <SelectItem value="openai">OpenAI (ChatGPT)</SelectItem>
                     <SelectItem value="anthropic">Anthropic (Claude)</SelectItem>
                     <SelectItem value="manus">Manus AI</SelectItem>
+                    <SelectItem value="ollama">Ollama (Local)</SelectItem>
                     <SelectItem value="custom">Outro / Custom</SelectItem>
                   </SelectContent>
                 </Select>
               </div>
+
+              {aiConfig.provider === 'ollama' && (
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="space-y-2">
+                    <Label htmlFor="ollama-endpoint">URL do Ollama</Label>
+                    <Input
+                      id="ollama-endpoint"
+                      placeholder="http://localhost:11434"
+                      value={aiConfig.endpoint || ''}
+                      onChange={(e) => setAiConfig({ ...aiConfig, endpoint: e.target.value })}
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="ollama-model">Modelo (ex: phi3)</Label>
+                    <Input
+                      id="ollama-model"
+                      placeholder="phi3"
+                      value={aiConfig.modelName || ''}
+                      onChange={(e) => setAiConfig({ ...aiConfig, modelName: e.target.value })}
+                    />
+                  </div>
+                </div>
+              )}
 
               {aiConfig.provider === 'manus' && (
                 <div className="space-y-2">
@@ -268,11 +292,12 @@ export function DatabaseConfigDialog({ open, onOpenChange }: DatabaseConfigDialo
                     aiConfig.provider === 'openai' ? 'sk-...' : 
                     aiConfig.provider === 'anthropic' ? 'sk-ant-...' :
                     aiConfig.provider === 'manus' ? 'Sua chave Manus API' : 
+                    aiConfig.provider === 'ollama' ? 'Não necessária (opcional)' :
                     'Sua chave de API'
                   }
                   value={aiConfig.apiKey}
                   onChange={(e) => setAiConfig({ ...aiConfig, apiKey: e.target.value })}
-                  required
+                  required={aiConfig.provider !== 'ollama'}
                 />
                 <p className="text-xs text-gray-600">
                   {aiConfig.provider === 'openai' && 
@@ -294,6 +319,9 @@ export function DatabaseConfigDialog({ open, onOpenChange }: DatabaseConfigDialo
                   <li>Responder perguntas via chat</li>
                   <li>Editar e melhorar textos existentes</li>
                   <li>Sugerir requisitos baseados nos documentos</li>
+                  {aiConfig.provider === 'ollama' && (
+                    <li><strong>Execução local privada (não envia dados para a nuvem)</strong></li>
+                  )}
                   {aiConfig.provider === 'manus' && (
                     <>
                       <li><strong>Compreender contexto completo dos documentos</strong></li>

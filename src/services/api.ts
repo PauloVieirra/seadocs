@@ -2,6 +2,7 @@
 
 import { manusAPIService, type ManusConfig } from './manus-api';
 import { supabase } from './supabase';
+export { supabase };
 
 export interface DatabaseConfig {
   host: string;
@@ -14,7 +15,9 @@ export interface DatabaseConfig {
 
 export interface AIConfig {
   apiKey: string;
-  provider?: 'openai' | 'anthropic' | 'manus' | 'custom';
+  provider?: 'openai' | 'anthropic' | 'manus' | 'ollama' | 'custom';
+  endpoint?: string; // Para Ollama ou Custom
+  modelName?: string; // Para Ollama (ex: phi3)
 }
 
 export { type ManusConfig } from './manus-api';
@@ -64,6 +67,7 @@ export interface Document {
   creatorName: string;
   currentVersionId: string; // ID da versão atual
   sharedWith?: { userId: string; permissions: ('view' | 'edit' | 'comment')[] }[]; // Adicionado para compartilhamento
+  status?: 'draft' | 'in-progress' | 'review' | 'approved'; // Adicionado status
   createdAt: string;
   updatedAt: string;
   // Propriedades adicionadas para compatibilidade com a interface esperada pelo frontend
@@ -91,6 +95,7 @@ export interface UploadedFile {
   type: 'pdf' | 'doc' | 'docx' | 'txt' | 'audio' | 'other'; // Adicionado txt e audio
   size: number;
   status: 'processing' | 'processed' | 'error';
+  isDataSource?: boolean; // Adicionado: indica se deve ser usado pela IA como fonte de dados
   uploadedBy: string;
   uploadedAt: string;
 }
@@ -1134,10 +1139,234 @@ class APIService {
     return mockProject;
   }
 
+  // Analisar materiais de apoio e gerar resumo de entendimento
+  async analyzeProjectMaterials(projectId: string, onStatusChange?: (status: string) => void): Promise<string> {
+    const user = this.getCurrentUser();
+    if (!user) throw new Error('Usuário não autenticado');
+
+    console.log(`[IA] Iniciando análise completa do material de apoio para o projeto "${projectId}"`);
+    
+    // 1. Tenta buscar um resumo já existente no Supabase para evitar re-análise
+    if (this.isUUID(projectId)) {
+      try {
+        if (onStatusChange) onStatusChange('Verificando base de conhecimento...');
+        
+        // Verifica arquivos existentes para evitar erro 400
+        const { data: existingFiles } = await supabase.storage
+          .from('Documentos')
+          .list(projectId);
+
+        const summaryFile = existingFiles?.find(f => f.name === `RESUMO_IA_${projectId}.txt`);
+
+        if (summaryFile) {
+          const { data } = await supabase.storage
+            .from('Documentos')
+            .download(`${projectId}/RESUMO_IA_${projectId}.txt`);
+
+          if (data) {
+            const existingSummary = await data.text();
+            console.log('[RAG] Resumo existente encontrado no Supabase');
+            if (onStatusChange) onStatusChange('Inteligência carregada!');
+            return existingSummary;
+          }
+        }
+      } catch (err) {
+        console.log('[RAG] Erro ao buscar resumo prévio.');
+      }
+    }
+
+    const aiConfig = this.getAIConfiguracao();
+    const files = await this.getProjectFiles(projectId);
+    const processedFiles = files.filter(f => f.status === 'processed' && f.isDataSource);
+
+    if (processedFiles.length === 0) {
+      return "⚠️ Não encontrei documentos marcados como 'Fonte de Dados' para este projeto. Por favor, adicione documentos na aba 'Fonte de Dados' nas configurações para que eu possa analisá-los.";
+    }
+
+    if (!aiConfig || (aiConfig.provider !== 'ollama' && !aiConfig.apiKey)) {
+      return `✅ Identifiquei ${processedFiles.length} documentos na base. Configure uma IA para obter o resumo de entendimento.`;
+    }
+
+    let ragContext = "";
+    
+    // 1. Tenta buscar o contexto consolidado (RAG) no Supabase Storage
+    if (this.isUUID(projectId)) {
+      try {
+        if (onStatusChange) onStatusChange('Buscando inteligência técnica...');
+        
+        const { data: existingFiles } = await supabase.storage
+          .from('Documentos')
+          .list(projectId);
+
+        const hasConsolidated = existingFiles?.some(f => f.name === `CONTEXTO_${projectId}.txt`);
+
+        if (hasConsolidated) {
+          const { data } = await supabase.storage
+            .from('Documentos')
+            .download(`${projectId}/CONTEXTO_${projectId}.txt`);
+
+          if (data) {
+            ragContext = await data.text();
+            console.log('[RAG] Contexto consolidado carregado');
+            if (onStatusChange) onStatusChange('Inteligência técnica carregada!');
+          }
+        }
+      } catch (err) { /* silêncio */ }
+    }
+
+    // 2. Se não encontrou o CONTEXTO pronto, cria um novo a partir dos arquivos brutos
+    if (!ragContext) {
+      if (onStatusChange) onStatusChange('Iniciando leitura dos documentos da base...');
+      
+      let combinedRawText = "";
+      const sourceFiles = processedFiles.filter(f => f.type === 'txt');
+
+      if (sourceFiles.length > 0) {
+        for (const file of sourceFiles) {
+          try {
+            if (onStatusChange) onStatusChange(`Lendo: ${file.name}...`);
+            const { data } = await supabase.storage
+              .from('Documentos')
+              .download(`${projectId}/${file.name}`);
+            if (data) {
+              const text = await data.text();
+              combinedRawText += `\n--- ORIGEM: ${file.name} ---\n${text}\n`;
+            }
+          } catch (e) {
+            console.error(`Erro ao ler arquivo bruto ${file.name}:`, e);
+          }
+        }
+      }
+      
+      if (combinedRawText) {
+        if (onStatusChange) onStatusChange('Documentos lidos! Criando inteligência técnica (RAG)...');
+        
+        // Gera o Contexto Consolidado (RAG) usando a IA
+        const consolidationPrompt = `Você é um Especialista em Gestão de Conhecimento. 
+        Sua tarefa é analisar os documentos brutos de um projeto e criar um CONTEXTO CONSOLIDADO E TÉCNICO.
+        Este arquivo servirá como a "Memória de Longo Prazo" para outras IAs.
+
+        REGRAS:
+        1. Identifique o Cliente, o Problema Principal e os Requisitos Técnicos.
+        2. Organize por tópicos (Visão Geral, Escopo, Restrições, Stakeholders).
+        3. Mantenha o tom profissional e técnico em PORTUGUÊS BRASILEIRO.
+        4. NÃO resuma demais, preserve detalhes técnicos importantes.
+
+        DOCUMENTOS BRUTOS:
+        ${combinedRawText}
+        
+        Gere agora o CONTEXTO CONSOLIDADO:`;
+
+        try {
+          const consolidatedResponse = await this.callAIAPI(aiConfig, consolidationPrompt);
+          
+          if (consolidatedResponse && !consolidatedResponse.includes("I want to analyze")) {
+            ragContext = consolidatedResponse;
+            
+            // Salva o Contexto Consolidado no Supabase para uso futuro e persistência
+            if (this.isUUID(projectId)) {
+              if (onStatusChange) onStatusChange('Sincronizando inteligência com o servidor...');
+              const contextBlob = new Blob([ragContext], { type: 'text/plain' });
+              await supabase.storage
+                .from('Documentos')
+                .upload(`${projectId}/CONTEXTO_${projectId}.txt`, contextBlob, { upsert: true });
+              console.log('[RAG] Novo contexto consolidado gerado e salvo');
+            }
+          } else {
+            // Fallback se a IA falhar na consolidação
+            ragContext = combinedRawText;
+          }
+        } catch (err) {
+          console.error('Erro ao consolidar contexto com IA:', err);
+          ragContext = combinedRawText; // Fallback para o texto bruto
+        }
+      }
+    }
+
+    if (!ragContext) {
+      return "⚠️ Não encontrei base de conhecimento para este projeto. Por favor, adicione arquivos .txt na 'Fonte de Dados' nas configurações para que eu possa analisá-los.";
+    }
+
+    if (onStatusChange) onStatusChange('Finalizando resumo de entendimento...');
+
+    // 3. Prompt REFORÇADO para evitar Inglês e Alucinações
+    const prompt = `Você é um Analista de Requisitos Sênior Brasileiro. 
+    Sua tarefa é analisar o CONTEXTO DO PROJETO abaixo e gerar um resumo de entendimento.
+
+    REGRAS OBRIGATÓRIAS:
+    1. Responda APENAS em PORTUGUÊS BRASILEIRO.
+    2. Use EXATAMENTE o formato solicitado.
+    3. Se o contexto for insuficiente, diga que entende a necessidade mas precisa de mais detalhes sobre [assunto faltando].
+    4. NÃO invente informações que não estão no texto abaixo.
+
+    CONTEXTO DO PROJETO:
+    ${ragContext || "Nenhum conteúdo técnico encontrado nos arquivos. Use apenas os nomes: " + processedFiles.map(f => f.name).join(', ')}
+
+    FORMATO DO RESUMO OBRIGATÓRIO:
+    "Resumo dos documentos analisados, após analisar a documentação na base de conhecimento, entendo que a necessidade do cliente {nome do cliente}, é resolver o problema de '{problema principal}' de sua loja/empresa."`;
+
+    try {
+      // Chama a IA com temperatura baixa para evitar criatividade excessiva
+      const response = await this.callAIAPI(aiConfig, prompt);
+      
+      // Se a resposta vier em inglês ou for nonsense (heuristicamente), tentamos forçar uma correção
+      if (response.includes("I want to analyze") || response.includes("Document 105243687")) {
+         return "Desculpe, a análise automática encontrou informações inconsistentes. Por favor, certifique-se de que os arquivos na 'Fonte de Dados' contêm texto legível (PDFs de imagem precisam de OCR ou serem convertidos para TXT).";
+      }
+
+      // 5. Salva o resumo gerado de volta no Supabase para futuras consultas rápidas
+      if (this.isUUID(projectId) && response.startsWith("Resumo dos documentos analisados")) {
+        const resumoBlob = new Blob([response], { type: 'text/plain' });
+        await supabase.storage
+          .from('Documentos')
+          .upload(`${projectId}/RESUMO_IA_${projectId}.txt`, resumoBlob, { upsert: true });
+      }
+
+      return response;
+    } catch (error) {
+      console.error('Erro ao gerar resumo de análise:', error);
+      return `✅ Análise concluída para ${processedFiles.length} documentos. (Erro ao chamar IA local)`;
+    }
+  }
+
   async updateProject(updatedProject: Project): Promise<Project> {
     const user = this.getCurrentUser();
     if (!user) throw new Error('Usuário não autenticado');
 
+    // 1. Tenta atualizar no Supabase
+    if (this.isUUID(updatedProject.id)) {
+      try {
+        const { data, error } = await supabase
+          .from('projects')
+          .update({
+            name: updatedProject.name,
+            description: updatedProject.description,
+            responsible_ids: updatedProject.responsibleIds,
+            group_ids: updatedProject.groupIds,
+            updated_at: new Date().toISOString()
+          })
+          .eq('id', updatedProject.id)
+          .select()
+          .single();
+
+        if (error) throw error;
+        
+        if (data) {
+          // Log de auditoria
+          this.addAuditLog(updatedProject.id, 'project_updated', user.id, user.name, `Projeto "${updatedProject.name}" atualizado no banco`);
+          
+          return {
+            ...updatedProject,
+            updatedAt: data.updated_at
+          };
+        }
+      } catch (err: any) {
+        console.error('[SGID] Erro ao atualizar projeto no banco:', err);
+        throw new Error(err.message || 'Erro ao atualizar projeto');
+      }
+    }
+
+    // Fallback Mock
     const index = this.mockProjects.findIndex(p => p.id === updatedProject.id);
     if (index === -1) {
       throw new Error('Projeto não encontrado');
@@ -1185,7 +1414,7 @@ class APIService {
     this.mockProjects[index] = projectToUpdate;
 
     // Log de auditoria
-    this.addAuditLog(projectToUpdate.id, 'project_updated', user.id, user.name, `Projeto "${projectToUpdate.name}" atualizado`);
+    this.addAuditLog(projectToUpdate.id, 'project_updated', user.id, user.name, `Projeto "${projectToUpdate.name}" atualizado (Mock)`);
     this.persistToLocalStorage();
 
     return projectToUpdate;
@@ -1669,6 +1898,43 @@ class APIService {
     const user = this.getCurrentUser();
     if (!user) throw new Error('Usuário não autenticado');
 
+    // 1. Tenta deletar no Supabase
+    if (this.isUUID(documentId)) {
+      try {
+        // Busca o documento para verificar permissão
+        const { data: document, error: fetchError } = await supabase
+          .from('documents')
+          .select('project_id, created_by, nome')
+          .eq('id', documentId)
+          .single();
+
+        if (fetchError || !document) throw new Error('Documento não encontrado no banco de dados');
+
+        // Busca o projeto para verificar permissão do criador do projeto
+        const project = await this.getProject(projectId);
+        
+        // Lógica de permissão: apenas criador do documento, criador do projeto ou admin podem deletar
+        if (document.created_by !== user.id && project?.creatorId !== user.id && user.role !== 'admin') {
+          throw new Error('Permissão negada: Você não tem permissão para deletar este documento.');
+        }
+
+        const { error: deleteError } = await supabase
+          .from('documents')
+          .delete()
+          .eq('id', documentId);
+
+        if (deleteError) throw deleteError;
+        
+        // Log de auditoria
+        this.addAuditLog(projectId, 'document_deleted', user.id, user.name, `Documento "${document.nome}" deletado do banco`);
+        return;
+      } catch (err: any) {
+        console.error('[SGID] Erro ao deletar documento no banco:', err);
+        throw new Error(err.message || 'Erro ao deletar documento');
+      }
+    }
+
+    // Fallback Mock
     const project = await this.getProject(projectId);
     if (!project) throw new Error('Projeto não encontrado');
 
@@ -1696,7 +1962,7 @@ class APIService {
     }
 
     // Log de auditoria
-    this.addAuditLog(projectId, 'document_deleted', user.id, user.name, `Documento "${documentId}" deletado`);
+    this.addAuditLog(projectId, 'document_deleted', user.id, user.name, `Documento "${documentId}" deletado (Mock)`);
     this.persistToLocalStorage();
   }
 
@@ -1780,60 +2046,23 @@ class APIService {
     return document;
   }
 
-  async generateWithAI(projectId: string, sectionId: string): Promise<string> {
+  async generateWithAI(projectId: string, sectionId: string, sectionTitle?: string, helpText?: string): Promise<string> {
     const user = this.getCurrentUser();
     if (!user) throw new Error('Usuário não autenticado');
 
     console.log(`[IA] Iniciando geração de conteúdo para a seção "${sectionId}" no projeto "${projectId}"`);
 
     const aiConfig = this.getAIConfiguracao();
-    if (!aiConfig || !aiConfig.apiKey) {
+    if (!aiConfig || (aiConfig.provider !== 'ollama' && !aiConfig.apiKey)) {
       throw new Error('Configure a API da IA nas configurações antes de gerar conteúdo');
     }
-
-    // Simular leitura do modelo de documento e interpretação de referências
-    await new Promise(resolve => setTimeout(resolve, 500)); // Simula tempo de processamento
-    console.log('[IA] Modelo de documento lido e referências interpretadas.');
-
-    // Se o provider for Manus, usar serviço específico
-    if (aiConfig.provider === 'manus') {
-      try {
-        const sectionTitles: Record<string, string> = {
-          'intro': 'Introdução',
-          'overview': 'Visão Geral do Sistema',
-          'functional': 'Requisitos Funcionais',
-          'nonfunctional': 'Requisitos Não Funcionais',
-          'business-rules': 'Regras de Negócio',
-          'constraints': 'Premissas e Restrições'
-        };
-
-        const response = await manusAPIService.generateSectionContent(
-          projectId,
-          sectionTitles[sectionId] || sectionId,
-          sectionId
-        );
-
-        // Log de auditoria
-        this.addAuditLog(projectId, 'ai_generation_manus', user.id, user.name, `Manus IA gerou conteúdo para seção "${sectionId}"`);
-
-        return response;
-      } catch (error: any) {
-        console.error('Erro ao gerar com Manus:', error);
-        throw error;
-      }
-    }
-
-    // Fluxo normal para OpenAI/Anthropic
-    const files = await this.getProjectFiles(projectId);
-    const processedFiles = files.filter(f => f.status === 'processed');
 
     // Obter o tipo do modelo de documento, se houver
     const project = await this.getProject(projectId);
     const documentModel = project?.documentModelId ? this.mockDocumentModels.find(m => m.id === project.documentModelId) : undefined;
-    const documentType = documentModel?.type || 'documento'; // Padrão para 'documento'
+    const documentType = documentModel?.type || 'documento';
 
-    // Preparar contexto para a IA
-    const sectionTitles: Record<string, string> = {
+    const defaultTitles: Record<string, string> = {
       'intro': 'Introdução',
       'overview': 'Visão Geral do Sistema',
       'functional': 'Requisitos Funcionais',
@@ -1842,33 +2071,129 @@ class APIService {
       'constraints': 'Premissas e Restrições'
     };
 
-    const prompt = `Você é um assistente especializado em Engenharia de Requisitos. \nVocê está gerando conteúdo para um **${documentType}**.\nAnalise os documentos fornecidos e gere conteúdo para a seção "${sectionTitles[sectionId]}" deste ${documentType}.\n\nIMPORTANTE:\n- Base-se APENAS nos documentos fornecidos\n- Se não encontrar informação relevante, escreva "Não identificado: [breve explicação]"\n- Para requisitos funcionais, use o formato: RF001, RF002, etc.\n- Para requisitos não funcionais, use: RNF001, RNF002, etc.\n- Para regras de negócio, use: RN001, RN002, etc.\n- Mantenha a linguagem e formalidade adequadas para um **${documentType}**.\n- Seja objetivo e técnico\n\nDocumentos disponíveis: ${processedFiles.map(f => f.name).join(', ') || 'Nenhum documento enviado ainda'}\n\nGere o conteúdo:`;
+    const finalTitle = sectionTitle || defaultTitles[sectionId] || sectionId;
+
+    // --- CARREGAMENTO DE RAG PARA GERAÇÃO ---
+    let ragContext = "";
+    let modelContext = "";
+    let stylePattern = "";
+
+    if (this.isUUID(projectId)) {
+      try {
+        // 1. Verifica quais arquivos existem na pasta do projeto para evitar erros 400 no console
+        const { data: existingFiles } = await supabase.storage
+          .from('Documentos')
+          .list(projectId);
+        
+        const hasConsolidated = existingFiles?.some(f => f.name === `CONTEXTO_${projectId}.txt`);
+
+        if (hasConsolidated) {
+          const { data: ragData } = await supabase.storage
+            .from('Documentos')
+            .download(`${projectId}/CONTEXTO_${projectId}.txt`);
+          
+          if (ragData) {
+            ragContext = await ragData.text();
+            console.log('[RAG] Inteligência técnica consolidada carregada.');
+          }
+        } else {
+          // FALLBACK: Se não houver CONTEXTO consolidado, lê os arquivos brutos (Auto-RAG)
+          const files = await this.getProjectFiles(projectId);
+          const dataSources = files.filter(f => f.isDataSource && f.type === 'txt');
+          
+          if (dataSources.length > 0) {
+            console.log('[RAG] Contexto consolidado não encontrado. Lendo arquivos brutos...');
+            let combinedText = "";
+            for (const file of dataSources) {
+              try {
+                const { data } = await supabase.storage
+                  .from('Documentos')
+                  .download(`${projectId}/${file.name}`);
+                if (data) {
+                  const text = await data.text();
+                  combinedText += `\n--- ARQUIVO: ${file.name} ---\n${text}\n`;
+                }
+              } catch (e) { /* silêncio */ }
+            }
+            ragContext = combinedText;
+          } else {
+            console.log('[RAG] Nenhuma fonte de dados técnica encontrada.');
+          }
+        }
+
+        // 2. Tenta carregar o DNA de Estilo
+        const { data: modelFiles } = await supabase.storage
+          .from('Modelos')
+          .list(projectId);
+        
+        const hasStyle = modelFiles?.some(f => f.name === `PADRAO_ESTILO_${projectId}.txt`);
+
+        if (hasStyle) {
+          const { data: styleData } = await supabase.storage
+            .from('Modelos')
+            .download(`${projectId}/PADRAO_ESTILO_${projectId}.txt`);
+          
+          if (styleData) {
+            stylePattern = await styleData.text();
+            console.log('[RAG] DNA de Estilo carregado.');
+          }
+        }
+
+        // 3. Contexto de Modelos (Padrão de escrita bruto)
+        const { data: models } = await supabase.storage
+          .from('Modelos')
+          .list(projectId);
+        
+        if (models && models.length > 0) {
+          for (const model of models) {
+             if (model.name.startsWith('PADRAO_ESTILO')) continue;
+             const { data: modelData } = await supabase.storage
+               .from('Modelos')
+               .download(`${projectId}/${model.name}`);
+             if (modelData) {
+               modelContext += `\n--- MODELO DE REFERÊNCIA (${model.name}) ---\n${await modelData.text()}\n`;
+             }
+          }
+        }
+      } catch (e) {
+        console.log('Sem contexto adicional para geração.');
+      }
+    }
+
+    const files = await this.getProjectFiles(projectId);
+    const processedFiles = files.filter(f => f.status === 'processed');
+
+    const prompt = `Você é um Analista de Requisitos Sênior Brasileiro especializado em Engenharia de Requisitos.
+    Tarefa: Gerar o conteúdo técnico detalhado para a seção "${finalTitle}" de um **${documentType}**.
+
+    ${helpText ? `ORIENTAÇÕES PARA ESTA SEÇÃO:\n${helpText}\n` : ''}
+
+    ${stylePattern ? `DNA DE ESTILO E PADRÃO DE ESCRITA (SIGA ISSO RIGOROSAMENTE):\n${stylePattern}\n` : ''}
+
+    ${modelContext ? `EXEMPLOS DE ESTRUTURA DOS MODELOS:\n${modelContext}\n` : ''}
+
+    BASE DE CONHECIMENTO TÉCNICA (ATAS/REUNIÕES/DOCUMENTOS):
+    ${ragContext || "Utilize apenas as informações disponíveis nos documentos: " + processedFiles.map(f => f.name).join(', ')}
+
+    DIRETRIZES OBRIGATÓRIAS:
+    1. Responda EXCLUSIVAMENTE em Português Brasileiro.
+    2. Extraia fatos, regras e requisitos reais da base de conhecimento acima. 
+    3. NÃO INVENTE funcionalidades que não foram discutidas ou documentadas.
+    4. Se for "Requisitos Funcionais", use o formato RF001, RF002...
+    5. Se for "Requisitos Não Funcionais", use RNF001, RNF002...
+    6. Se for "Regras de Negócio", use RN001, RN002...
+    7. Seja técnico, direto e profissional.
+
+    Gere o conteúdo para a seção "${finalTitle}":`;
 
     try {
-      console.log('[IA] Chamando API da IA para gerar conteúdo...', { provider: aiConfig.provider, sectionId });
-      
-      // Chamada real à API da IA
+      console.log('[IA] Chamando API da IA para gerar conteúdo...', { provider: aiConfig.provider, section: finalTitle });
       const response = await this.callAIAPI(aiConfig, prompt);
-      
-      console.log('[IA] Resposta da IA recebida para geração de conteúdo.');
-
-      // Log de auditoria
-      this.addAuditLog(projectId, 'ai_generation', user.id, user.name, `IA gerou conteúdo para seção "${sectionId}"`);
-
+      this.addAuditLog(projectId, 'ai_generation', user.id, user.name, `IA gerou conteúdo para "${finalTitle}"`);
       return response;
     } catch (error: any) {
-      console.error('Erro ao chamar API da IA:', error);
-      
-      // Se a API falhar, retornar mensagem de erro informativa
-      if (error.message?.includes('API key')) {
-        throw new Error('Chave de API inválida. Verifique suas configurações.');
-      } else if (error.message?.includes('rate limit')) {
-        throw new Error('Limite de requisições excedido. Tente novamente em alguns minutos.');
-      } else if (error.message?.includes('network')) {
-        throw new Error('Erro de conexão. Verifique sua internet.');
-      } else {
-        throw new Error('Erro ao se comunicar com a IA: ' + (error.message || 'Erro desconhecido'));
-      }
+      console.error('Erro ao gerar com IA:', error);
+      throw error;
     }
   }
 
@@ -1973,9 +2298,35 @@ class APIService {
       
       return result;
       
+    } else if (provider === 'ollama') {
+      const endpoint = config.endpoint || 'http://localhost:11434';
+      const model = config.modelName || 'phi3';
+      
+      const response = await fetch(`${endpoint}/api/generate`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          model: model,
+          prompt: prompt,
+          stream: false,
+          options: {
+            temperature: 0.7
+          }
+        })
+      });
+
+      if (!response.ok) {
+        throw new Error(`Erro no Ollama: ${response.statusText}`);
+      }
+
+      const data = await response.json();
+      return data.response;
+
     } else {
       // Para API customizada
-      throw new Error('Provider de IA não suportado. Use "openai", "anthropic" ou "manus".');
+      throw new Error('Provider de IA não suportado. Use "openai", "anthropic", "manus" ou "ollama".');
     }
   }
 
@@ -1992,7 +2343,7 @@ class APIService {
     console.log(`[IA] Iniciando chat com IA para o projeto "${projectId}"`);
 
     const aiConfig = this.getAIConfiguracao();
-    if (!aiConfig || !aiConfig.apiKey) {
+    if (!aiConfig || (aiConfig.provider !== 'ollama' && !aiConfig.apiKey)) {
       throw new Error('Configure a API da IA nas configurações antes de usar o chat');
     }
 
@@ -2069,7 +2420,38 @@ class APIService {
         .join('\\n\\n');
     }
 
-    const prompt = `Você é um assistente especializado em Engenharia de Requisitos trabalhando em um **${documentType}**.\n\nCONTEXTO DO PROJETO:\n- Documentos processados: ${processedFiles.map(f => f.name).join(', ') || 'Nenhum'}\n- Total de arquivos: ${files.length}\n\nDOCUMENTO ATUAL:\n${documentContext || 'Documento vazio'}\n\nMENSAGEM DO USUÁRIO: ${message}\n\nResponda de forma clara e objetiva, mantendo a linguagem e formalidade adequadas para um **${documentType}**. Se o usuário pedir para adicionar, editar ou revisar conteúdo, seja específico sobre o que você faria. Mantenha o tom profissional e técnico.`;
+    // --- NOVO: CARREGAMENTO DE RAG PARA O CHAT ---
+    let ragContext = "";
+    if (this.isUUID(projectId)) {
+      try {
+        const { data, error } = await supabase.storage
+          .from('Documentos')
+          .download(`${projectId}/CONTEXTO_${projectId}.txt`);
+        if (!error && data) ragContext = await data.text();
+      } catch (e) {
+        // Silencioso
+      }
+    }
+    
+    if (!ragContext) {
+      ragContext = `Arquivos de referência: ${processedFiles.map(f => f.name).join(', ')}`;
+    }
+
+    const prompt = `Você é um Analista de Requisitos Sênior Brasileiro.
+    
+    BASE DE CONHECIMENTO (RAG):
+    ${ragContext || 'Nenhuma base técnica consolidada disponível.'}
+
+    DOCUMENTO QUE ESTAMOS ESCREVENDO AGORA:
+    ${documentContext || 'Documento ainda vazio.'}
+
+    MENSAGEM DO USUÁRIO: ${message}
+
+    REGRAS:
+    1. Responda APENAS em Português Brasileiro.
+    2. Baseie suas sugestões e respostas na BASE DE CONHECIMENTO acima.
+    3. Seja técnico, objetivo e profissional.
+    4. Se o usuário pedir para criar algo, use os dados das atas/transcrições fornecidas.`;
 
     try {
       console.log('[IA] Chamando API da IA para chat...');
@@ -2118,7 +2500,7 @@ class APIService {
   }
 
   // Upload de arquivos
-  async uploadFile(projectId: string, file: File): Promise<UploadedFile> {
+  async uploadFile(projectId: string, file: File, isDataSource: boolean = false): Promise<UploadedFile> {
     const user = this.getCurrentUser();
     if (!user) throw new Error('Usuário não autenticado');
 
@@ -2133,9 +2515,42 @@ class APIService {
             file.type.startsWith('audio/') ? 'audio' : 'other',
       size: file.size,
       status: 'processing',
+      isDataSource, // Define se é fonte de dados ou apenas documento geral
       uploadedBy: user.name,
       uploadedAt: new Date().toISOString()
     };
+
+    // 1. Se for um projeto real (UUID), tenta enviar para o Supabase Storage
+    if (this.isUUID(projectId)) {
+      try {
+        console.log(`[SUPABASE] Enviando arquivo "${file.name}" para o bucket "Documentos"...`);
+        
+        // Caminho no bucket: id_projeto/nome_arquivo
+        const filePath = `${projectId}/${file.name}`;
+        
+        const { error } = await supabase.storage
+          .from('Documentos')
+          .upload(filePath, file, {
+            cacheControl: '3600',
+            upsert: true 
+          });
+
+        if (error) throw error;
+        
+        uploadedFile.status = 'processed';
+        this.addAuditLog(projectId, 'file_uploaded_storage', user.id, user.name, `Arquivo "${file.name}" salvo no bucket "Documentos"`);
+      } catch (err: any) {
+        console.error('[SUPABASE] Erro ao enviar para o storage:', err);
+        // Se falhar o storage em um projeto real, marcamos como erro
+        uploadedFile.status = 'error';
+      }
+    } else {
+      // Simulação para projetos Mock
+      setTimeout(() => {
+        uploadedFile.status = 'processed';
+        this.persistToLocalStorage();
+      }, 1500);
+    }
 
     const projectFiles = this.mockFiles.get(projectId) || [];
     projectFiles.push(uploadedFile);
@@ -2143,7 +2558,7 @@ class APIService {
 
     // Processar documento com Manus se configurado
     const aiConfig = this.getAIConfiguracao();
-    if (aiConfig?.provider === 'manus' && aiConfig.apiKey) {
+    if (aiConfig?.provider === 'manus' && aiConfig.apiKey && isDataSource) {
       try {
         console.log('Processando documento com Manus...', file.name);
         const manusConfig: ManusConfig = {
@@ -2164,7 +2579,7 @@ class APIService {
           'file_processed_manus', 
           user.id, 
           user.name, 
-          `Documento \"${file.name}\" processado pela IA Manus`
+          `Documento "${file.name}" processado pela IA Manus`
         );
       } catch (error: any) {
         console.error('Erro ao processar documento com Manus:', error);
@@ -2174,25 +2589,177 @@ class APIService {
           'file_processing_error', 
           user.id, 
           user.name, 
-          `Erro ao processar \"${file.name}\": ${error.message}`
+          `Erro ao processar "${file.name}": ${error.message}`
         );
       }
-    } else {
-      // Simula processamento local se Manus não estiver configurado
-      setTimeout(() => {
-        uploadedFile.status = 'processed';
-      }, 2000);
     }
 
-    // Log de auditoria
-    this.addAuditLog(projectId, 'file_uploaded', user.id, user.name, `Arquivo \"${file.name}\" enviado`);
+    // Log de auditoria geral
+    this.addAuditLog(projectId, 'file_uploaded', user.id, user.name, `Arquivo "${file.name}" enviado`);
     this.persistToLocalStorage();
 
     return uploadedFile;
   }
 
+  async uploadModelFile(projectId: string, file: File): Promise<void> {
+    const user = this.getCurrentUser();
+    if (!user) throw new Error('Usuário não autenticado');
+
+    if (this.isUUID(projectId)) {
+      try {
+        console.log(`[SUPABASE] Enviando MODELO "${file.name}" para o bucket "Modelos"...`);
+        // O caminho deve ser projectId/fileName para criar a pasta com o ID do projeto no bucket Modelos
+        const filePath = `${projectId}/${file.name}`;
+        console.log(`[SUPABASE] Caminho do arquivo: ${filePath}`);
+        
+        const { error } = await supabase.storage
+          .from('Modelos')
+          .upload(filePath, file, { upsert: true });
+
+        if (error) {
+          console.error('[SUPABASE] Erro no upload:', error);
+          throw error;
+        }
+        
+        this.addAuditLog(projectId, 'model_uploaded_storage', user.id, user.name, `Modelo de referência "${file.name}" salvo no bucket Modelos`);
+        
+        // Dispara análise de estilo automaticamente após upload
+        this.analyzeProjectModels(projectId).catch(console.error);
+      } catch (err: any) {
+        console.error('[SUPABASE] Erro ao enviar modelo para o storage:', err);
+        throw err;
+      }
+    } else {
+      console.warn('[SUPABASE] ID do projeto não é UUID válido para storage:', projectId);
+    }
+  }
+
+  /**
+   * Analisa os modelos do projeto para extrair DNA de estilo e estrutura
+   */
+  async analyzeProjectModels(projectId: string): Promise<string> {
+    console.log(`[IA] Iniciando verificação de estilo para o projeto "${projectId}"...`);
+    
+    if (!this.isUUID(projectId)) return "ID inválido";
+
+    try {
+      // 1. Primeiro, verifica se o arquivo de padrão já existe para evitar re-análise
+      const { data: existingFiles } = await supabase.storage
+        .from('Modelos')
+        .list(projectId);
+      
+      const styleFile = existingFiles?.find(f => f.name === `PADRAO_ESTILO_${projectId}.txt`);
+
+      if (styleFile) {
+        console.log('[RAG] Padrão de estilo já existe. Carregando...');
+        const { data } = await supabase.storage
+          .from('Modelos')
+          .download(`${projectId}/PADRAO_ESTILO_${projectId}.txt`);
+        if (data) return await data.text();
+      }
+
+      // 2. Se não existir, vamos analisar (apenas se houver modelos)
+      if (!existingFiles || existingFiles.length === 0) {
+        return "Nenhum modelo encontrado.";
+      }
+
+      let sampleText = "";
+      const txtModels = existingFiles.filter(f => f.name.toLowerCase().endsWith('.txt'));
+
+      if (txtModels.length === 0) {
+        return "Sem modelos em formato legível (.txt) para análise profunda.";
+      }
+
+      for (const model of txtModels) {
+        try {
+          const { data } = await supabase.storage
+            .from('Modelos')
+            .download(`${projectId}/${model.name}`);
+          
+          if (data) {
+            const text = await data.text();
+            sampleText += `\n--- MODELO: ${model.name} ---\n${text.substring(0, 2000)}\n`;
+          }
+        } catch (e) { /* skip */ }
+      }
+
+      const aiConfig = this.getAIConfiguracao();
+      if (!aiConfig || (aiConfig.provider !== 'ollama' && !aiConfig.apiKey)) return "IA não configurada";
+
+      const prompt = `Analise estas AMOSTRAS DE DOCUMENTOS e extraia o DNA de ESTILO E ESTRUTURA:
+      ${sampleText}
+      Resuma em 5 pontos diretos o tom de voz e estrutura. Responda em Português Brasileiro.`;
+
+      const styleAnalysis = await this.callAIAPI(aiConfig, prompt);
+
+      // Salva para a próxima vez
+      const styleBlob = new Blob([styleAnalysis], { type: 'text/plain' });
+      await supabase.storage
+        .from('Modelos')
+        .upload(`${projectId}/PADRAO_ESTILO_${projectId}.txt`, styleBlob, { upsert: true });
+
+      return styleAnalysis;
+    } catch (error) {
+      console.error('Erro na análise de estilo:', error);
+      return "Erro ao processar estilo.";
+    }
+  }
+
   async getProjectFiles(projectId: string): Promise<UploadedFile[]> {
     return this.mockFiles.get(projectId) || [];
+  }
+
+  /**
+   * Obtém a URL pública de um arquivo no Supabase Storage
+   */
+  async getFilePublicUrl(projectId: string, fileName: string): Promise<string> {
+    const { data } = supabase.storage
+      .from('Documentos')
+      .getPublicUrl(`${projectId}/${fileName}`);
+    
+    return data.publicUrl;
+  }
+
+  async setFileAsDataSource(projectId: string, fileId: string, isDataSource: boolean): Promise<void> {
+    const projectFiles = this.mockFiles.get(projectId) || [];
+    const file = projectFiles.find(f => f.id === fileId);
+    if (file) {
+      file.isDataSource = isDataSource;
+      this.mockFiles.set(projectId, projectFiles);
+      this.persistToLocalStorage();
+    }
+  }
+
+  async deleteFile(projectId: string, fileId: string): Promise<void> {
+    const user = this.getCurrentUser();
+    const projectFiles = this.mockFiles.get(projectId) || [];
+    const fileToDelete = projectFiles.find(f => f.id === fileId);
+
+    // 1. Se for um projeto real (UUID), tenta remover do Supabase Storage
+    if (fileToDelete && this.isUUID(projectId)) {
+      try {
+        const filePath = `${projectId}/${fileToDelete.name}`;
+        const { error } = await supabase.storage
+          .from('Documentos')
+          .remove([filePath]);
+
+        if (error) throw error;
+        
+        console.log('[SUPABASE] Arquivo removido do storage:', filePath);
+      } catch (err) {
+        console.error('[SUPABASE] Erro ao remover do storage:', err);
+      }
+    }
+
+    const updatedFiles = projectFiles.filter(f => f.id !== fileId);
+    this.mockFiles.set(projectId, updatedFiles);
+    
+    // Log de auditoria
+    if (user && fileToDelete) {
+      this.addAuditLog(projectId, 'file_deleted', user.id, user.name, `Arquivo "${fileToDelete.name}" excluído`);
+    }
+    
+    this.persistToLocalStorage();
   }
 
   // Auditoria
@@ -2219,6 +2786,23 @@ class APIService {
 
   async getTotalDocumentsCount(): Promise<number> {
     return this.mockDocuments.size;
+  }
+
+  /**
+   * Verifica se já existe um resumo da IA para o projeto no servidor
+   */
+  async hasExistingSummary(projectId: string): Promise<boolean> {
+    if (!this.isUUID(projectId)) return false;
+    try {
+      const { data, error } = await supabase.storage
+        .from('Documentos')
+        .list(projectId);
+      
+      if (error || !data) return false;
+      return data.some(file => file.name === `RESUMO_IA_${projectId}.txt`);
+    } catch (e) {
+      return false;
+    }
   }
 
   // Colaboradores ativos (mock para simulação)
@@ -3128,6 +3712,26 @@ class APIService {
       throw new Error('Permissão negada: Somente administradores, gerentes ou técnicos responsáveis podem excluir projetos.');
     }
 
+    // 1. Tenta deletar no Supabase
+    if (this.isUUID(projectId)) {
+      try {
+        const { error } = await supabase
+          .from('projects')
+          .delete()
+          .eq('id', projectId);
+
+        if (error) throw error;
+        
+        // Log de auditoria
+        this.addAuditLog('system', 'project_deleted', user.id, user.name, `Projeto com ID "${projectId}" excluído do banco`);
+        return true;
+      } catch (err: any) {
+        console.error('[SGID] Erro ao deletar projeto no banco:', err);
+        throw new Error(err.message || 'Erro ao deletar projeto');
+      }
+    }
+
+    // Fallback Mock
     const initialLength = this.mockProjects.length;
     this.mockProjects = this.mockProjects.filter(p => p.id !== projectId);
 

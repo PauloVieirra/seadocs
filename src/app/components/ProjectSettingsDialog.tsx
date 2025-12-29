@@ -8,6 +8,8 @@ import { Textarea } from './ui/textarea';
 import { MultiSelect } from './ui/multi-select';
 import { apiService, type Project, type User, type Group } from '../../services/api';
 import { DataSourcesPanel } from './DataSourcesPanel';
+import { ProjectDocumentsPanel } from './ProjectDocumentsPanel'; 
+import { ProjectModelsPanel } from './ProjectModelsPanel';
 import { AuditPanel } from './AuditPanel';
 import { GroupManagementPanel } from './GroupManagementPanel';
 import { Avatar, AvatarFallback } from './ui/avatar';
@@ -121,9 +123,10 @@ export function ProjectSettingsDialog({
             <div className="px-6 border-b bg-gray-50/50 shrink-0">
               <TabsList className="w-full justify-start h-12 bg-transparent gap-6">
                 <TabsTrigger value="details" className="data-[state=active]:bg-white data-[state=active]:shadow-sm">Detalhes</TabsTrigger>
-                <TabsTrigger value="participants" className="data-[state=active]:bg-white data-[state=active]:shadow-sm">Pessoas</TabsTrigger>
+                <TabsTrigger value="models" className="data-[state=active]:bg-white data-[state=active]:shadow-sm">Modelos (Padrão IA)</TabsTrigger>
                 <TabsTrigger value="groups" className="data-[state=active]:bg-white data-[state=active]:shadow-sm">Grupos</TabsTrigger>
-                <TabsTrigger value="datasources" className="data-[state=active]:bg-white data-[state=active]:shadow-sm">Fontes de Dados</TabsTrigger>
+                <TabsTrigger value="documents" className="data-[state=active]:bg-white data-[state=active]:shadow-sm">Documentos do projeto</TabsTrigger>
+                <TabsTrigger value="datasources" className="data-[state=active]:bg-white data-[state=active]:shadow-sm">Fonte de dados</TabsTrigger>
                 <TabsTrigger value="history" className="data-[state=active]:bg-white data-[state=active]:shadow-sm">Auditoria</TabsTrigger>
               </TabsList>
             </div>
@@ -167,59 +170,8 @@ export function ProjectSettingsDialog({
                     </form>
                   </TabsContent>
 
-                  <TabsContent value="participants" className="m-0 space-y-4">
-                    <div className="space-y-4">
-                      <div className="bg-blue-50 border border-blue-100 p-4 rounded-lg">
-                        <h4 className="text-sm font-semibold text-blue-900 mb-1">Responsáveis Técnicos</h4>
-                        <p className="text-xs text-blue-700">Defina quem tem permissão de edição e supervisão técnica.</p>
-                      </div>
-                      
-                      <div className="space-y-4">
-                        <Label>Gerenciar Responsáveis</Label>
-                        <UserSearchSelect
-                          users={allUsers}
-                          selectedIds={editedResponsibleIds}
-                          onSelectedChange={setEditedResponsibleIds}
-                          placeholder="Adicionar novos responsáveis..."
-                        />
-                      </div>
-
-                      <div className="mt-6 border-t pt-4">
-                        <h4 className="text-sm font-medium mb-4">Lista de Participantes Atuais</h4>
-                        <div className="grid grid-cols-1 gap-2">
-                          {editedResponsibleIds.map(id => {
-                            const user = allUsers.find(u => u.id === id);
-                            if (!user) return null;
-                            return (
-                              <div key={id} className="flex items-center justify-between p-3 bg-white border rounded-lg hover:border-blue-200 transition-colors">
-                                <div className="flex items-center gap-3">
-                                  <Avatar className="w-8 h-8">
-                                    <AvatarFallback className="bg-blue-100 text-blue-700 text-xs">
-                                      {user.name.split(' ').map(n => n[0]).join('').slice(0, 2)}
-                                    </AvatarFallback>
-                                  </Avatar>
-                                  <div>
-                                    <p className="text-sm font-medium">{user.name}</p>
-                                    <p className="text-xs text-gray-500">{user.email}</p>
-                                  </div>
-                                </div>
-                                <div className="flex items-center gap-2">
-                                  <Badge variant="outline" className="text-[10px]">Responsável</Badge>
-                                  <Button 
-                                    variant="ghost" 
-                                    size="sm" 
-                                    className="h-8 w-8 p-0 text-red-500"
-                                    onClick={() => setEditedResponsibleIds(prev => prev.filter(rid => rid !== id))}
-                                  >
-                                    <Trash2 className="w-4 h-4" />
-                                  </Button>
-                                </div>
-                              </div>
-                            );
-                          })}
-                        </div>
-                      </div>
-                    </div>
+                  <TabsContent value="models" className="m-0 space-y-4">
+                    <ProjectModelsPanel projectId={projectId} />
                   </TabsContent>
 
                   <TabsContent value="groups" className="m-0 space-y-4">
@@ -263,6 +215,10 @@ export function ProjectSettingsDialog({
                         </div>
                       </div>
                     </div>
+                  </TabsContent>
+
+                  <TabsContent value="documents" className="m-0">
+                    <ProjectDocumentsPanel projectId={projectId} />
                   </TabsContent>
 
                   <TabsContent value="datasources" className="m-0">

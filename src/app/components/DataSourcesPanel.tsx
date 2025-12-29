@@ -1,7 +1,7 @@
-import { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { Button } from './ui/button';
 import { Badge } from './ui/badge';
-import { Upload, FileText, CheckCircle2, AlertCircle, Loader2, File, Headphones, Type } from 'lucide-react'; // Adicionar Headphones e Type
+import { Upload, FileText, CheckCircle2, AlertCircle, Loader2, File, Headphones, Type, Trash2, RefreshCw } from 'lucide-react'; // Adicionar RefreshCw
 import { apiService, type UploadedFile } from '../../services/api';
 import { toast } from 'sonner';
 
@@ -12,6 +12,7 @@ interface DataSourcesPanelProps {
 export function DataSourcesPanel({ projectId }: DataSourcesPanelProps) {
   const [files, setFiles] = useState<UploadedFile[]>([]);
   const [uploading, setUploading] = useState(false);
+  const [syncing, setSyncing] = useState(false); // Novo estado para sincronização
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [manusEnabled, setManusEnabled] = useState(false);
 
@@ -27,7 +28,28 @@ export function DataSourcesPanel({ projectId }: DataSourcesPanelProps) {
 
   const loadFiles = async () => {
     const data = await apiService.getProjectFiles(projectId);
-    setFiles(data);
+    // Filtrar apenas arquivos que são fontes de dados
+    setFiles(data.filter(f => f.isDataSource));
+  };
+
+  const handleSyncFiles = async () => {
+    setSyncing(true);
+    try {
+      toast.info('Iniciando sincronização dos documentos com a nuvem...');
+      
+      // Busca todos os arquivos reais do projeto no storage
+      for (const file of files) {
+        const url = await apiService.getFilePublicUrl(projectId, file.name);
+        // Abre o download em nova aba (o navegador gerencia o download local)
+        window.open(url, '_blank');
+      }
+      
+      toast.success('Sincronização concluída! Salve os arquivos na pasta de documentos do Ollama.');
+    } catch (error) {
+      toast.error('Erro ao sincronizar arquivos.');
+    } finally {
+      setSyncing(false);
+    }
   };
 
   const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -41,7 +63,7 @@ export function DataSourcesPanel({ projectId }: DataSourcesPanelProps) {
         const file = selectedFiles[i];
         
         // Validar tipo de arquivo
-        const allowedExtensions = ['.pdf', '.doc', '.docx', '.txt', '.mp3', '.wav', '.ogg', '.aac']; // Novos tipos
+        const allowedExtensions = ['.pdf', '.doc', '.docx', '.txt', '.mp3', '.wav', '.ogg', '.aac'];
         const fileExtension = '.' + file.name.split('.').pop()?.toLowerCase();
         
         if (!allowedExtensions.includes(fileExtension)) {
@@ -55,8 +77,9 @@ export function DataSourcesPanel({ projectId }: DataSourcesPanelProps) {
           continue;
         }
 
-        await apiService.uploadFile(projectId, file);
-        toast.success(`${file.name} enviado com sucesso!`);
+        // Faz upload já marcando como fonte de dados
+        await apiService.uploadFile(projectId, file, true);
+        toast.success(`${file.name} adicionado à base de conhecimento!`);
       }
 
       loadFiles();
@@ -67,6 +90,20 @@ export function DataSourcesPanel({ projectId }: DataSourcesPanelProps) {
       if (fileInputRef.current) {
         fileInputRef.current.value = '';
       }
+    }
+  };
+
+  const handleRemoveFromDataSource = async (file: UploadedFile) => {
+    if (!confirm(`Tem certeza que deseja remover "${file.name}" da base de conhecimento da IA? O arquivo continuará disponível nos documentos do projeto.`)) {
+      return;
+    }
+
+    try {
+      await apiService.setFileAsDataSource(projectId, file.id, false);
+      toast.success('Documento removido da base de conhecimento.');
+      loadFiles();
+    } catch (error) {
+      toast.error('Erro ao remover documento.');
     }
   };
 
@@ -118,19 +155,31 @@ export function DataSourcesPanel({ projectId }: DataSourcesPanelProps) {
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <div>
-          <h3 className="text-sm mb-1">Documentos de Origem</h3>
+          <h3 className="text-sm mb-1">Fonte de Dados (Base de Conhecimento IA)</h3>
           <p className="text-xs text-gray-600">
-            Envie PDF ou DOC para alimentar a base de conhecimento da IA
+            Documentos que a IA irá <strong>estudar, examinar e extrair informações</strong> para entender as necessidades do cliente.
           </p>
         </div>
-        <Button
-          size="sm"
-          onClick={() => fileInputRef.current?.click()}
-          disabled={uploading}
-        >
-          <Upload className="w-4 h-4 mr-2" />
-          {uploading ? 'Enviando...' : 'Upload'}
-        </Button>
+        <div className="flex gap-2">
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={handleSyncFiles}
+            disabled={syncing || files.length === 0}
+            title="Baixar documentos para o RAG local"
+          >
+            <RefreshCw className={`w-4 h-4 mr-2 ${syncing ? 'animate-spin' : ''}`} />
+            Sincronizar RAG
+          </Button>
+          <Button
+            size="sm"
+            onClick={() => fileInputRef.current?.click()}
+            disabled={uploading}
+          >
+            <Upload className="w-4 h-4 mr-2" />
+            {uploading ? 'Enviando...' : 'Upload'}
+          </Button>
+        </div>
         <input
           ref={fileInputRef}
           type="file"
@@ -203,6 +252,15 @@ export function DataSourcesPanel({ projectId }: DataSourcesPanelProps) {
                 <Badge variant={file.status === 'processed' ? 'default' : 'secondary'}>
                   {getStatusLabel(file.status)}
                 </Badge>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-8 w-8 text-red-500 hover:text-red-700 hover:bg-red-50"
+                  onClick={() => handleRemoveFromDataSource(file)}
+                  title="Remover da base de conhecimento"
+                >
+                  <Trash2 className="w-4 h-4" />
+                </Button>
               </div>
             </div>
           ))}

@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { Button } from './ui/button';
 import { Textarea } from './ui/textarea';
 import { Sparkles, RotateCw, Plus, Save, FileDown, Edit3, Lock } from 'lucide-react'; // Adicionado Lock
@@ -22,10 +22,29 @@ export function DocumentEditor({ document, onSave, projectId, viewMode = false, 
   const [updatingSections, setUpdatingSections] = useState<Set<string>>(new Set()); // Seções que estão sendo atualizadas via Realtime
   const currentUser = apiService.getCurrentUser();
   const [isGeneratingAll, setIsGeneratingAll] = useState(false);
+  const [isSummaryReady, setIsSummaryReady] = useState(false);
   const [isSavingToLocalStorage, setIsSavingToLocalStorage] = useState(false);
   const [newSectionDialogOpen, setNewSectionDialogOpen] = useState(false); 
   const [isAddingSection, setIsAddingSection] = useState(false); 
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Verificar se o resumo da IA está pronto para habilitar o botão de geração
+  useEffect(() => {
+    const checkSummary = async () => {
+      try {
+        const hasSummary = await apiService.hasExistingSummary(projectId);
+        setIsSummaryReady(hasSummary);
+      } catch (err) {
+        setIsSummaryReady(false);
+      }
+    };
+
+    checkSummary();
+    
+    // Polling opcional para detectar quando a análise termina no AIChat
+    const interval = setInterval(checkSummary, 5000);
+    return () => clearInterval(interval);
+  }, [projectId]);
 
   // 1. Sincronização Inteligente do Conteúdo
   useEffect(() => {
@@ -212,7 +231,74 @@ export function DocumentEditor({ document, onSave, projectId, viewMode = false, 
   }
 
   const handleGenerateAllWithAI = async () => {
-    // ...
+    if (!isSummaryReady) {
+      toast.warning('Aguarde a IA finalizar a análise dos documentos antes de gerar.');
+      return;
+    }
+
+    // Identifica apenas as seções editáveis que estão realmente vazias
+    const emptySections = content.sections.filter(s => 
+      s.isEditable && (!s.content || s.content.trim() === '')
+    );
+
+    if (emptySections.length === 0) {
+      toast.info('Todas as seções já possuem conteúdo. Nada para gerar automaticamente.');
+      return;
+    }
+
+    setIsGeneratingAll(true);
+    let completed = 0;
+
+    toast.info(`Iniciando preenchimento: ${emptySections.length} seções vazias encontradas.`);
+
+    try {
+      const updatedSections = [...content.sections];
+
+      for (let i = 0; i < updatedSections.length; i++) {
+        const section = updatedSections[i];
+        
+        // SÓ GERA SE ESTIVER VAZIO E FOR EDITÁVEL
+        if (section.isEditable && (!section.content || section.content.trim() === '')) {
+          try {
+            toast.loading(`Gerando conteúdo para: ${section.title}...`, { id: 'gen-progress' });
+            
+            const aiContent = await apiService.generateWithAI(
+              projectId, 
+              section.id, 
+              section.title, 
+              section.helpText
+            );
+
+            updatedSections[i] = { ...section, content: aiContent };
+            
+            // Grava no banco a cada seção gerada para salvar o progresso
+            if (apiService.isUUID(document.id)) {
+              await apiService.updateDocumentSection(document.id, section.id, aiContent);
+            }
+            
+            // Atualiza o estado progressivamente para o usuário ver acontecendo
+            setContent({ ...content, sections: [...updatedSections] });
+            
+            completed++;
+          } catch (err: any) {
+            console.error(`Erro ao gerar seção ${section.title}:`, err);
+            toast.error(`Falha ao gerar ${section.title}: ${err.message}`, { id: 'gen-error-' + i });
+          }
+        }
+      }
+
+      toast.success('Geração concluída para as seções vazias!', { id: 'gen-progress' });
+      
+      // Salva o documento inteiro após a geração massiva
+      const finalContent = { ...content, sections: updatedSections };
+      onSave(finalContent);
+      
+    } catch (error) {
+      console.error('Erro na geração em massa:', error);
+      toast.error('Ocorreu um erro durante a geração automática.');
+    } finally {
+      setIsGeneratingAll(false);
+    }
   };
 
   const handleAddNewSection = async (title: string) => {
@@ -236,13 +322,22 @@ export function DocumentEditor({ document, onSave, projectId, viewMode = false, 
           </div>
           <Button
             onClick={handleGenerateAllWithAI}
-            disabled={isGeneratingAll}
-            className="bg-indigo-600 hover:bg-indigo-700 text-white"
+            disabled={isGeneratingAll || !isSummaryReady}
+            className={`${
+              isSummaryReady 
+                ? 'bg-indigo-600 hover:bg-indigo-700' 
+                : 'bg-gray-400 cursor-not-allowed opacity-70'
+            } text-white transition-all duration-300`}
           >
             {isGeneratingAll ? (
               <>
                 <RotateCw className="w-4 h-4 mr-2 animate-spin" />
                 Gerando Tudo...
+              </>
+            ) : !isSummaryReady ? (
+              <>
+                <Lock className="w-4 h-4 mr-2" />
+                Aguardando IA...
               </>
             ) : (
               <>
