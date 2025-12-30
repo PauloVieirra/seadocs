@@ -52,6 +52,27 @@ export function DataSourcesPanel({ projectId }: DataSourcesPanelProps) {
     }
   };
 
+  const truncateFilename = (name: string, limit: number = 38) => {
+    if (name.length <= limit) return name;
+    const extension = name.split('.').pop();
+    const nameWithoutExtension = name.substring(0, name.lastIndexOf('.'));
+    return nameWithoutExtension.substring(0, limit - 3 - (extension?.length || 0)) + '...' + (extension ? '.' + extension : '');
+  };
+
+  const handleRemoveFile = async (file: UploadedFile) => {
+    if (!confirm(`Tem certeza que deseja EXCLUIR DEFINITIVAMENTE o arquivo "${file.name}"? Esta ação não pode ser desfeita.`)) {
+      return;
+    }
+
+    try {
+      await apiService.deleteFile(projectId, file.id);
+      toast.success('Arquivo excluído com sucesso.');
+      loadFiles();
+    } catch (error) {
+      toast.error('Erro ao excluir arquivo.');
+    }
+  };
+
   const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const selectedFiles = e.target.files;
     if (!selectedFiles || selectedFiles.length === 0) return;
@@ -77,14 +98,20 @@ export function DataSourcesPanel({ projectId }: DataSourcesPanelProps) {
           continue;
         }
 
+        toast.info(`Processando "${truncateFilename(file.name, 25)}"...`);
+
         // Faz upload já marcando como fonte de dados
         await apiService.uploadFile(projectId, file, true);
-        toast.success(`${file.name} adicionado à base de conhecimento!`);
+        
+        // Disparar análise automática em background para alimentar o RAG imediatamente (forçando atualização)
+        apiService.analyzeProjectMaterials(projectId, undefined, true).catch(console.error);
+        
+        toast.success(`${truncateFilename(file.name, 25)} adicionado e analisado!`);
       }
 
       loadFiles();
     } catch (error) {
-      toast.error('Erro ao enviar arquivos');
+      toast.error('Erro ao enviar ou converter arquivos.');
     } finally {
       setUploading(false);
       if (fileInputRef.current) {
@@ -227,37 +254,28 @@ export function DataSourcesPanel({ projectId }: DataSourcesPanelProps) {
               <div className="flex items-center gap-3 flex-1">
                 {getFileIcon(file.type)} {/* Usar o novo ícone do arquivo */}
                 <div className="flex-1 min-w-0">
-                  <p className="text-sm truncate">{file.name}</p>
+                  <p className="text-sm font-medium truncate" title={file.name}>
+                    {truncateFilename(file.name, 38)}
+                  </p>
                   <div className="flex items-center gap-2 mt-1">
                     <span className="text-xs text-gray-500">
                       {formatFileSize(file.size)}
                     </span>
                     <span className="text-xs text-gray-400">•</span>
                     <span className="text-xs text-gray-500">
-                      {file.type.toUpperCase()} {/* Mostrar tipo do arquivo */}
-                    </span>
-                    <span className="text-xs text-gray-400">•</span>
-                    <span className="text-xs text-gray-500">
-                      {new Date(file.uploadedAt).toLocaleDateString('pt-BR')}
-                    </span>
-                    <span className="text-xs text-gray-400">•</span>
-                    <span className="text-xs text-gray-500">
-                      {file.uploadedBy}
+                      {file.type.toUpperCase()}
                     </span>
                   </div>
                 </div>
               </div>
               <div className="flex items-center gap-2">
                 {getStatusIcon(file.status)}
-                <Badge variant={file.status === 'processed' ? 'default' : 'secondary'}>
-                  {getStatusLabel(file.status)}
-                </Badge>
                 <Button
                   variant="ghost"
                   size="icon"
                   className="h-8 w-8 text-red-500 hover:text-red-700 hover:bg-red-50"
-                  onClick={() => handleRemoveFromDataSource(file)}
-                  title="Remover da base de conhecimento"
+                  onClick={() => handleRemoveFile(file)}
+                  title="Excluir arquivo definitivamente"
                 >
                   <Trash2 className="w-4 h-4" />
                 </Button>

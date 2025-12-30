@@ -54,23 +54,30 @@ export function AIChat({ projectId, documentId }: AIChatProps) {
         // Pequena pausa para o componente estabilizar
         await new Promise(resolve => setTimeout(resolve, 500));
 
+        const placeholderId = 'analysis-placeholder-' + Date.now();
+        setMessages(prev => [...prev, {
+          id: placeholderId,
+          role: 'assistant',
+          content: '🔄 Iniciando análise da base de conhecimento...',
+          timestamp: new Date()
+        }]);
+
+        const updateStatus = (status: string) => {
+          setAnalysisStatus(status);
+          setMessages(prev => prev.map(m => 
+            m.id === placeholderId ? { ...m, content: `🔄 ${status}` } : m
+          ));
+        };
+
         // Analisa os modelos de estilo (Gera ou recupera o PADRAO_ESTILO_...txt)
-        await apiService.analyzeProjectModels(projectId);
+        await apiService.analyzeProjectModels(projectId, updateStatus);
 
         // analyzeProjectMaterials já possui a lógica de recuperar do RAG se existir
-        setAnalysisStatus('Buscando inteligência técnica...');
-        const summary = await apiService.analyzeProjectMaterials(projectId, (status) => {
-          setAnalysisStatus(status);
-        });
+        const summary = await apiService.analyzeProjectMaterials(projectId, updateStatus);
         
-        const analysisMessage: Message = {
-          id: 'analysis-' + Date.now(),
-          role: 'assistant',
-          content: summary,
-          timestamp: new Date()
-        };
-        
-        setMessages(prev => [...prev, analysisMessage]);
+        setMessages(prev => prev.map(m => 
+          m.id === placeholderId ? { ...m, content: summary } : m
+        ));
       } catch (error) {
         console.error('Erro na análise inicial:', error);
       } finally {

@@ -35,11 +35,14 @@ export function ProjectModelsPanel({ projectId }: ProjectModelsPanelProps) {
       if (error) throw error;
 
       if (data) {
-        setFiles(data.map(f => ({
-          name: f.name,
-          size: f.metadata?.size || 0,
-          lastModified: f.updated_at || f.created_at
-        })));
+        setFiles(data
+          .filter(f => !f.name.endsWith('.extracted.txt')) // Ocultar arquivos de extração técnica
+          .map(f => ({
+            name: f.name,
+            size: f.metadata?.size || 0,
+            lastModified: f.updated_at || f.created_at
+          }))
+        );
       }
     } catch (err) {
       console.error('Erro ao carregar modelos:', err);

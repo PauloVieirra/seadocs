@@ -2,6 +2,12 @@
 
 import { manusAPIService, type ManusConfig } from './manus-api';
 import { supabase } from './supabase';
+import * as pdfjsLib from 'pdfjs-dist';
+import mammoth from 'mammoth';
+
+// Configura o worker do PDF.js usando CDN para evitar problemas de bundling no Vite
+pdfjsLib.GlobalWorkerOptions.workerSrc = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.10.38/pdf.worker.min.mjs`;
+
 export { supabase };
 
 export interface DatabaseConfig {
@@ -295,7 +301,13 @@ class APIService {
       return this.aiConfig;
     }
     
-    return null;
+    // Configuração padrão: Ollama
+    return {
+      provider: 'ollama',
+      apiKey: 'not-needed',
+      endpoint: 'http://localhost:11434',
+      modelName: 'phi3'
+    };
   }
 
   // Autenticação
@@ -953,6 +965,38 @@ class APIService {
       for (const node of Array.from(body.childNodes)) {
         if (node.nodeType === Node.ELEMENT_NODE) {
           const el = node as HTMLElement;
+
+          // 1.1) Tópico (sgid-topic)
+          if (el.classList.contains('sgid-topic')) {
+            // Se houver um metadado logo em seguida associado a este tópico,
+            // ignoramos o div do tópico aqui para evitar duplicidade,
+            // pois o metadado criará a seção com este título.
+            const nextEl = el.nextElementSibling;
+            if (nextEl && nextEl.classList.contains('sgid-metadata-field')) {
+              continue;
+            }
+
+            // Se for um tópico avulso, criamos uma seção fixa (apenas título)
+            if (fixedBuffer.trim()) {
+              sections.push({
+                id: `fixed-${Date.now()}-${sections.length}`,
+                title: '',
+                content: fixedBuffer.trim(),
+                isEditable: false,
+              });
+              fixedBuffer = '';
+            }
+
+            sections.push({
+              id: el.getAttribute('data-topic-id') || `topic-${Date.now()}`,
+              title: el.innerText.trim() || 'Tópico',
+              content: '',
+              isEditable: false,
+            });
+            continue;
+          }
+
+          // 1.2) Metadado (sgid-metadata-field)
           if (el.classList.contains('sgid-metadata-field')) {
             foundMetadataFields = true;
 
@@ -1103,16 +1147,16 @@ class APIService {
   }
 
   // Analisar materiais de apoio e gerar resumo de entendimento
-  async analyzeProjectMaterials(projectId: string, onStatusChange?: (status: string) => void): Promise<string> {
+  async analyzeProjectMaterials(projectId: string, onStatusChange?: (status: string) => void, forceRefresh: boolean = false): Promise<string> {
     const user = this.getCurrentUser();
     if (!user) throw new Error('Usuário não autenticado');
 
     console.log(`[IA] Iniciando análise completa do material de apoio para o projeto "${projectId}"`);
     
     // 1. Tenta buscar um resumo já existente no Supabase para evitar re-análise
-    if (this.isUUID(projectId)) {
+    if (this.isUUID(projectId) && !forceRefresh) {
       try {
-        if (onStatusChange) onStatusChange('Verificando base de conhecimento...');
+        if (onStatusChange) onStatusChange('🔍 Verificando se já existe uma análise prévia...');
         
         // Verifica arquivos existentes para evitar erro 400
         const { data: existingFiles } = await supabase.storage
@@ -1129,7 +1173,7 @@ class APIService {
           if (data) {
             const existingSummary = await data.text();
             console.log('[RAG] Resumo existente encontrado no Supabase');
-            if (onStatusChange) onStatusChange('Inteligência carregada!');
+            if (onStatusChange) onStatusChange('✨ Inteligência carregada do servidor!');
             return existingSummary;
           }
         }
@@ -1155,7 +1199,7 @@ class APIService {
     // 1. Tenta buscar o contexto consolidado (RAG) no Supabase Storage
     if (this.isUUID(projectId)) {
       try {
-        if (onStatusChange) onStatusChange('Buscando inteligência técnica...');
+        if (onStatusChange) onStatusChange('📂 Buscando base de conhecimento técnica...');
         
         const { data: existingFiles } = await supabase.storage
           .from('Documentos')
@@ -1171,86 +1215,101 @@ class APIService {
           if (data) {
             ragContext = await data.text();
             console.log('[RAG] Contexto consolidado carregado');
-            if (onStatusChange) onStatusChange('Inteligência técnica carregada!');
+            if (onStatusChange) onStatusChange('🧠 Memória técnica carregada!');
           }
         }
       } catch (err) { /* silêncio */ }
     }
 
-    // 2. Se não encontrou o CONTEXTO pronto, cria um novo a partir dos arquivos brutos
     if (!ragContext) {
       if (onStatusChange) onStatusChange('Iniciando leitura dos documentos da base...');
       
       let combinedRawText = "";
-      const sourceFiles = processedFiles.filter(f => f.type === 'txt');
+      
+      // 1. Tenta buscar arquivos .extracted.txt ou .txt originais no Supabase
+      if (this.isUUID(projectId)) {
+        try {
+          const { data: allFiles } = await supabase.storage
+            .from('Documentos')
+            .list(projectId);
+          
+          if (allFiles && allFiles.length > 0) {
+            // Filtrar apenas arquivos que são fontes de dados ou seus extratos
+            for (const file of processedFiles) {
+              const sanitizedName = this.sanitizeFilename(file.name);
+              let contentToDownload = "";
+              
+              // Se for TXT, baixa ele mesmo
+              if (file.type === 'txt') {
+                contentToDownload = sanitizedName;
+              } else {
+                // Se não for TXT, procura o arquivo .extracted.txt correspondente
+                const extractedExists = allFiles.some(f => f.name === `${sanitizedName}.extracted.txt`);
+                if (extractedExists) {
+                  contentToDownload = `${sanitizedName}.extracted.txt`;
+                }
+              }
 
-      if (sourceFiles.length > 0) {
-        for (const file of sourceFiles) {
-          try {
-            if (onStatusChange) onStatusChange(`Lendo: ${file.name}...`);
-            const { data } = await supabase.storage
-              .from('Documentos')
-              .download(`${projectId}/${file.name}`);
-            if (data) {
-              const text = await data.text();
-              combinedRawText += `\n--- ORIGEM: ${file.name} ---\n${text}\n`;
+              if (contentToDownload) {
+                if (onStatusChange) onStatusChange(`📑 Lendo e convertendo: ${file.name}...`);
+                const { data } = await supabase.storage
+                  .from('Documentos')
+                  .download(`${projectId}/${contentToDownload}`);
+                
+                if (data) {
+                  const text = await data.text();
+                  combinedRawText += `\n--- ORIGEM: ${file.name} ---\n${text}\n`;
+                }
+              }
             }
-          } catch (e) {
-            console.error(`Erro ao ler arquivo bruto ${file.name}:`, e);
           }
+        } catch (e) {
+          console.error('[RAG] Erro ao carregar textos da base:', e);
         }
       }
       
-      if (combinedRawText) {
-        if (onStatusChange) onStatusChange('Documentos lidos! Criando inteligência técnica (RAG)...');
-        
-        // Gera o Contexto Consolidado (RAG) usando a IA
-        const consolidationPrompt = `Você é um Especialista em Gestão de Conhecimento. 
-        Sua tarefa é analisar os documentos brutos de um projeto e criar um CONTEXTO CONSOLIDADO E TÉCNICO.
-        Este arquivo servirá como a "Memória de Longo Prazo" para outras IAs.
-
-        REGRAS:
-        1. Identifique o Cliente, o Problema Principal e os Requisitos Técnicos.
-        2. Organize por tópicos (Visão Geral, Escopo, Restrições, Stakeholders).
-        3. Mantenha o tom profissional e técnico em PORTUGUÊS BRASILEIRO.
-        4. NÃO resuma demais, preserve detalhes técnicos importantes.
-
-        DOCUMENTOS BRUTOS:
-        ${combinedRawText}
-        
-        Gere agora o CONTEXTO CONSOLIDADO:`;
-
-        try {
-          const consolidatedResponse = await this.callAIAPI(aiConfig, consolidationPrompt);
-          
-          if (consolidatedResponse && !consolidatedResponse.includes("I want to analyze")) {
-            ragContext = consolidatedResponse;
+      // 2. Define o contexto para a análise
+      if (combinedRawText !== "") {
+        // Tenta consolidar o texto se tivermos uma IA configurada
+        if (aiConfig && (aiConfig.provider === 'manus' || (aiConfig.provider === 'ollama' && aiConfig.endpoint))) {
+          try {
+            if (onStatusChange) onStatusChange('🤔 Consolidando conhecimento técnico...');
             
-            // Salva o Contexto Consolidado no Supabase para uso futuro e persistência
-            if (this.isUUID(projectId)) {
-              if (onStatusChange) onStatusChange('Sincronizando inteligência com o servidor...');
-              const contextBlob = new Blob([ragContext], { type: 'text/plain' });
-              await supabase.storage
-                .from('Documentos')
-                .upload(`${projectId}/CONTEXTO_${projectId}.txt`, contextBlob, { upsert: true });
-              console.log('[RAG] Novo contexto consolidado gerado e salvo');
+            const consolidationPrompt = `Analise os documentos abaixo e crie um contexto técnico estruturado (Cliente, Problema, Requisitos):
+            ${combinedRawText.substring(0, 10000)} // Limite para não estourar contexto
+            Responda em Português Brasileiro.`;
+
+            const consolidatedResponse = await this.callAIAPI(aiConfig, consolidationPrompt);
+            if (consolidatedResponse && !consolidatedResponse.includes("I want to analyze")) {
+              ragContext = consolidatedResponse;
+              
+              // Salva o Contexto Consolidado no Supabase para uso futuro
+              if (this.isUUID(projectId)) {
+                if (onStatusChange) onStatusChange('💾 Sincronizando memória técnica...');
+                const contextBlob = new Blob([ragContext], { type: 'text/plain' });
+                await supabase.storage
+                  .from('Documentos')
+                  .upload(`${projectId}/CONTEXTO_${projectId}.txt`, contextBlob, { upsert: true });
+              }
+            } else {
+              ragContext = combinedRawText;
             }
-          } else {
-            // Fallback se a IA falhar na consolidação
+          } catch (err) {
+            console.error('Erro ao consolidar contexto:', err);
             ragContext = combinedRawText;
           }
-        } catch (err) {
-          console.error('Erro ao consolidar contexto com IA:', err);
-          ragContext = combinedRawText; // Fallback para o texto bruto
+        } else {
+          // Sem IA configurada ou erro, usa o texto bruto
+          ragContext = combinedRawText;
         }
       }
     }
 
     if (!ragContext) {
-      return "⚠️ Não encontrei base de conhecimento para este projeto. Por favor, adicione arquivos .txt na 'Fonte de Dados' nas configurações para que eu possa analisá-los.";
+      return "⚠️ Não encontrei base de conhecimento para este projeto. Por favor, adicione arquivos (.txt, .docx ou .pdf) na 'Fonte de Dados' nas configurações para que eu possa analisá-los.";
     }
 
-    if (onStatusChange) onStatusChange('Finalizando resumo de entendimento...');
+    if (onStatusChange) onStatusChange('✍️ Finalizando resumo de entendimento...');
 
     // 3. Prompt REFORÇADO para evitar Inglês e Alucinações
     const prompt = `Você é um Analista de Requisitos Sênior Brasileiro. 
@@ -1277,6 +1336,8 @@ class APIService {
          return "Desculpe, a análise automática encontrou informações inconsistentes. Por favor, certifique-se de que os arquivos na 'Fonte de Dados' contêm texto legível (PDFs de imagem precisam de OCR ou serem convertidos para TXT).";
       }
 
+      if (onStatusChange) onStatusChange('✅ Análise concluída com sucesso!');
+
       // 5. Salva o resumo gerado de volta no Supabase para futuras consultas rápidas
       if (this.isUUID(projectId) && response.startsWith("Resumo dos documentos analisados")) {
         const resumoBlob = new Blob([response], { type: 'text/plain' });
@@ -1288,7 +1349,8 @@ class APIService {
       return response;
     } catch (error) {
       console.error('Erro ao gerar resumo de análise:', error);
-      return `✅ Análise concluída para ${processedFiles.length} documentos. (Erro ao chamar IA local)`;
+      if (onStatusChange) onStatusChange('❌ Erro na comunicação final com a IA.');
+      return `✅ Textos extraídos (${processedFiles.length} docs), mas houve um erro ao gerar o resumo final.`;
     }
   }
 
@@ -2524,6 +2586,24 @@ class APIService {
           });
 
         if (error) throw error;
+
+        // --- NOVA LÓGICA DE EXTRAÇÃO LOCAL ---
+        if (isDataSource) {
+          console.log(`[EXTRAÇÃO] Extraindo texto local de "${file.name}"...`);
+          const extractedText = await this.extractTextFromFile(file);
+          
+          if (extractedText && extractedText.trim().length > 0) {
+            const extractedBlob = new Blob([extractedText], { type: 'text/plain' });
+            const extractedPath = `${projectId}/${sanitizedName}.extracted.txt`;
+            
+            await supabase.storage
+              .from('Documentos')
+              .upload(extractedPath, extractedBlob, { upsert: true });
+            
+            console.log(`[EXTRAÇÃO] Texto de "${file.name}" extraído e salvo para o RAG.`);
+          }
+        }
+        // ---------------------------------------
         
         uploadedFile.status = 'processed';
         this.addAuditLog(projectId, 'file_uploaded_storage', user.id, user.name, `Arquivo "${file.name}" salvo no bucket "Documentos"`);
@@ -2609,6 +2689,22 @@ class APIService {
           console.error('[SUPABASE] Erro no upload:', error);
           throw error;
         }
+
+        // --- NOVA LÓGICA DE EXTRAÇÃO LOCAL PARA MODELOS ---
+        console.log(`[EXTRAÇÃO] Extraindo texto local do MODELO "${file.name}"...`);
+        const extractedText = await this.extractTextFromFile(file);
+        
+        if (extractedText && extractedText.trim().length > 0) {
+          const extractedBlob = new Blob([extractedText], { type: 'text/plain' });
+          const extractedPath = `${projectId}/${sanitizedName}.extracted.txt`;
+          
+          await supabase.storage
+            .from('Modelos')
+            .upload(extractedPath, extractedBlob, { upsert: true });
+          
+          console.log(`[EXTRAÇÃO] Texto do MODELO "${file.name}" extraído e salvo.`);
+        }
+        // --------------------------------------------------
         
         this.addAuditLog(projectId, 'model_uploaded_storage', user.id, user.name, `Modelo de referência "${file.name}" salvo no bucket Modelos`);
         
@@ -2626,12 +2722,14 @@ class APIService {
   /**
    * Analisa os modelos do projeto para extrair DNA de estilo e estrutura
    */
-  async analyzeProjectModels(projectId: string): Promise<string> {
+  async analyzeProjectModels(projectId: string, onStatusChange?: (status: string) => void): Promise<string> {
     console.log(`[IA] Iniciando verificação de estilo para o projeto "${projectId}"...`);
     
     if (!this.isUUID(projectId)) return "ID inválido";
 
     try {
+      if (onStatusChange) onStatusChange('📝 Analisando padrões de escrita (DNA de Estilo)...');
+      
       // 1. Primeiro, verifica se o arquivo de padrão já existe para evitar re-análise
       const { data: existingFiles } = await supabase.storage
         .from('Modelos')
@@ -2641,6 +2739,7 @@ class APIService {
 
       if (styleFile) {
         console.log('[RAG] Padrão de estilo já existe. Carregando...');
+        if (onStatusChange) onStatusChange('✨ Padrão de escrita carregado!');
         const { data } = await supabase.storage
           .from('Modelos')
           .download(`${projectId}/PADRAO_ESTILO_${projectId}.txt`);
@@ -2653,34 +2752,45 @@ class APIService {
       }
 
       let sampleText = "";
-      const txtModels = existingFiles.filter(f => f.name.toLowerCase().endsWith('.txt'));
-
-      if (txtModels.length === 0) {
-        return "Sem modelos em formato legível (.txt) para análise profunda.";
+      // Procura arquivos .txt ou .extracted.txt
+      for (const model of existingFiles) {
+        const isTxt = model.name.toLowerCase().endsWith('.txt');
+        const isExtracted = model.name.toLowerCase().endsWith('.extracted.txt');
+        
+        if (isTxt || isExtracted) {
+          try {
+            const displayName = isExtracted ? model.name.replace('.extracted.txt', '') : model.name;
+            if (onStatusChange) onStatusChange(`📖 Lendo modelo: ${displayName}...`);
+            
+            const { data } = await supabase.storage
+              .from('Modelos')
+              .download(`${projectId}/${model.name}`);
+            
+            if (data) {
+              const text = await data.text();
+              sampleText += `\n--- MODELO: ${displayName} ---\n${text.substring(0, 2000)}\n`;
+            }
+          } catch (e) { /* skip */ }
+        }
       }
 
-      for (const model of txtModels) {
-        try {
-          const { data } = await supabase.storage
-            .from('Modelos')
-            .download(`${projectId}/${model.name}`);
-          
-          if (data) {
-            const text = await data.text();
-            sampleText += `\n--- MODELO: ${model.name} ---\n${text.substring(0, 2000)}\n`;
-          }
-        } catch (e) { /* skip */ }
+      if (sampleText === "") {
+        return "⚠️ Nenhum conteúdo legível encontrado nos modelos. Certifique-se de enviar arquivos .txt, .docx ou .pdf.";
       }
 
       const aiConfig = this.getAIConfiguracao();
       if (!aiConfig || (aiConfig.provider !== 'ollama' && !aiConfig.apiKey)) return "IA não configurada";
 
+      if (onStatusChange) onStatusChange('🤔 IA está extraindo o DNA de estilo dos modelos...');
+      
       const prompt = `Analise estas AMOSTRAS DE DOCUMENTOS e extraia o DNA de ESTILO E ESTRUTURA:
       ${sampleText}
       Resuma em 5 pontos diretos o tom de voz e estrutura. Responda em Português Brasileiro.`;
 
       const styleAnalysis = await this.callAIAPI(aiConfig, prompt);
 
+      if (onStatusChange) onStatusChange('💾 Salvando padrão de estilo...');
+      
       // Salva para a próxima vez
       const styleBlob = new Blob([styleAnalysis], { type: 'text/plain' });
       await supabase.storage
@@ -2690,11 +2800,56 @@ class APIService {
       return styleAnalysis;
     } catch (error) {
       console.error('Erro na análise de estilo:', error);
+      if (onStatusChange) onStatusChange('❌ Erro ao analisar padrões de escrita.');
       return "Erro ao processar estilo.";
     }
   }
 
   async getProjectFiles(projectId: string): Promise<UploadedFile[]> {
+    // Se for um projeto real (UUID), tenta sincronizar a lista de arquivos do Supabase
+    if (this.isUUID(projectId)) {
+      try {
+        const { data: storageFiles, error } = await supabase.storage
+          .from('Documentos')
+          .list(projectId);
+
+        if (!error && storageFiles) {
+          // Mapeia os arquivos do storage para o formato da interface
+          // Nota: Como o storage não guarda todos os metadados (quem enviou, etc),
+          // tentamos reconciliar com o que temos em memória ou criamos um mock básico
+          const currentMockFiles = this.mockFiles.get(projectId) || [];
+          
+          const syncedFiles: UploadedFile[] = storageFiles
+            .filter(f => !f.name.endsWith('.extracted.txt') && f.name !== `.extracted.txt`)
+            .map(f => {
+              const existing = currentMockFiles.find(m => this.sanitizeFilename(m.name) === f.name);
+              if (existing) return existing;
+
+              // Se não existe em memória, cria um objeto básico
+              return {
+                id: f.id || Date.now().toString() + Math.random(),
+                projectId,
+                name: f.name,
+                type: f.name.endsWith('.pdf') ? 'pdf' : 
+                      f.name.endsWith('.docx') ? 'docx' : 
+                      f.name.endsWith('.doc') ? 'doc' : 
+                      f.name.endsWith('.txt') ? 'txt' : 'other',
+                size: f.metadata?.size || 0,
+                status: 'processed',
+                isDataSource: true, // Por padrão, assumimos que arquivos no bucket são fontes de dados
+                uploadedBy: 'Sistema',
+                uploadedAt: f.created_at || new Date().toISOString()
+              };
+            });
+
+          this.mockFiles.set(projectId, syncedFiles);
+          return syncedFiles;
+        }
+      } catch (err) {
+        console.warn('[SUPABASE] Erro ao sincronizar lista de arquivos:', err);
+      }
+    }
+
     return this.mockFiles.get(projectId) || [];
   }
 
@@ -2730,13 +2885,13 @@ class APIService {
       try {
         const sanitizedName = this.sanitizeFilename(fileToDelete.name);
         const filePath = `${projectId}/${sanitizedName}`;
-        const { error } = await supabase.storage
-          .from('Documentos')
-          .remove([filePath]);
-
-        if (error) throw error;
+        const extractedPath = `${projectId}/${sanitizedName}.extracted.txt`;
         
-        console.log('[SUPABASE] Arquivo removido do storage:', filePath);
+        await supabase.storage
+          .from('Documentos')
+          .remove([filePath, extractedPath]);
+        
+        console.log('[SUPABASE] Arquivo e seu extrato removidos do storage:', filePath);
       } catch (err) {
         console.error('[SUPABASE] Erro ao remover do storage:', err);
       }
@@ -2858,6 +3013,45 @@ class APIService {
       .replace(/[\u0300-\u036f]/g, '') // Remove acentos
       .replace(/[^\w\s.-]/g, '_')     // Substitui caracteres especiais por _
       .replace(/\s+/g, '_');           // Substitui espaços por _
+  }
+
+  // Extrai texto de arquivos PDF ou DOCX localmente (sem IA)
+  private async extractTextFromFile(file: File): Promise<string> {
+    const extension = file.name.split('.').pop()?.toLowerCase();
+    
+    try {
+      if (extension === 'txt') {
+        return await file.text();
+      } 
+      
+      if (extension === 'docx' || extension === 'doc') {
+        const arrayBuffer = await file.arrayBuffer();
+        const result = await mammoth.extractRawText({ arrayBuffer });
+        return result.value;
+      }
+      
+      if (extension === 'pdf') {
+        const arrayBuffer = await file.arrayBuffer();
+        const loadingTask = pdfjsLib.getDocument({ data: arrayBuffer });
+        const pdf = await loadingTask.promise;
+        let fullText = "";
+        
+        for (let i = 1; i <= pdf.numPages; i++) {
+          const page = await pdf.getPage(i);
+          const textContent = await page.getTextContent();
+          const pageText = textContent.items
+            .map((item: any) => item.str)
+            .join(" ");
+          fullText += pageText + "\n";
+        }
+        return fullText;
+      }
+      
+      return "";
+    } catch (error) {
+      console.error(`[EXTRAÇÃO] Erro ao extrair texto de ${file.name}:`, error);
+      return "";
+    }
   }
 
   // Função auxiliar para mapear o usuário do banco para a interface do frontend

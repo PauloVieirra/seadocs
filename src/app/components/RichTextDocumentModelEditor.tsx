@@ -9,7 +9,7 @@ import { toast } from 'sonner';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from './ui/dialog';
 import { Textarea } from './ui/textarea';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select';
-import { Layout, Type, Save, X, PlusCircle, Database, ChevronUp, ChevronDown, Trash2 } from 'lucide-react';
+import { Layout, Type, Save, PlusCircle, Database, Trash2, AlertCircle } from 'lucide-react';
 
 let customBlotsRegistered = false;
 
@@ -39,35 +39,41 @@ function ensureCustomBlotsRegistered() {
       node.setAttribute('data-field-help', help);
       node.setAttribute('data-topic-id', topicId);
 
+      // Botão de excluir
+      const deleteBtn = document.createElement('div');
+      deleteBtn.className = 'sgid-delete-btn';
+      deleteBtn.innerHTML = `
+        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M18 6 6 18"></path><path d="m6 6 12 12"></path>
+        </svg>
+      `;
+      deleteBtn.onclick = (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        node.dispatchEvent(new CustomEvent('sgid-delete-request', {
+          detail: { id, type: 'metadata', title },
+          bubbles: true
+        }));
+      };
+      node.appendChild(deleteBtn);
+
       const header = document.createElement('div');
       header.className = 'sgid-metadata-field__header';
-
-      const titleEl = document.createElement('div');
-      titleEl.className = 'sgid-metadata-field__title';
-      titleEl.innerText = title;
-      header.appendChild(titleEl);
-
-      if (topicId) {
-        const topicTag = document.createElement('span');
-        topicTag.className = 'text-[9px] bg-blue-100 text-blue-700 px-1.5 py-0.5 rounded-full ml-2';
-        topicTag.innerText = `Tópico: ${topicId}`;
-        titleEl.appendChild(topicTag);
-      }
 
       if (help) {
         const helpEl = document.createElement('div');
         helpEl.className = 'sgid-metadata-field__help';
-        helpEl.innerText = help;
-        helpEl.style.fontSize = '10px';
-        helpEl.style.opacity = '0.7';
+        helpEl.innerText = `💡 ${help}`;
         header.appendChild(helpEl);
       }
 
       const body = document.createElement('div');
       body.className = 'sgid-metadata-field__textarea';
-      body.innerText = 'Digite aqui (campo editável no documento)...';
+      body.innerText = 'Este espaço será preenchido pela IA ou manualmente no documento final...';
 
-      node.appendChild(header);
+      if (header.childNodes.length > 0) {
+        node.appendChild(header);
+      }
       node.appendChild(body);
 
       return node;
@@ -91,11 +97,29 @@ function ensureCustomBlotsRegistered() {
 
     static create(value: any) {
       const node = super.create();
-      if (value && typeof value === 'string') {
-        node.setAttribute('data-topic-id', value);
-      } else {
-        node.setAttribute('data-topic-id', `topic-${Date.now()}`);
-      }
+      const topicId = (value && typeof value === 'string') ? value : `topic-${Date.now()}`;
+      node.setAttribute('data-topic-id', topicId);
+
+      // Botão de excluir para o tópico
+      const deleteBtn = document.createElement('div');
+      deleteBtn.className = 'sgid-delete-btn';
+      deleteBtn.setAttribute('contenteditable', 'false');
+      deleteBtn.innerHTML = `
+        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M18 6 6 18"></path><path d="m6 6 12 12"></path>
+        </svg>
+      `;
+      deleteBtn.onclick = (e: any) => {
+        e.preventDefault();
+        e.stopPropagation();
+        const topicName = (e.target.closest('.sgid-topic') as HTMLElement)?.innerText || 'Tópico';
+        node.dispatchEvent(new CustomEvent('sgid-delete-request', {
+          detail: { id: topicId, type: 'topic', title: topicName },
+          bubbles: true
+        }));
+      };
+      node.appendChild(deleteBtn);
+
       return node;
     }
 
@@ -147,101 +171,90 @@ export function RichTextDocumentModelEditor({
   initialData,
 }: RichTextDocumentModelEditorProps) {
   const quillRef = useRef<ReactQuill | null>(null);
+  const editorContentRef = useRef<string>(initialData?.templateContent || '');
   const [name, setName] = useState(initialData?.name || '');
   const [type, setType] = useState(initialData?.type || '');
+  // editorData agora é usado apenas para extrair tópicos e salvar, não para controlar o input
   const [editorData, setEditorData] = useState(initialData?.templateContent || '');
+
+  // ... (states de metadado e delete) ...
+
+  // Sincroniza o editorContentRef com as mudanças do editor sem causar re-renders
+  const handleEditorChange = (content: string) => {
+    editorContentRef.current = content;
+    // Debounce ou atualização lenta do editorData apenas para fins de UI (lista de tópicos)
+    setEditorData(content);
+  };
 
   // Metadado State
   const [fieldDialogOpen, setFieldDialogOpen] = useState(false);
-  const [fieldTitle, setFieldTitle] = useState('');
   const [fieldId, setFieldId] = useState('');
   const [fieldHelp, setFieldHelp] = useState('');
-  const [associatedTopic, setAssociatedTopic] = useState<string>('none');
+  const [associatedTopic, setAssociatedTopic] = useState<string>('');
 
   // Tópico State
   const [existingTopics, setExistingTopics] = useState<{id: string, name: string}[]>([]);
 
-  // Extrair a estrutura (tópicos e metadados) na ordem em que aparecem
-  const [structure, setStructure] = useState<{type: 'topic' | 'field', id: string, name: string}[]>([]);
+  // Delete Confirmation State
+  const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
+  const [itemToDelete, setItemToDelete] = useState<{id: string, type: 'topic' | 'metadata', title: string} | null>(null);
+
+  useEffect(() => {
+    const editor = quillRef.current?.getEditor();
+    if (!editor) return;
+
+    const handleDeleteRequest = (e: any) => {
+      const { id, type, title } = e.detail;
+      setItemToDelete({ id, type, title });
+      setDeleteConfirmOpen(true);
+    };
+
+    editor.root.addEventListener('sgid-delete-request', handleDeleteRequest);
+    return () => {
+      editor.root.removeEventListener('sgid-delete-request', handleDeleteRequest);
+    };
+  }, []);
+
+  const confirmDelete = () => {
+    if (!itemToDelete) return;
+
+    const editor = quillRef.current?.getEditor();
+    if (!editor) return;
+
+    if (itemToDelete.type === 'metadata') {
+      const fieldNode = editor.root.querySelector(`[data-field-id="${itemToDelete.id}"]`);
+      if (fieldNode) {
+        const blot = Quill.find(fieldNode) as any;
+        if (blot && typeof blot.remove === 'function') {
+          blot.remove();
+          toast.success('Metadado removido.');
+        }
+      }
+    } else {
+      const topicNode = editor.root.querySelector(`[data-topic-id="${itemToDelete.id}"]`);
+      if (topicNode) {
+        const blot = Quill.find(topicNode) as any;
+        if (blot && typeof blot.remove === 'function') {
+          blot.remove();
+          toast.success('Tópico removido.');
+        }
+      }
+    }
+
+    setDeleteConfirmOpen(false);
+    setItemToDelete(null);
+  };
 
   useEffect(() => {
     const parser = new DOMParser();
     const doc = parser.parseFromString(editorData, 'text/html');
-    const nodes = doc.querySelectorAll('.sgid-topic, .sgid-metadata-field');
-    const items = Array.from(nodes).map((node: any) => {
-      const isTopic = node.classList.contains('sgid-topic');
-      return {
-        type: isTopic ? 'topic' : 'field' as 'topic' | 'field',
-        id: isTopic ? node.getAttribute('data-topic-id') : node.getAttribute('data-field-id'),
-        name: isTopic ? node.innerText.trim().substring(0, 50) || 'Tópico sem nome' : node.getAttribute('data-field-title') || 'Campo sem título'
-      };
-    });
-    setStructure(items);
-    setExistingTopics(items.filter(i => i.type === 'topic').map(i => ({ id: i.id, name: i.name })));
+    const nodes = doc.querySelectorAll('.sgid-topic');
+    const topics = Array.from(nodes).map((node: any) => ({
+      id: node.getAttribute('data-topic-id') || '',
+      name: node.innerText.trim().substring(0, 50) || 'Tópico sem nome'
+    }));
+    setExistingTopics(topics);
   }, [editorData]);
-
-  const removeItem = (id: string, type: 'topic' | 'field') => {
-    const editor = quillRef.current?.getEditor();
-    if (!editor) return;
-
-    const selector = type === 'topic' ? `[data-topic-id="${id}"]` : `[data-field-id="${id}"]`;
-    const element = editor.root.querySelector(selector);
-    if (element) {
-      const blot = Quill.find(element) as any;
-      if (blot && typeof blot.getIndex === 'function' || blot) {
-        const index = editor.getIndex(blot);
-        const length = blot.length();
-        editor.deleteText(index, length, 'user');
-        toast.success('Item removido.');
-      }
-    }
-  };
-
-  const moveItem = (index: number, direction: 'up' | 'down') => {
-    const editor = quillRef.current?.getEditor();
-    if (!editor) return;
-
-    const targetIndex = direction === 'up' ? index - 1 : index + 1;
-    if (targetIndex < 0 || targetIndex >= structure.length) return;
-
-    const itemA = structure[index];
-    const itemB = structure[targetIndex];
-
-    const selA = itemA.type === 'topic' ? `[data-topic-id="${itemA.id}"]` : `[data-field-id="${itemA.id}"]`;
-    const selB = itemB.type === 'topic' ? `[data-topic-id="${itemB.id}"]` : `[data-field-id="${itemB.id}"]`;
-
-    const elA = editor.root.querySelector(selA);
-    const elB = editor.root.querySelector(selB);
-
-    if (elA && elB) {
-      const blotA = Quill.find(elA) as any;
-      const blotB = Quill.find(elB) as any;
-      
-      if (blotA && blotB) {
-        const indexA = editor.getIndex(blotA);
-        const lenA = blotA.length();
-        
-        const indexB = editor.getIndex(blotB);
-        const lenB = blotB.length();
-
-        const deltaA = editor.getContents(indexA, lenA);
-
-        // Remover A primeiro
-        editor.deleteText(indexA, lenA, 'user');
-
-        let insertAt = indexB;
-        if (direction === 'down') {
-          // Se A estava antes de B, B recuou lenA posições após a deleção
-          insertAt = indexB - lenA + lenB;
-        }
-
-        // Inserir A na nova posição usando updateContents com retain
-        editor.updateContents({ ops: [{ retain: insertAt }, ...deltaA.ops] } as any, 'user');
-        
-        toast.success('Posição alterada.');
-      }
-    }
-  };
 
   useEffect(() => {
     if (initialData) {
@@ -259,18 +272,18 @@ export function RichTextDocumentModelEditor({
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!name.trim() || !type.trim() || !editorData.trim()) {
+    const currentContent = editorContentRef.current;
+    if (!name.trim() || !type.trim() || !currentContent.trim()) {
       toast.error('Por favor, preencha todos os campos obrigatórios e o conteúdo do template.');
       return;
     }
-    await onSave(name, type, editorData);
+    await onSave(name, type, currentContent);
   };
 
   const openFieldDialog = () => {
-    setFieldTitle('');
     setFieldId('');
     setFieldHelp('');
-    setAssociatedTopic('none');
+    setAssociatedTopic('');
     setFieldDialogOpen(true);
   };
 
@@ -281,36 +294,44 @@ export function RichTextDocumentModelEditor({
       return;
     }
 
+    editor.focus();
     const range = editor.getSelection(true);
-    const topicId = `topic-${Date.now()}`;
-    
-    // 1. Garantir que estamos em uma nova linha
-    let insertAt = range ? range.index : editor.getLength();
-    if (insertAt > 0) {
-      const prevChar = editor.getText(insertAt - 1, 1);
-      if (prevChar !== '\n') {
-        editor.insertText(insertAt, '\n', 'user');
-        insertAt += 1;
-      }
+    let index = range ? range.index : editor.getLength();
+
+    // Se estivermos no final do editor ou meio do texto, garante nova linha antes
+    if (index > 0 && editor.getText(index - 1, 1) !== '\n') {
+      editor.insertText(index, '\n', 'user');
+      index++;
     }
 
-    // 2. Inserir o texto do tópico
-    editor.insertText(insertAt, 'Novo Tópico', 'user');
+    const topicId = `topic-${Date.now()}`;
+    const text = 'Novo Tópico';
+
+    // Inserir o texto e a quebra de linha subsequente
+    editor.insertText(index, text + '\n', 'user');
     
-    // 3. Aplicar o formato de tópico na linha inteira
-    editor.formatLine(insertAt, 1, 'topic', topicId);
+    // Aplicar o formato de tópico (formatLine atua no bloco/parágrafo)
+    editor.formatLine(index, 1, 'topic', topicId);
     
-    // 4. Mover o cursor para o final do texto inserido e selecionar para facilitar a edição
-    editor.setSelection(insertAt, 11, 'user');
-    
+    // Feedback imediato
     toast.success('Tópico adicionado.');
+
+    // Seleção simplificada - sem loops de renderização do React interferindo
+    setTimeout(() => {
+      try {
+        editor.setSelection(index, text.length, 'user');
+      } catch (err) {
+        // Silencioso se o browser ainda estiver ocupado
+      }
+    }, 100);
   };
 
   const generateUniqueId = (baseId: string) => {
     const normalizedBase = baseId || `campo-${Date.now()}`;
     let candidate = normalizedBase;
     let i = 2;
-    while (new RegExp(`data-field-id="${candidate.replace(/[-/\\^$*+?.()|[\]{}]/g, '\\$&')}"`, 'i').test(editorData)) {
+    const currentHTML = editorContentRef.current;
+    while (new RegExp(`data-field-id="${candidate.replace(/[-/\\^$*+?.()|[\]{}]/g, '\\$&')}"`, 'i').test(currentHTML)) {
       candidate = `${normalizedBase}-${i}`;
       i += 1;
     }
@@ -319,8 +340,8 @@ export function RichTextDocumentModelEditor({
 
   const insertMetadataField = () => {
     if (isLoading) return;
-    if (!fieldTitle.trim()) {
-      toast.error('Informe o título do campo (ex: Introdução).');
+    if (!associatedTopic) {
+      toast.error('Por favor, associe este metadado a um tópico.');
       return;
     }
 
@@ -330,32 +351,49 @@ export function RichTextDocumentModelEditor({
       return;
     }
 
-    const baseId = fieldId.trim() ? slugify(fieldId.trim()) : slugify(fieldTitle.trim());
+    const topic = existingTopics.find(t => t.id === associatedTopic);
+    const titleToUse = topic ? topic.name : 'Campo';
+    const baseId = slugify(titleToUse);
     const uniqueId = generateUniqueId(baseId);
 
+    editor.focus();
     const range = editor.getSelection(true);
     let insertAt = range ? range.index : editor.getLength();
 
-    if (insertAt > 0) {
-      const prevChar = editor.getText(insertAt - 1, 1);
-      if (prevChar && prevChar !== '\n') {
-        editor.insertText(insertAt, '\n', 'user');
-        insertAt += 1;
-      }
+    // Garante que o embed comece em uma nova linha
+    if (insertAt > 0 && editor.getText(insertAt - 1, 1) !== '\n') {
+      editor.insertText(insertAt, '\n', 'user');
+      insertAt += 1;
     }
 
+    // Inserir o Blot de Metadado
     editor.insertEmbed(insertAt, 'metadataField', { 
       id: uniqueId, 
-      title: fieldTitle.trim(),
+      title: titleToUse,
       help: fieldHelp.trim(),
-      topicId: associatedTopic !== 'none' ? associatedTopic : ''
+      topicId: associatedTopic
     }, 'user');
     
+    // Remove parágrafos vazios duplicados entre tópico e metadado
+    const contents = editor.getContents(insertAt - 1, 2);
+    if (contents.ops.length > 1 && contents.ops[0].insert === '\n' && contents.ops[1].insert === '\n') {
+       editor.deleteText(insertAt, 1, 'user');
+    }
+
+    // Garante linha vazia após o embed para o usuário continuar escrevendo
     editor.insertText(insertAt + 1, '\n', 'user');
-    editor.setSelection(insertAt + 2, 0, 'user');
+    
+    // Mover o cursor para após o metadado
+    setTimeout(() => {
+      try {
+        editor.setSelection(insertAt + 2, 0, 'user');
+      } catch (e) {
+        // Silencioso
+      }
+    }, 100);
 
     setFieldDialogOpen(false);
-    toast.success(`Metadado "${fieldTitle.trim()}" adicionado.`);
+    toast.success(`Metadado para "${titleToUse}" adicionado.`);
   };
 
   return (
@@ -398,73 +436,6 @@ export function RichTextDocumentModelEditor({
 
       {/* Editor Area */}
       <div className="flex-1 overflow-hidden relative bg-gray-100 flex flex-row">
-        {/* Sidebar de Estrutura */}
-        <div className="w-80 border-r bg-white flex flex-col shrink-0">
-          <div className="p-4 border-b font-bold flex items-center gap-2 bg-gray-50/50 text-gray-800">
-            <Layout className="w-4 h-4 text-blue-600" />
-            Estrutura do Modelo
-          </div>
-          <div className="flex-1 overflow-y-auto p-3 space-y-3">
-            {structure.map((item, index) => (
-              <div key={item.id} className="group p-3 rounded-xl border border-gray-200 bg-white hover:border-blue-300 hover:shadow-sm transition-all">
-                <div className="flex items-start justify-between gap-2">
-                  <div className="flex flex-col min-w-0">
-                    <div className="flex items-center gap-2 mb-1">
-                      <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded uppercase tracking-wider ${
-                        item.type === 'topic' ? 'bg-blue-100 text-blue-700' : 'bg-indigo-100 text-indigo-700'
-                      }`}>
-                        {item.type === 'topic' ? 'Tópico' : 'Metadado'}
-                      </span>
-                    </div>
-                    <span className="text-sm font-semibold text-gray-700 truncate" title={item.name}>
-                      {item.name}
-                    </span>
-                  </div>
-                  <div className="flex flex-col gap-1 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
-                    <div className="flex items-center gap-1">
-                      <Button 
-                        variant="ghost" 
-                        size="icon" 
-                        className="h-7 w-7 hover:bg-blue-50 hover:text-blue-600" 
-                        onClick={() => moveItem(index, 'up')} 
-                        disabled={index === 0}
-                        title="Mover para cima"
-                      >
-                        <ChevronUp className="w-4 h-4" />
-                      </Button>
-                      <Button 
-                        variant="ghost" 
-                        size="icon" 
-                        className="h-7 w-7 hover:bg-blue-50 hover:text-blue-600" 
-                        onClick={() => moveItem(index, 'down')} 
-                        disabled={index === structure.length - 1}
-                        title="Mover para baixo"
-                      >
-                        <ChevronDown className="w-4 h-4" />
-                      </Button>
-                    </div>
-                    <Button 
-                      variant="ghost" 
-                      size="icon" 
-                      className="h-7 w-7 text-red-500 hover:text-red-600 hover:bg-red-50" 
-                      onClick={() => removeItem(item.id, item.type)}
-                      title="Remover item"
-                    >
-                      <Trash2 className="w-4 h-4" />
-                    </Button>
-                  </div>
-                </div>
-              </div>
-            ))}
-            {structure.length === 0 && (
-              <div className="flex flex-col items-center justify-center py-12 px-4 text-center opacity-60">
-                <Layout className="w-8 h-8 text-gray-300 mb-2" />
-                <p className="text-sm text-gray-500">Nenhum elemento inserido</p>
-              </div>
-            )}
-          </div>
-        </div>
-
         {/* Editor Area */}
         <div className="flex-1 overflow-y-auto p-4 md:p-8 flex flex-col items-center">
           <div className="w-full max-w-[950px] bg-white shadow-2xl rounded-sm border border-gray-200 min-h-[1200px]">
@@ -473,8 +444,8 @@ export function RichTextDocumentModelEditor({
                 quillRef.current = instance;
               }}
               theme="snow"
-              value={editorData}
-              onChange={setEditorData}
+              defaultValue={editorContentRef.current}
+              onChange={handleEditorChange}
               readOnly={isLoading}
               modules={{
                 toolbar: {
@@ -581,33 +552,24 @@ export function RichTextDocumentModelEditor({
 
           <div className="space-y-4 py-4">
             <div className="space-y-2">
-              <Label htmlFor="field-title" className="text-sm font-medium">Título do metadado *</Label>
-              <Input
-                id="field-title"
-                value={fieldTitle}
-                onChange={(e) => setFieldTitle(e.target.value)}
-                placeholder='Ex: "Introdução do Projeto"'
-                className="rounded-lg"
-              />
-            </div>
-
-            <div className="space-y-2">
-              <Label htmlFor="associated-topic" className="text-sm font-medium">Associar a um Tópico (opcional)</Label>
+              <Label htmlFor="associated-topic" className="text-sm font-medium">Associar a um Tópico *</Label>
               <Select value={associatedTopic} onValueChange={setAssociatedTopic}>
                 <SelectTrigger className="rounded-lg">
-                  <SelectValue placeholder="Selecione um tópico..." />
+                  <SelectValue placeholder="Selecione o tópico que este campo preenche..." />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="none">Nenhum vínculo</SelectItem>
                   {existingTopics.map(topic => (
                     <SelectItem key={topic.id} value={topic.id}>{topic.name}</SelectItem>
                   ))}
+                  {existingTopics.length === 0 && (
+                    <div className="p-2 text-xs text-red-500 italic">Nenhum tópico criado ainda. Adicione um tópico primeiro.</div>
+                  )}
                 </SelectContent>
               </Select>
             </div>
 
             <div className="space-y-2">
-              <Label htmlFor="field-help" className="text-sm font-medium">Instruções para o preenchimento</Label>
+              <Label htmlFor="field-help" className="text-sm font-medium">Instruções para a IA ou preenchimento</Label>
               <Textarea
                 id="field-help"
                 value={fieldHelp}
@@ -625,6 +587,50 @@ export function RichTextDocumentModelEditor({
                 Inserir Metadado
               </Button>
             </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Dialog de Confirmação de Exclusão */}
+      <Dialog open={deleteConfirmOpen} onOpenChange={setDeleteConfirmOpen}>
+        <DialogContent className="sm:max-w-[400px]">
+          <DialogHeader>
+            <div className="flex items-center gap-3 mb-2">
+              <div className="p-2 bg-red-100 rounded-full">
+                <AlertCircle className="w-5 h-5 text-red-600" />
+              </div>
+              <DialogTitle className="text-red-900">Confirmar Exclusão</DialogTitle>
+            </div>
+            <DialogDescription className="text-gray-600 pt-2">
+              Tem certeza que deseja remover este {itemToDelete?.type === 'topic' ? 'tópico' : 'metadado'}?
+              {itemToDelete?.title && (
+                <div className="mt-3 p-3 bg-gray-50 rounded-lg border border-gray-100 italic text-sm text-gray-700">
+                  "{itemToDelete.title.substring(0, 100)}{itemToDelete.title.length > 100 ? '...' : ''}"
+                </div>
+              )}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="flex justify-end gap-3 mt-6">
+            <Button
+              variant="outline"
+              onClick={() => {
+                setDeleteConfirmOpen(false);
+                setItemToDelete(null);
+              }}
+              disabled={isLoading}
+              className="rounded-lg"
+            >
+              Cancelar
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={confirmDelete}
+              disabled={isLoading}
+              className="rounded-lg px-6 flex items-center gap-2"
+            >
+              <Trash2 className="w-4 h-4" />
+              Excluir
+            </Button>
           </div>
         </DialogContent>
       </Dialog>
