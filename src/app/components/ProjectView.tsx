@@ -81,7 +81,6 @@ export function ProjectView({ projectId, onBack, onSelectDocument }: ProjectView
 
   const handleCreateDocument = async (data: {
     name: string;
-    groupId: string;
     templateId: string;
     securityLevel: 'public' | 'restricted' | 'confidential' | 'secret';
   }) => {
@@ -89,7 +88,6 @@ export function ProjectView({ projectId, onBack, onSelectDocument }: ProjectView
       await apiService.createDocument(
         projectId,
         data.name,
-        data.groupId,
         data.templateId,
         data.securityLevel
       );
@@ -302,7 +300,6 @@ export function ProjectView({ projectId, onBack, onSelectDocument }: ProjectView
         onOpenChange={setCreateDialogOpen}
         onCreateDocument={handleCreateDocument}
         documentModels={allDocumentModels}
-        groups={allGroups}
       />
 
       {/* Project Settings Dialog */}

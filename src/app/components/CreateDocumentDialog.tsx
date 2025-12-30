@@ -11,12 +11,10 @@ interface CreateDocumentDialogProps {
   onOpenChange: (open: boolean) => void;
   onCreateDocument: (data: {
     name: string;
-    groupId: string;
     templateId: string;
     securityLevel: 'public' | 'restricted' | 'confidential' | 'secret';
   }) => void;
   documentModels: DocumentModel[];
-  groups: Group[];
 }
 
 export function CreateDocumentDialog({
@@ -24,10 +22,8 @@ export function CreateDocumentDialog({
   onOpenChange,
   onCreateDocument,
   documentModels,
-  groups
 }: CreateDocumentDialogProps) {
   const [name, setName] = useState('');
-  const [groupId, setGroupId] = useState('');
   const [templateId, setTemplateId] = useState('');
   const [securityLevel, setSecurityLevel] = useState<'public' | 'restricted' | 'confidential' | 'secret'>('confidential');
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -40,11 +36,6 @@ export function CreateDocumentDialog({
       return;
     }
 
-    if (!groupId) {
-      alert('Grupo responsável é obrigatório');
-      return;
-    }
-
     if (!templateId) {
       alert('Modelo de documento é obrigatório');
       return;
@@ -54,14 +45,12 @@ export function CreateDocumentDialog({
     try {
       await onCreateDocument({
         name: name.trim(),
-        groupId,
         templateId,
         securityLevel
       });
 
       // Limpar formulário
       setName('');
-      setGroupId('');
       setTemplateId('');
       setSecurityLevel('confidential');
     } finally {
@@ -73,7 +62,6 @@ export function CreateDocumentDialog({
     if (newOpen === false) {
       // Limpar formulário ao fechar
       setName('');
-      setGroupId('');
       setTemplateId('');
       setSecurityLevel('confidential');
     }
@@ -102,23 +90,6 @@ export function CreateDocumentDialog({
               required
               disabled={isSubmitting}
             />
-          </div>
-
-          {/* Grupo Responsável */}
-          <div className="space-y-2">
-            <Label htmlFor="group-select">Grupo Responsável *</Label>
-            <Select value={groupId} onValueChange={setGroupId} disabled={isSubmitting}>
-              <SelectTrigger id="group-select">
-                <SelectValue placeholder="Selecione um grupo..." />
-              </SelectTrigger>
-              <SelectContent>
-                {groups.map(group => (
-                  <SelectItem key={group.id} value={group.id}>
-                    {group.name}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
           </div>
 
           {/* Modelo/Template */}

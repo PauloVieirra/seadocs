@@ -72,12 +72,7 @@ export function ProjectModelsPanel({ projectId }: ProjectModelsPanelProps) {
     if (!confirm(`Deseja realmente remover o modelo "${fileName}"?`)) return;
 
     try {
-      const { error } = await supabase.storage
-        .from('Modelos')
-        .remove([`${projectId}/${fileName}`]);
-
-      if (error) throw error;
-
+      await apiService.deleteModelFile(projectId, fileName);
       toast.success('Modelo removido');
       loadModels();
     } catch (err: any) {

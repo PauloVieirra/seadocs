@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { Button } from './ui/button';
 import { Input } from './ui/input';
-import { Send, Bot, User, Loader2, Minimize2 } from 'lucide-react';
+import { Send, Bot, User, Loader2, Minimize2, RotateCcw } from 'lucide-react';
 import { apiService } from '../../services/api';
 import { toast } from 'sonner';
 
@@ -169,6 +169,43 @@ export function AIChat({ projectId, documentId }: AIChatProps) {
     }
   };
 
+  const handleRestoreAnalysis = async () => {
+    if (isAnalyzing || loading) return;
+    
+    try {
+      setIsAnalyzing(true);
+      const placeholderId = 'analysis-placeholder-' + Date.now();
+      
+      setMessages(prev => [...prev, {
+        id: placeholderId,
+        role: 'assistant',
+        content: '🔄 Re-analisando base de conhecimento...',
+        timestamp: new Date()
+      }]);
+
+      const updateStatus = (status: string) => {
+        setAnalysisStatus(status);
+        setMessages(prev => prev.map(m => 
+          m.id === placeholderId ? { ...m, content: `🔄 ${status}` } : m
+        ));
+      };
+
+      // Recria o resumo e o DNA de estilo, forçando atualização no RAG local e Banco
+      await apiService.analyzeProjectModels(projectId, updateStatus);
+      const summary = await apiService.analyzeProjectMaterials(projectId, updateStatus, true);
+      
+      setMessages(prev => prev.map(m => 
+        m.id === placeholderId ? { ...m, content: summary } : m
+      ));
+      toast.success('Resumo e RAG atualizados com sucesso!');
+    } catch (error) {
+      console.error('Erro ao refazer análise:', error);
+      toast.error('Falha ao atualizar análise');
+    } finally {
+      setIsAnalyzing(false);
+    }
+  };
+
   if (minimized) {
     return (
       <div className="fixed bottom-6 right-6 z-50">
@@ -224,12 +261,22 @@ export function AIChat({ projectId, documentId }: AIChatProps) {
                 )}
               </div>
               <div className={`flex-1 ${message.role === 'user' ? 'text-right' : ''}`}>
-                <div className={`inline-block max-w-[85%] p-3 rounded-lg ${
+                <div className={`inline-block max-w-[85%] p-3 rounded-lg relative group ${
                   message.role === 'user'
                     ? 'bg-blue-600 text-white'
                     : 'bg-gray-100 text-gray-900'
                 }`}>
                   <p className="text-sm whitespace-pre-wrap">{message.content}</p>
+                  
+                  {message.role === 'assistant' && message.id !== '1' && (
+                    <button
+                      onClick={handleRestoreAnalysis}
+                      className="absolute bottom-2 right-2 p-1.5 text-gray-400 hover:text-blue-600 hover:bg-white rounded-md transition-all opacity-0 group-hover:opacity-100 bg-gray-100/50"
+                      title="Refazer análise e atualizar RAG"
+                    >
+                      <RotateCcw className="w-3 h-3" />
+                    </button>
+                  )}
                 </div>
                 <p className="text-xs text-gray-500 mt-1">
                   {message.timestamp.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}

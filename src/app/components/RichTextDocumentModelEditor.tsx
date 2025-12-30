@@ -72,7 +72,7 @@ function ensureCustomBlotsRegistered() {
       body.innerText = 'Este espaço será preenchido pela IA ou manualmente no documento final...';
 
       if (header.childNodes.length > 0) {
-        node.appendChild(header);
+      node.appendChild(header);
       }
       node.appendChild(body);
 
@@ -362,8 +362,8 @@ export function RichTextDocumentModelEditor({
 
     // Garante que o embed comece em uma nova linha
     if (insertAt > 0 && editor.getText(insertAt - 1, 1) !== '\n') {
-      editor.insertText(insertAt, '\n', 'user');
-      insertAt += 1;
+        editor.insertText(insertAt, '\n', 'user');
+        insertAt += 1;
     }
 
     // Inserir o Blot de Metadado
@@ -386,7 +386,7 @@ export function RichTextDocumentModelEditor({
     // Mover o cursor para após o metadado
     setTimeout(() => {
       try {
-        editor.setSelection(insertAt + 2, 0, 'user');
+    editor.setSelection(insertAt + 2, 0, 'user');
       } catch (e) {
         // Silencioso
       }
