@@ -3,7 +3,7 @@ import { Button } from './ui/button';
 import { apiService } from '../../services/api';
 import { toast } from 'sonner';
 import { FileText, Trash2, Upload, Sparkles, CheckCircle2 } from 'lucide-react';
-import { supabase } from '../../services/api';
+import { supabase } from '../../services/supabase';
 import { Badge } from './ui/badge';
 
 interface ProjectModelsPanelProps {

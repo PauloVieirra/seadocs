@@ -224,6 +224,8 @@
   display: flex;
   flex-direction: column;
   align-items: stretch;
+  position: relative;
+  min-height: 120px; /* Garante espaço suficiente para os botões */
   width: 100%;
   padding: 20px;
   margin: 0 0 32px 0; /* Margem embaixo */
@@ -267,7 +269,7 @@
   bottom: 24px;
   left: 50%;
   transform: translateX(-50%);
-  z-index: 1000;
+  z-index: 50;
   background: white;
   border-radius: 999px;
   padding: 0 12px; /* Reduzido padding lateral do pai */
@@ -389,6 +391,8 @@
 
 .ql-editor {
   padding: 40px 60px 120px !important; /* Padding lateral interno da folha e espaço para a barra */
+  position: relative;
+  z-index: 10;
 }
 
 .ql-editor .sgid-metadata-field__header {
@@ -465,4 +469,50 @@
 
 .ql-editor .sgid-metadata-field:active {
   transform: translateY(0.5px);
+}
+
+/* Estilos para botões de ação dos metadados */
+.sgid-metadata-actions {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  display: flex;
+  gap: 4px;
+  opacity: 0;
+  transition: opacity 0.2s ease;
+  pointer-events: auto;
+  z-index: 100;
+}
+
+.sgid-metadata-field:hover .sgid-metadata-actions {
+  opacity: 1 !important;
+}
+
+.sgid-edit-btn,
+.sgid-delete-btn {
+  width: 24px;
+  height: 24px;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  background: white;
+  border: 1px solid #e5e7eb;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+}
+
+.sgid-edit-btn:hover {
+  background: #f3f4f6;
+  border-color: #3b82f6;
+  color: #3b82f6;
+  transform: scale(1.05);
+}
+
+.sgid-delete-btn:hover {
+  background: #fef2f2;
+  border-color: #ef4444;
+  color: #ef4444;
+  transform: scale(1.05);
 }

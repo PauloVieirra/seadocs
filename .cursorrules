@@ -1,0 +1,7 @@
+# Regras de Desenvolvimento do Projeto SEADOCS
+
+1. **Aprovação Explícita**: Nenhuma funcionalidade ou trecho de código pode ser adicionado, atualizado ou removido sem uma solicitação direta e explícita do usuário.
+2. **Preservação de Lógica**: Não substitua lógica de "Mock" por lógica de produção (como Supabase) de forma agressiva. Mantenha a compatibilidade com os dados de teste existentes até que a transição seja expressamente validada.
+3. **Sem Restauração Automática**: Não tente restaurar versões de arquivos ou desfazer alterações de forma automática. Qualquer reversão deve ser solicitada.
+4. **Foco no Usuário**: Sempre valide se uma alteração estrutural (como mudar um banco de dados) não quebrará a visualização atual de dados do usuário.
+

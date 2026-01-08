@@ -10,6 +10,26 @@ Este documento detalha as permissões e funcionalidades acessíveis a cada perfi
 *   **Responsável Técnico**
 *   **Operacional**
 
+## Níveis de Sigilo de Documentos
+
+Durante a criação de documentos, o usuário pode definir o nível de sigilo:
+
+### Público
+- **Descrição**: Qualquer pessoa com acesso ao projeto pode visualizar o documento
+- **Quem pode ver**: Todos os usuários que têm acesso ao projeto
+- **Uso recomendado**: Documentos de referência geral, manuais, procedimentos padrão
+
+### Restrito
+- **Descrição**: Apenas pessoas autorizadas podem visualizar o documento
+- **Quem pode ver**: Apenas o criador do documento e os usuários explicitamente selecionados durante a criação
+- **Como configurar**: Durante a criação, é obrigatório selecionar pelo menos um usuário autorizado
+- **Uso recomendado**: Documentos sensíveis que precisam ser compartilhados com equipe específica
+
+### Confidencial
+- **Descrição**: Apenas o criador do documento pode visualizar
+- **Quem pode ver**: Exclusivamente o usuário que criou o documento
+- **Uso recomendado**: Documentos pessoais, rascunhos, informações confidenciais
+
 ## Matriz de Permissões
 
 | Funcionalidade                     | Administrador | Diretor | Gerente | Responsável Técnico | Operacional |

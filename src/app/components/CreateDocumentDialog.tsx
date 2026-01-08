@@ -1,10 +1,13 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { Button } from './ui/button';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from './ui/dialog';
 import { Input } from './ui/input';
 import { Label } from './ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select';
-import { type DocumentModel, type Group } from '../../services/api';
+import { MultiSelect } from './ui/multi-select';
+import { UserSearchSelect } from './UserSearchSelect';
+import { type DocumentModel, type Group, type User } from '../../services/api';
+import { apiService } from '../../services/api';
 
 interface CreateDocumentDialogProps {
   open: boolean;
@@ -12,7 +15,8 @@ interface CreateDocumentDialogProps {
   onCreateDocument: (data: {
     name: string;
     templateId: string;
-    securityLevel: 'public' | 'restricted' | 'confidential' | 'secret';
+    securityLevel: 'public' | 'restricted' | 'confidential';
+    authorizedUsers?: string[]; // IDs dos usuários autorizados (apenas para restrito)
   }) => void;
   documentModels: DocumentModel[];
 }
@@ -25,8 +29,25 @@ export function CreateDocumentDialog({
 }: CreateDocumentDialogProps) {
   const [name, setName] = useState('');
   const [templateId, setTemplateId] = useState('');
-  const [securityLevel, setSecurityLevel] = useState<'public' | 'restricted' | 'confidential' | 'secret'>('confidential');
+  const [securityLevel, setSecurityLevel] = useState<'public' | 'restricted' | 'confidential'>('confidential');
+  const [authorizedUsers, setAuthorizedUsers] = useState<string[]>([]);
+  const [allUsers, setAllUsers] = useState<User[]>([]);
   const [isSubmitting, setIsSubmitting] = useState(false);
+
+  useEffect(() => {
+    if (open) {
+      loadAllUsers();
+    }
+  }, [open]);
+
+  const loadAllUsers = async () => {
+    try {
+      const users = await apiService.getAllUsers();
+      setAllUsers(users);
+    } catch (error) {
+      console.error('Erro ao carregar usuários:', error);
+    }
+  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -41,18 +62,25 @@ export function CreateDocumentDialog({
       return;
     }
 
+    if (securityLevel === 'restricted' && authorizedUsers.length === 0) {
+      alert('Para documentos restritos, é necessário selecionar pelo menos um usuário autorizado');
+      return;
+    }
+
     setIsSubmitting(true);
     try {
       await onCreateDocument({
         name: name.trim(),
         templateId,
-        securityLevel
+        securityLevel,
+        authorizedUsers: securityLevel === 'restricted' ? authorizedUsers : undefined
       });
 
       // Limpar formulário
       setName('');
       setTemplateId('');
       setSecurityLevel('confidential');
+      setAuthorizedUsers([]);
     } finally {
       setIsSubmitting(false);
     }
@@ -64,6 +92,7 @@ export function CreateDocumentDialog({
       setName('');
       setTemplateId('');
       setSecurityLevel('confidential');
+      setAuthorizedUsers([]);
     }
     onOpenChange(newOpen);
   };
@@ -120,10 +149,26 @@ export function CreateDocumentDialog({
                 <SelectItem value="public">Público</SelectItem>
                 <SelectItem value="restricted">Restrito</SelectItem>
                 <SelectItem value="confidential">Confidencial</SelectItem>
-                <SelectItem value="secret">Secreto</SelectItem>
               </SelectContent>
             </Select>
           </div>
+
+          {/* Seleção de Usuários Autorizados (apenas para Restrito) */}
+          {securityLevel === 'restricted' && (
+            <div className="space-y-2">
+              <Label htmlFor="authorized-users">Usuários Autorizados *</Label>
+              <UserSearchSelect
+                users={allUsers}
+                selectedUsers={authorizedUsers}
+                onSelectionChange={setAuthorizedUsers}
+                placeholder="Digite para buscar usuários..."
+                disabled={isSubmitting}
+              />
+              <p className="text-sm text-gray-500">
+                Apenas os usuários selecionados poderão visualizar este documento.
+              </p>
+            </div>
+          )}
 
           {/* Botões */}
           <div className="flex justify-end gap-2 pt-4">

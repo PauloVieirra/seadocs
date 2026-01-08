@@ -5,6 +5,7 @@ import os
 import glob
 import sys
 import json
+from datetime import datetime
 
 # =========================================
 # CONFIGURAÇÃO DE CAMINHOS E IA
@@ -13,9 +14,84 @@ BASE_DOCS_PATH = r"C:\Users\Sea\AppData\Local\Programs\Ollama\docs"
 OLLAMA_API_URL = "http://localhost:11434/api/generate"
 MODEL_NAME = "phi3"
 
+# =========================================
+# CONFIGURAÇÃO DE MODELOS E ORIENTAÇÕES
+# =========================================
+ORIENTACOES_FILE = os.path.join(BASE_DOCS_PATH, "modelos_orientacoes.json")
+
 # Configurações de Chunking
 MAX_CHUNK_SIZE = 1200  # Tamanho reduzido para melhor foco do phi3
 CHUNK_OVERLAP = 250    # Sobreposição para manter o contexto entre blocos
+
+# =========================================
+# FUNÇÕES DE GERENCIAMENTO DE MODELOS
+# =========================================
+def carregar_orientacoes_modelos():
+    """Carrega as orientações dos modelos do arquivo JSON"""
+    try:
+        if os.path.exists(ORIENTACOES_FILE):
+            with open(ORIENTACOES_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        else:
+            # Orientação padrão se o arquivo não existir
+            return {
+                "default": "Você é um Analista de Requisitos Sênior especializado em extração de dados técnicos. Sua missão é extrair apenas fatos e requisitos técnicos."
+            }
+    except Exception as e:
+        print(f"[AVISO] Erro ao carregar orientações: {e}")
+        return {"default": "Você é um Analista de Requisitos Sênior especializado em extração de dados técnicos."}
+
+def salvar_orientacao_modelo(model_id, nome_modelo, orientacao, topicos=None):
+    """Salva a orientação de um modelo no arquivo JSON"""
+    try:
+        orientacoes = carregar_orientacoes_modelos()
+        orientacoes[model_id] = {
+            "nome": nome_modelo,
+            "orientacao": orientacao,
+            "topicos": topicos or [],  # Lista de tópicos do modelo
+            "ultima_atualizacao": str(datetime.now())
+        }
+
+        with open(ORIENTACOES_FILE, "w", encoding="utf-8") as f:
+            json.dump(orientacoes, f, ensure_ascii=False, indent=2)
+
+        print(f"✅ Orientação e tópicos do modelo '{nome_modelo}' salvos com sucesso!")
+    except Exception as e:
+        print(f"[ERRO] Falha ao salvar orientação do modelo: {e}")
+
+def listar_modelos_disponiveis():
+    """Lista todos os modelos disponíveis com suas orientações"""
+    try:
+        orientacoes = carregar_orientacoes_modelos()
+        if not orientacoes or len(orientacoes) == 0:
+            print("Nenhum modelo específico encontrado. Usando orientação padrão.")
+            return
+
+        print("MODELOS DISPONÍVEIS:")
+        print("=" * 50)
+
+        for model_id, info in orientacoes.items():
+            if model_id != "default":
+                print(f"ID: {model_id}")
+                print(f"Nome: {info['nome']}")
+                print(f"Orientação: {info['orientacao'][:100]}{'...' if len(info['orientacao']) > 100 else ''}")
+
+                # Mostra tópicos se existirem
+                topicos = info.get('topicos', [])
+                if topicos:
+                    print("Tópicos:")
+                    for topico in topicos:
+                        nome_topico = topico.get('nome', topico.get('name', 'Sem nome'))
+                        print(f"  - {nome_topico}")
+
+                print(f"Última atualização: {info.get('ultima_atualizacao', 'N/A')}")
+                print("-" * 30)
+
+        print("\nPara usar um modelo específico:")
+        print("python ler_documentos.py <project_id> [caminho] <model_id>")
+
+    except Exception as e:
+        print(f"[ERRO] Falha ao listar modelos: {e}")
 
 # =========================================
 # FUNÇÕES DE LEITURA DE DOCUMENTOS
@@ -117,7 +193,7 @@ def chamar_ollama(prompt, system_prompt=None):
         "prompt": prompt,
         "stream": False,
         "options": {
-            "temperature": 0.1,  # Temperatura baixa para maior fidelidade
+            "temperature": 0.4,  # Temperatura baixa para maior fidelidade
             "num_predict": 1000
         }
     }
@@ -136,11 +212,38 @@ def chamar_ollama(prompt, system_prompt=None):
 # =========================================
 # EXTRAÇÃO TÉCNICA POR CHUNK
 # =========================================
-def extrair_informacoes(chunks):
+def extrair_informacoes(chunks, modelo_id=None):
     resumos = []
-    
-    system_prompt = """Você é um Analista de Requisitos Sênior especializado em extração de dados técnicos.
-    Sua missão é extrair apenas fatos e requisitos técnicos.
+
+    # Carrega orientações dos modelos
+    orientacoes = carregar_orientacoes_modelos()
+
+    # Comportamento base da IA como profissional de TI para desenvolvimento de software
+    comportamento_base = """Você é um profissional de TI especializado em desenvolvimento de software e criação de documentos técnicos.
+    Sua missão é extrair e obter insumos de documentos para alimentar a criação de documentos estruturados no contexto de desenvolvimento de sistemas.
+    Você analisa textos técnicos, identifica requisitos funcionais e não funcionais, regras de negócio, arquitetura de software e especificações técnicas."""
+
+    # Define a orientação específica do modelo
+    topicos_modelo = []
+    if modelo_id and modelo_id in orientacoes:
+        orientacao_especifica = orientacoes[modelo_id]["orientacao"]
+        modelo_nome = orientacoes[modelo_id]["nome"]
+        topicos_modelo = orientacoes[modelo_id].get("topicos", [])
+        print(f"🤖 Usando orientação específica do modelo: {modelo_nome}")
+        print(f"📋 Orientação: {orientacao_especifica[:100]}...")
+        if topicos_modelo:
+            print(f"📑 Tópicos do modelo: {', '.join([t.get('nome', t.get('name', 'Sem nome')) for t in topicos_modelo])}")
+    else:
+        orientacao_especifica = orientacoes.get("default", "Como profissional de TI especializado em desenvolvimento de software, foque na extração de requisitos funcionais e não funcionais, regras de negócio, arquitetura de sistemas e especificações técnicas.")
+        modelo_nome = "Padrão"
+        print(f"🤖 Usando orientação padrão (modelo não especificado ou não encontrado)")
+
+    # Combina comportamento base + orientação específica
+    system_prompt = f"""{comportamento_base}
+
+    ORIENTAÇÃO ESPECÍFICA PARA ESTE MODELO:
+    {orientacao_especifica}
+
     REGRAS CRÍTICAS:
     1. Responda APENAS em Português Brasileiro.
     2. NÃO adicione opiniões ou interpretações.
@@ -151,17 +254,37 @@ def extrair_informacoes(chunks):
     for i, chunk in enumerate(chunks, 1):
         print(f"🧠 Analisando bloco {i}/{len(chunks)}...")
 
-        prompt = f"""Extraia do texto abaixo:
-        - Regras de Negócio
-        - Requisitos Funcionais (o que o sistema faz)
-        - Requisitos Não Funcionais (qualidade, performance, segurança)
-        - Premissas e Restrições
+        # Cria prompt baseado nos tópicos do modelo
+        if topicos_modelo:
+            prompt = f"""Analise o texto abaixo e extraia informações relevantes para os seguintes tópicos do documento:
 
-        TEXTO:
-        <<<
-        {chunk}
-        >>>
-        """
+"""
+            for j, topico in enumerate(topicos_modelo, 1):
+                nome_topico = topico.get('nome', topico.get('name', f'Tópico {j}'))
+                prompt += f"{j}. {nome_topico}\n"
+
+            prompt += f"""
+
+Para cada tópico, identifique informações, conceitos ou dados do texto que sejam relevantes para aquele tópico específico.
+
+TEXTO:
+<<<
+{chunk}
+>>>
+"""
+        else:
+            # Fallback para o prompt genérico
+            prompt = f"""Extraia do texto abaixo:
+- Regras de Negócio
+- Requisitos Funcionais (o que o sistema faz)
+- Requisitos Não Funcionais (qualidade, performance, segurança)
+- Premissas e Restrições
+
+TEXTO:
+<<<
+{chunk}
+>>>
+"""
 
         resposta = chamar_ollama(prompt, system_prompt)
         if "Nenhuma informação técnica relevante" not in resposta:
@@ -210,8 +333,53 @@ def consolidar_analise(extrações, project_id):
 # EXECUÇÃO PRINCIPAL
 # =========================================
 if __name__ == "__main__":
-    project_id = sys.argv[1] if len(sys.argv) > 1 else "PROJETO_TESTE"
-    custom_path = sys.argv[2] if len(sys.argv) > 2 else None
+    if len(sys.argv) < 2 or sys.argv[1] in ['--help', '-h', 'help']:
+        print("🤖 LER_DOCUMENTOS.PY - Análise Inteligente de Documentos")
+        print("=" * 60)
+        print("❌ Uso: python ler_documentos.py <project_id> [caminho_custom] [modelo_id]")
+        print("📖 <project_id>: ID do projeto (ex: PROJETO_001)")
+        print("📖 [caminho_custom]: Caminho alternativo para documentos (opcional)")
+        print("📖 [modelo_id]: ID do modelo de documento para orientação específica (opcional)")
+        print("\n🎯 EXEMPLOS:")
+        print("python ler_documentos.py PROJETO_001")
+        print("python ler_documentos.py PROJETO_001 C:\\MeusDocumentos\\Projeto")
+        print("python ler_documentos.py PROJETO_001 C:\\MeusDocumentos\\Projeto contrato-juridico")
+        print("\n📋 COMANDOS ESPECIAIS:")
+        print("python ler_documentos.py --list    # Lista modelos disponíveis")
+        sys.exit(1)
+
+    # Comando especial para listar modelos
+    if sys.argv[1] == "--list":
+        listar_modelos_disponiveis()
+        sys.exit(0)
+
+    project_id = sys.argv[1]
+    custom_path = sys.argv[2] if len(sys.argv) > 2 and not sys.argv[2].startswith('--') else None
+    modelo_id = None
+
+    # Verifica se há um modelo_id como terceiro parâmetro
+    if len(sys.argv) > 2 and not sys.argv[2].startswith('--'):
+        if len(sys.argv) > 3:
+            modelo_id = sys.argv[3]
+    elif len(sys.argv) > 2 and sys.argv[2].startswith('--'):
+        # Se o segundo parâmetro começa com --, pode ser uma flag
+        pass
+    elif len(sys.argv) == 3:
+        # Se só tem 3 argumentos e o terceiro não começa com --, é modelo_id
+        modelo_id = sys.argv[2]
+
+    print(f"🚀 Iniciando análise de documentos para projeto: {project_id}")
+    if modelo_id:
+        print(f"🎯 Usando modelo específico: {modelo_id}")
+        # Verifica se o modelo existe
+        orientacoes = carregar_orientacoes_modelos()
+        if modelo_id not in orientacoes:
+            print(f"⚠️  Aviso: Modelo '{modelo_id}' não encontrado. Usando orientação padrão.")
+            print("💡 Use 'python ler_documentos.py --list' para ver modelos disponíveis.")
+            modelo_id = None
+    else:
+        print("📝 Usando orientação padrão (nenhum modelo específico definido)")
+        print("💡 Use 'python ler_documentos.py --list' para ver modelos disponíveis")
 
     texto_bruto = ler_pasta_projeto(project_id, custom_path)
 
@@ -220,7 +388,7 @@ if __name__ == "__main__":
         sys.exit(0)
 
     chunks = dividir_em_chunks(texto_bruto)
-    extrações = extrair_informacoes(chunks)
+    extrações = extrair_informacoes(chunks, modelo_id)
     
     if not extrações:
         print("❌ Nenhuma informação técnica extraída dos documentos.")

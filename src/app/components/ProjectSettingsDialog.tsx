@@ -5,13 +5,11 @@ import { Button } from './ui/button';
 import { Input } from './ui/input';
 import { Label } from './ui/label';
 import { Textarea } from './ui/textarea';
-import { MultiSelect } from './ui/multi-select';
 import { apiService, type Project, type User, type Group } from '../../services/api';
 import { DataSourcesPanel } from './DataSourcesPanel';
 import { ProjectDocumentsPanel } from './ProjectDocumentsPanel'; 
 import { ProjectModelsPanel } from './ProjectModelsPanel';
 import { AuditPanel } from './AuditPanel';
-import { GroupManagementPanel } from './GroupManagementPanel';
 import { Avatar, AvatarFallback } from './ui/avatar';
 import { Badge } from './ui/badge';
 import { Users, Save, Trash2, Shield } from 'lucide-react';
@@ -40,7 +38,6 @@ export function ProjectSettingsDialog({
   const [editedName, setEditedName] = useState('');
   const [editedDescription, setEditedDescription] = useState('');
   const [editedResponsibleIds, setEditedResponsibleIds] = useState<string[]>([]);
-  const [editedGroupIds, setEditedGroupIds] = useState<string[]>([]);
 
   // Dados auxiliares
   const [allUsers, setAllUsers] = useState<User[]>([]);
@@ -67,7 +64,6 @@ export function ProjectSettingsDialog({
         setEditedName(projectData.name);
         setEditedDescription(projectData.description || '');
         setEditedResponsibleIds(projectData.responsibleIds || []);
-        setEditedGroupIds(projectData.groupIds || []);
       }
       setAllUsers(users);
       setAllGroups(groups);
@@ -90,7 +86,6 @@ export function ProjectSettingsDialog({
         name: editedName,
         description: editedDescription,
         responsibleIds: editedResponsibleIds,
-        groupIds: editedGroupIds,
       };
       await apiService.updateProject(updatedProject);
       toast.success('Projeto atualizado com sucesso!');
@@ -124,7 +119,7 @@ export function ProjectSettingsDialog({
               <TabsList className="w-full justify-start h-12 bg-transparent gap-6">
                 <TabsTrigger value="details" className="data-[state=active]:bg-white data-[state=active]:shadow-sm">Detalhes</TabsTrigger>
                 <TabsTrigger value="models" className="data-[state=active]:bg-white data-[state=active]:shadow-sm">Modelos (Padrão IA)</TabsTrigger>
-                <TabsTrigger value="groups" className="data-[state=active]:bg-white data-[state=active]:shadow-sm">Grupos</TabsTrigger>
+                <TabsTrigger value="association" className="data-[state=active]:bg-white data-[state=active]:shadow-sm">Associação</TabsTrigger>
                 <TabsTrigger value="documents" className="data-[state=active]:bg-white data-[state=active]:shadow-sm">Documentos do projeto</TabsTrigger>
                 <TabsTrigger value="datasources" className="data-[state=active]:bg-white data-[state=active]:shadow-sm">Fonte de dados</TabsTrigger>
                 <TabsTrigger value="history" className="data-[state=active]:bg-white data-[state=active]:shadow-sm">Auditoria</TabsTrigger>
@@ -174,45 +169,34 @@ export function ProjectSettingsDialog({
                     <ProjectModelsPanel projectId={projectId} />
                   </TabsContent>
 
-                  <TabsContent value="groups" className="m-0 space-y-4">
+                  <TabsContent value="association" className="m-0 space-y-4">
                     <div className="space-y-4">
-                      <div className="bg-green-50 border border-green-100 p-4 rounded-lg">
-                        <h4 className="text-sm font-semibold text-green-900 mb-1">Alocação de Grupos</h4>
-                        <p className="text-xs text-green-700">Relacione este projeto a grupos de trabalho específicos.</p>
+                      <div className="bg-blue-50 border border-blue-100 p-4 rounded-lg">
+                        <h4 className="text-sm font-semibold text-blue-900 mb-1">Grupo Associado</h4>
+                        <p className="text-xs text-blue-700">Este projeto está vinculado ao seguinte grupo:</p>
                       </div>
 
                       <div className="space-y-4">
-                        <Label>Vincular Grupos</Label>
-                        <MultiSelect
-                          options={allGroups.map(group => ({ label: group.name, value: group.id }))}
-                          selected={editedGroupIds}
-                          onSelectedChange={setEditedGroupIds}
-                          placeholder="Selecione os grupos..."
-                        />
-                      </div>
-
-                      <div className="mt-6 border-t pt-4">
-                        <h4 className="text-sm font-medium mb-4">Grupos Relacionados</h4>
-                        <div className="flex flex-wrap gap-2">
-                          {editedGroupIds.map(id => {
-                            const group = allGroups.find(g => g.id === id);
-                            if (!group) return null;
-                            return (
-                              <Badge key={id} variant="secondary" className="px-3 py-1 flex items-center gap-2">
-                                {group.name}
-                                <button 
-                                  onClick={() => setEditedGroupIds(prev => prev.filter(gid => gid !== id))}
-                                  className="hover:text-red-500"
-                                >
-                                  ×
-                                </button>
-                              </Badge>
-                            );
-                          })}
-                          {editedGroupIds.length === 0 && (
-                            <p className="text-sm text-gray-500">Nenhum grupo vinculado.</p>
-                          )}
-                        </div>
+                        {project?.groupIds && project.groupIds.length > 0 ? (
+                          <div className="flex flex-wrap gap-2">
+                            {project.groupIds.map(id => {
+                              const group = allGroups.find(g => g.id === id);
+                              if (!group) return null;
+                              return (
+                                <Badge key={id} variant="secondary" className="px-4 py-2 text-sm">
+                                  {group.name}
+                                </Badge>
+                              );
+                            })}
+                          </div>
+                        ) : (
+                          <div className="bg-amber-50 border border-amber-200 p-4 rounded-lg">
+                            <p className="text-sm text-amber-800 font-medium">O projeto ainda não foi designado.</p>
+                            <p className="text-xs text-amber-700 mt-1">
+                              Apenas você (criador do projeto) pode visualizá-lo até que seja associado a um grupo.
+                            </p>
+                          </div>
+                        )}
                       </div>
                     </div>
                   </TabsContent>

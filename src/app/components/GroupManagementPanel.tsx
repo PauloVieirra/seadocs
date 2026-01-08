@@ -17,6 +17,11 @@ interface GroupManagementPanelProps {
 }
 
 export function GroupManagementPanel({ user }: GroupManagementPanelProps) {
+  // Verificação de segurança para garantir que user existe
+  if (!user) {
+    return <div>Carregando...</div>;
+  }
+
   const [groups, setGroups] = useState<Group[]>([]);
   const [loading, setLoading] = useState(true);
   const [dialogOpen, setDialogOpen] = useState(false); // Para o diálogo de criação
@@ -29,6 +34,7 @@ export function GroupManagementPanel({ user }: GroupManagementPanelProps) {
   const [selectedMemberIds, setSelectedMemberIds] = useState<string[]>([]);
   const [selectedResponsibleId, setSelectedResponsibleId] = useState<string | undefined>(undefined);
   const [selectedProjectIds, setSelectedProjectIds] = useState<string[]>([]);
+  const [isCreating, setIsCreating] = useState(false);
 
   useEffect(() => {
     loadGroups();
@@ -55,6 +61,7 @@ export function GroupManagementPanel({ user }: GroupManagementPanelProps) {
 
   const handleCreateGroup = async (e: React.FormEvent) => {
     e.preventDefault();
+    setIsCreating(true);
     try {
       // Permissão para criar grupo: Apenas Admin, Gerente ou Técnico Responsável
       if (user.role !== 'admin' && user.role !== 'manager' && user.role !== 'technical_responsible') {
@@ -71,6 +78,8 @@ export function GroupManagementPanel({ user }: GroupManagementPanelProps) {
       loadGroups();
     } catch (error: any) {
       alert(error.message); // Exibir erro de permissão, por exemplo
+    } finally {
+      setIsCreating(false);
     }
   };
 
@@ -128,20 +137,21 @@ export function GroupManagementPanel({ user }: GroupManagementPanelProps) {
                 <Label htmlFor="group-members">Membros</Label>
                 <UserSearchSelect
                   users={allUsers}
-                  selectedIds={selectedMemberIds}
-                  onSelectedChange={setSelectedMemberIds}
+                  selectedUsers={selectedMemberIds}
+                  onSelectionChange={setSelectedMemberIds}
                   placeholder="Busque por nome ou email..."
-                  maxResults={8}
+                  disabled={isCreating}
                 />
               </div>
               <div className="space-y-2">
                 <Label htmlFor="group-responsible">Responsável pelo Grupo (opcional)</Label>
                 <UserSearchSelect
                   users={allUsers}
-                  selectedIds={selectedResponsibleId ? [selectedResponsibleId] : []}
-                  onSelectedChange={(ids) => setSelectedResponsibleId(ids[0])}
+                  selectedUsers={selectedResponsibleId ? [selectedResponsibleId] : []}
+                  onSelectionChange={(ids) => setSelectedResponsibleId(ids[0] || '')}
                   placeholder="Busque por nome ou email..."
-                  maxResults={8}
+                  disabled={isCreating}
+                  maxSelected={1}
                 />
               </div>
               <div className="space-y-2">

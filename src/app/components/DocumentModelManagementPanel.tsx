@@ -2,13 +2,15 @@ import React, { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom'; // Importar useNavigate
 import { apiService, type DocumentModel, type User } from '../../services/api';
 import { Button } from './ui/button';
+import { Badge } from './ui/badge';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from './ui/card';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from './ui/dialog';
+import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from './ui/alert-dialog';
 import { Input } from './ui/input';
 import { Label } from './ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select';
 import { Checkbox } from './ui/checkbox'; // Removed Textarea as it's not needed for new model creation
-import { Plus, FileText, Edit } from 'lucide-react'; // Added Edit icon
+import { Plus, FileText, Edit, Trash2 } from 'lucide-react'; // Added Edit and Trash2 icons
 import { RichTextDocumentModelEditor } from './RichTextDocumentModelEditor'; // Import RichTextDocumentModelEditor
 import { toast } from 'sonner';
 
@@ -23,6 +25,7 @@ export function DocumentModelManagementPanel({ currentUser }: DocumentModelManag
   const [editDialogOpen, setEditDialogOpen] = useState(false); // For edit dialog
   const [selectedModelForEdit, setSelectedModelForEdit] = useState<DocumentModel | null>(null); // For editing existing model
   const [isSavingModel, setIsSavingModel] = useState(false); // For saving state in editor
+  const [deletingModelId, setDeletingModelId] = useState<string | null>(null); // For delete confirmation
 
   useEffect(() => {
     loadDocumentModels();
@@ -30,13 +33,27 @@ export function DocumentModelManagementPanel({ currentUser }: DocumentModelManag
 
   const loadDocumentModels = async () => {
     setLoading(true);
-    const models = await apiService.getDocumentModels();
-    setDocumentModels(models);
-    setLoading(false);
+    try {
+      const models = await apiService.getDocumentModels();
+      const localDrafts = apiService.getLocalModelDrafts();
+      
+      // Combinar modelos salvos no banco com rascunhos locais
+      // Evitar duplicidade se um rascunho local for de um modelo que já existe no banco
+      const filteredLocalDrafts = localDrafts.filter(ld => {
+        const idFromKey = ld.id.replace('model_draft_', '');
+        return !models.some(m => m.id === idFromKey);
+      });
+
+      setDocumentModels([...filteredLocalDrafts, ...models]);
+    } catch (error) {
+      console.error('Erro ao carregar modelos:', error);
+    } finally {
+      setLoading(false);
+    }
   };
 
 
-  const handleEditDocumentModel = async (name: string, type: string, templateContent: string) => {
+  const handleEditDocumentModel = async (name: string, type: string, templateContent: string, isDraft: boolean, aiGuidance: string) => {
     setIsSavingModel(true);
     try {
       if (!selectedModelForEdit) return;
@@ -44,9 +61,19 @@ export function DocumentModelManagementPanel({ currentUser }: DocumentModelManag
         toast.error('Permissão negada: Somente administradores, gerentes ou técnicos responsáveis podem editar modelos.');
         return;
       }
-      const updatedModel: DocumentModel = { ...selectedModelForEdit, name, type, templateContent };
-      await apiService.updateDocumentModel(updatedModel); // Usar o novo método público
-      toast.success('Modelo de documento atualizado com sucesso!');
+
+      if (selectedModelForEdit.isLocalDraft) {
+        // Se era um rascunho local, agora vamos criar ele oficialmente no banco (como rascunho ou publicado)
+        await apiService.createDocumentModel(name, type, templateContent, false, undefined, isDraft, aiGuidance);
+        // Limpar o rascunho local após salvar no banco
+        localStorage.removeItem(selectedModelForEdit.id);
+      } else {
+        // Modelo já existente no banco
+        const updatedModel: DocumentModel = { ...selectedModelForEdit, name, type, templateContent, isDraft, aiGuidance };
+        await apiService.updateDocumentModel(updatedModel);
+      }
+
+      toast.success(isDraft ? 'Rascunho atualizado com sucesso!' : 'Modelo de documento publicado com sucesso!');
       setEditDialogOpen(false);
       loadDocumentModels();
     } catch (error: any) {
@@ -61,8 +88,28 @@ export function DocumentModelManagementPanel({ currentUser }: DocumentModelManag
       toast.error('Permissão negada: Somente administradores, gerentes ou técnicos responsáveis podem editar modelos.');
       return;
     }
+    
+    // Se for um rascunho local, preparamos o editor com os dados dele
     setSelectedModelForEdit(model);
     setEditDialogOpen(true);
+  };
+
+  const handleDeleteModel = async (modelId: string) => {
+    if (currentUser.role !== 'admin' && currentUser.role !== 'manager' && currentUser.role !== 'technical_responsible') {
+      toast.error('Permissão negada: Somente administradores, gerentes ou técnicos responsáveis podem excluir modelos.');
+      return;
+    }
+
+    setDeletingModelId(modelId);
+    try {
+      await apiService.deleteDocumentModel(modelId);
+      toast.success('Modelo excluído com sucesso!');
+      loadDocumentModels(); // Recarregar a lista
+    } catch (error: any) {
+      toast.error(error.message || 'Erro ao excluir modelo');
+    } finally {
+      setDeletingModelId(null);
+    }
   };
 
   return (
@@ -70,7 +117,10 @@ export function DocumentModelManagementPanel({ currentUser }: DocumentModelManag
       <div className="flex items-center justify-between">
         <h3 className="text-lg font-medium">Gerenciamento de Modelos de Documento</h3>
         {(currentUser.role === 'admin' || currentUser.role === 'manager' || currentUser.role === 'technical_responsible') ? (
-          <Button onClick={() => navigate('/create-document-model')}> {/* Navega para a nova rota */}
+          <Button onClick={() => {
+            localStorage.removeItem('model_draft_new'); // Sempre limpa rascunho 'novo' ao clicar em criar novo
+            navigate('/create-document-model');
+          }}>
             <Plus className="mr-2 h-4 w-4" /> Criar Novo Modelo
           </Button>
         ) : null}
@@ -114,21 +164,71 @@ export function DocumentModelManagementPanel({ currentUser }: DocumentModelManag
             <Card
               key={model.id}
               className="hover:shadow-lg transition-shadow cursor-pointer" // Adiciona cursor-pointer de volta e torna o card clicável
-              onClick={() => handleEditModelClick(model)} // Adiciona o handler de clique ao card
+              onClick={(e) => {
+                // Só abre o editor se não clicou em um botão
+                if (!(e.target as HTMLElement).closest('button')) {
+                  handleEditModelClick(model);
+                }
+              }} // Adiciona o handler de clique ao card
             >
               <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
                 <div>
-                  <CardTitle className="text-lg">{model.name}</CardTitle>
+                  <div className="flex items-center gap-2">
+                    <CardTitle className="text-lg">{model.name}</CardTitle>
+                    {model.isLocalDraft && (
+                      <Badge variant="outline" className="bg-blue-50 text-blue-700 border-blue-200">
+                        Rascunho Local (Não Salvo)
+                      </Badge>
+                    )}
+                    {model.isDraft && !model.isLocalDraft && (
+                      <Badge variant="secondary" className="bg-yellow-100 text-yellow-800 border-yellow-200">
+                        Rascunho
+                      </Badge>
+                    )}
+                  </div>
                   <CardDescription>{model.type}</CardDescription>
                 </div>
                 {(currentUser.role === 'admin' || currentUser.role === 'manager' || currentUser.role === 'technical_responsible') && (
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    onClick={() => handleEditModelClick(model)}
-                  >
-                    <Edit className="h-4 w-4" />
-                  </Button>
+                  <div className="flex gap-1">
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      onClick={() => handleEditModelClick(model)}
+                      title="Editar modelo"
+                    >
+                      <Edit className="h-4 w-4" />
+                    </Button>
+                    <AlertDialog>
+                      <AlertDialogTrigger asChild>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          title="Excluir modelo"
+                          className="text-red-600 hover:text-red-700 hover:bg-red-50"
+                        >
+                          <Trash2 className="h-4 w-4" />
+                        </Button>
+                      </AlertDialogTrigger>
+                      <AlertDialogContent>
+                        <AlertDialogHeader>
+                          <AlertDialogTitle>Confirmar exclusão</AlertDialogTitle>
+                          <AlertDialogDescription>
+                            Tem certeza que deseja excluir o modelo "{model.name}"?
+                            Esta ação não pode ser desfeita e pode afetar documentos que utilizam este modelo.
+                          </AlertDialogDescription>
+                        </AlertDialogHeader>
+                        <AlertDialogFooter>
+                          <AlertDialogCancel>Cancelar</AlertDialogCancel>
+                          <AlertDialogAction
+                            onClick={() => handleDeleteModel(model.id)}
+                            className="bg-red-600 hover:bg-red-700"
+                          >
+                            Excluir
+                          </AlertDialogAction>
+                        </AlertDialogFooter>
+                      </AlertDialogContent>
+                    </AlertDialog>
+                  </div>
                 )}
               </CardHeader>
               <CardContent className="text-sm text-gray-600 space-y-2">

@@ -51,7 +51,8 @@ export function ProjectView({ projectId, onBack, onSelectDocument }: ProjectView
       setFilteredDocuments(docsData);
       
       const models = await apiService.getDocumentModels();
-      setAllDocumentModels(models);
+      // Filtrar modelos que não são rascunhos para criação de documentos
+      setAllDocumentModels(models.filter(m => !m.isDraft));
       
       const groups = await apiService.getGroups();
       setAllGroups(groups);
@@ -82,16 +83,24 @@ export function ProjectView({ projectId, onBack, onSelectDocument }: ProjectView
   const handleCreateDocument = async (data: {
     name: string;
     templateId: string;
-    securityLevel: 'public' | 'restricted' | 'confidential' | 'secret';
+    securityLevel: 'public' | 'restricted' | 'confidential';
+    authorizedUsers?: string[];
   }) => {
     try {
-      await apiService.createDocument(
+      const newDocument = await apiService.createDocument(
         projectId,
         data.name,
         data.templateId,
         data.securityLevel
       );
-      
+
+      // Para documentos restritos, compartilhar automaticamente com os usuários selecionados
+      if (data.securityLevel === 'restricted' && data.authorizedUsers && data.authorizedUsers.length > 0) {
+        for (const userId of data.authorizedUsers) {
+          await apiService.shareDocument(newDocument.id, userId, ['view', 'edit']);
+        }
+      }
+
       toast.success('Documento criado com sucesso!');
       setCreateDialogOpen(false);
       await loadData();

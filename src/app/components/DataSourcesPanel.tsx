@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Button } from './ui/button';
 import { Badge } from './ui/badge';
-import { Upload, FileText, CheckCircle2, AlertCircle, Loader2, File, Headphones, Type, Trash2, RefreshCw } from 'lucide-react'; // Adicionar RefreshCw
+import { Upload, FileText, CheckCircle2, AlertCircle, Loader2, File, Headphones, Type, Trash2, RefreshCw, Eye } from 'lucide-react'; // Adicionar Eye
 import { apiService, type UploadedFile } from '../../services/api';
 import { toast } from 'sonner';
 
@@ -49,6 +49,19 @@ export function DataSourcesPanel({ projectId }: DataSourcesPanelProps) {
       toast.error('Erro ao sincronizar arquivos.');
     } finally {
       setSyncing(false);
+    }
+  };
+
+  const handleViewFile = async (file: UploadedFile) => {
+    try {
+      const url = await apiService.getFilePublicUrl(projectId, file.name);
+      if (url && url !== '#') {
+        window.open(url, '_blank');
+      } else {
+        toast.error('Não foi possível obter a URL do arquivo.');
+      }
+    } catch (error) {
+      toast.error('Erro ao abrir o arquivo.');
     }
   };
 
@@ -270,6 +283,15 @@ export function DataSourcesPanel({ projectId }: DataSourcesPanelProps) {
               </div>
               <div className="flex items-center gap-2">
                 {getStatusIcon(file.status)}
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-8 w-8 text-blue-500 hover:text-blue-700 hover:bg-blue-50"
+                  onClick={() => handleViewFile(file)}
+                  title="Visualizar arquivo"
+                >
+                  <Eye className="w-4 h-4" />
+                </Button>
                 <Button
                   variant="ghost"
                   size="icon"

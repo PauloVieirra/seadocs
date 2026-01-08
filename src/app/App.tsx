@@ -15,6 +15,7 @@ import { DatabaseConfigDialog } from './components/DatabaseConfigDialog';
 import { AdminDashboard } from './components/AdminDashboard';
 import { AuthRedirect } from './components/AuthRedirect'; // Importar AuthRedirect
 import { Wiki } from './components/Wiki'; // Importar Wiki
+import { ChangePasswordDialog } from './components/ChangePasswordDialog'; // Importar ChangePasswordDialog
 
 type MainView = 'login' | 'dashboard' | 'editor' | 'projects' | 'users' | 'document-models' | 'groups' | 'settings' | 'admin-dashboard' | 'create-document-model';
 
@@ -61,22 +62,43 @@ function ProjectEditorWrapper() {
 export default function App() {
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [configDialogOpen, setConfigDialogOpen] = useState(false);
+  const [changePasswordOpen, setChangePasswordOpen] = useState(false);
   const navigate = useNavigate();
 
   useEffect(() => {
     const user = apiService.getCurrentUser();
     if (user) {
       setCurrentUser(user);
+      if (user.forcePasswordChange) {
+        setChangePasswordOpen(true);
+      }
     }
     // AuthRedirect vai cuidar da navegação inicial
   }, [setCurrentUser]); 
 
   const handleLoginSuccess = (user: User) => {
     setCurrentUser(user);
-    if (user.role === 'admin') {
-      navigate('/admin-dashboard');
+    if (user.forcePasswordChange) {
+      setChangePasswordOpen(true);
     } else {
-      navigate('/projects');
+      if (user.role === 'admin') {
+        navigate('/admin-dashboard');
+      } else {
+        navigate('/projects');
+      }
+    }
+  };
+
+  const handlePasswordChanged = () => {
+    setChangePasswordOpen(false);
+    const user = apiService.getCurrentUser();
+    if (user) {
+      setCurrentUser(user);
+      if (user.role === 'admin') {
+        navigate('/admin-dashboard');
+      } else {
+        navigate('/projects');
+      }
     }
   };
 
@@ -98,6 +120,13 @@ export default function App() {
     <>
       <Toaster position="top-right" closeButton />
       <DatabaseConfigDialog open={configDialogOpen} onOpenChange={setConfigDialogOpen} />
+      <ChangePasswordDialog
+        user={currentUser}
+        open={changePasswordOpen}
+        onOpenChange={setChangePasswordOpen}
+        onPasswordChanged={handlePasswordChanged}
+        forceChange={currentUser?.forcePasswordChange}
+      />
 
       {currentUser && (
         <GlobalNav

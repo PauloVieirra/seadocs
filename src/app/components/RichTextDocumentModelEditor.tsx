@@ -39,11 +39,54 @@ function ensureCustomBlotsRegistered() {
       node.setAttribute('data-field-help', help);
       node.setAttribute('data-topic-id', topicId);
 
+      // Container para botões de ação
+      const actionsContainer = document.createElement('div');
+      actionsContainer.className = 'sgid-metadata-actions';
+
+      // Eventos para garantir que os botões fiquem acessíveis
+      let hideTimeout: NodeJS.Timeout;
+
+      const showButtons = () => {
+        if (hideTimeout) clearTimeout(hideTimeout);
+        actionsContainer.style.opacity = '1';
+      };
+
+      const hideButtons = () => {
+        hideTimeout = setTimeout(() => {
+          actionsContainer.style.opacity = '0';
+        }, 100); // Pequeno delay para permitir movimento do mouse
+      };
+
+      node.addEventListener('mouseenter', showButtons);
+      node.addEventListener('mouseleave', hideButtons);
+      actionsContainer.addEventListener('mouseenter', showButtons);
+      actionsContainer.addEventListener('mouseleave', hideButtons);
+
+      // Botão de editar
+      const editBtn = document.createElement('div');
+      editBtn.className = 'sgid-edit-btn';
+      editBtn.title = 'Editar metadado';
+      editBtn.innerHTML = `
+        <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path>
+          <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path>
+        </svg>
+      `;
+      editBtn.onclick = (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        node.dispatchEvent(new CustomEvent('sgid-edit-request', {
+          detail: { id, title, help, topicId, element: node },
+          bubbles: true
+        }));
+      };
+
       // Botão de excluir
       const deleteBtn = document.createElement('div');
       deleteBtn.className = 'sgid-delete-btn';
+      deleteBtn.title = 'Excluir componente';
       deleteBtn.innerHTML = `
-        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+        <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <path d="M18 6 6 18"></path><path d="m6 6 12 12"></path>
         </svg>
       `;
@@ -55,7 +98,10 @@ function ensureCustomBlotsRegistered() {
           bubbles: true
         }));
       };
-      node.appendChild(deleteBtn);
+
+      actionsContainer.appendChild(editBtn);
+      actionsContainer.appendChild(deleteBtn);
+      node.appendChild(actionsContainer);
 
       const header = document.createElement('div');
       header.className = 'sgid-metadata-field__header';
@@ -86,6 +132,21 @@ function ensureCustomBlotsRegistered() {
         help: node.getAttribute('data-field-help') || '',
         topicId: node.getAttribute('data-topic-id') || '',
       };
+    }
+
+    updateData(newData: { title?: string; help?: string; topicId?: string }) {
+      if (newData.title) {
+        this.domNode.setAttribute('data-field-title', newData.title);
+        // Atualizar o texto de ajuda se existir
+        const helpEl = this.domNode.querySelector('.sgid-metadata-field__help');
+        if (helpEl && newData.help !== undefined) {
+          helpEl.textContent = newData.help ? `💡 ${newData.help}` : '';
+        }
+      }
+
+      if (newData.topicId) {
+        this.domNode.setAttribute('data-topic-id', newData.topicId);
+      }
     }
   }
 
@@ -158,10 +219,11 @@ function slugify(input: string) {
 }
 
 interface RichTextDocumentModelEditorProps {
-  onSave: (name: string, type: string, templateContent: string) => Promise<void>;
+  onSave: (name: string, type: string, templateContent: string, isDraft: boolean, aiGuidance: string) => Promise<void>;
   onCancel: () => void;
   isLoading: boolean;
   initialData?: DocumentModel; // Para edição de modelo existente
+  onDraftStatusChange?: (isDraft: boolean, draftSaved: boolean) => void; // Callback para status de rascunho
 }
 
 export function RichTextDocumentModelEditor({
@@ -169,11 +231,13 @@ export function RichTextDocumentModelEditor({
   onCancel,
   isLoading,
   initialData,
+  onDraftStatusChange,
 }: RichTextDocumentModelEditorProps) {
   const quillRef = useRef<ReactQuill | null>(null);
   const editorContentRef = useRef<string>(initialData?.templateContent || '');
   const [name, setName] = useState(initialData?.name || '');
   const [type, setType] = useState(initialData?.type || '');
+  const [aiGuidance, setAiGuidance] = useState(initialData?.aiGuidance || '');
   // editorData agora é usado apenas para extrair tópicos e salvar, não para controlar o input
   const [editorData, setEditorData] = useState(initialData?.templateContent || '');
 
@@ -189,6 +253,7 @@ export function RichTextDocumentModelEditor({
   // Metadado State
   const [fieldDialogOpen, setFieldDialogOpen] = useState(false);
   const [fieldId, setFieldId] = useState('');
+  const [fieldTitle, setFieldTitle] = useState('');
   const [fieldHelp, setFieldHelp] = useState('');
   const [associatedTopic, setAssociatedTopic] = useState<string>('');
 
@@ -198,6 +263,60 @@ export function RichTextDocumentModelEditor({
   // Delete Confirmation State
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
   const [itemToDelete, setItemToDelete] = useState<{id: string, type: 'topic' | 'metadata', title: string} | null>(null);
+  const [itemToEdit, setItemToEdit] = useState<{id: string, title: string, help: string, topicId: string, element: HTMLElement} | null>(null);
+  const [isDraft, setIsDraft] = useState(initialData ? !!initialData.isDraft : true); 
+  const [draftSaved, setDraftSaved] = useState(false);
+
+  // Funções para gerenciar rascunhos
+  const saveDraftToLocalStorage = () => {
+    // Se for um modelo existente, usamos o id real. Se for rascunho local novo, o id já é 'model_draft_...'
+    const id = initialData?.id || 'new';
+    const draftKey = id.startsWith('model_draft_') ? id : `model_draft_${id}`;
+    
+    const draftData = {
+      name,
+      type,
+      aiGuidance,
+      templateContent: editorContentRef.current,
+      lastSaved: new Date().toISOString(),
+      isDraft: true
+    };
+
+    try {
+      localStorage.setItem(draftKey, JSON.stringify(draftData));
+      setDraftSaved(true);
+      setTimeout(() => setDraftSaved(false), 2000); // Feedback temporário
+    } catch (error) {
+      console.error('Erro ao salvar rascunho:', error);
+    }
+  };
+
+  const loadDraftFromLocalStorage = (id: string = 'new') => {
+    const draftKey = id.startsWith('model_draft_') ? id : `model_draft_${id}`;
+    try {
+      const draftData = localStorage.getItem(draftKey);
+      if (draftData) {
+        const parsed = JSON.parse(draftData);
+        setName(parsed.name || '');
+        setType(parsed.type || '');
+        setAiGuidance(parsed.aiGuidance || '');
+        if (parsed.templateContent) {
+          editorContentRef.current = parsed.templateContent;
+          setEditorData(parsed.templateContent);
+        }
+        return true;
+      }
+    } catch (error) {
+      console.error('Erro ao carregar rascunho:', error);
+    }
+    return false;
+  };
+
+  const clearDraftFromLocalStorage = () => {
+    const id = initialData?.id || 'new';
+    const draftKey = id.startsWith('model_draft_') ? id : `model_draft_${id}`;
+    localStorage.removeItem(draftKey);
+  };
 
   useEffect(() => {
     const editor = quillRef.current?.getEditor();
@@ -209,9 +328,21 @@ export function RichTextDocumentModelEditor({
       setDeleteConfirmOpen(true);
     };
 
+    const handleEditRequest = (e: any) => {
+      const { id, title, help, topicId, element } = e.detail;
+      setItemToEdit({ id, title, help, topicId, element });
+      setFieldDialogOpen(true);
+      // Preencher os campos do diálogo com os valores atuais
+      setFieldTitle(title);
+      setFieldHelp(help);
+      setAssociatedTopic(topicId);
+    };
+
     editor.root.addEventListener('sgid-delete-request', handleDeleteRequest);
+    editor.root.addEventListener('sgid-edit-request', handleEditRequest);
     return () => {
       editor.root.removeEventListener('sgid-delete-request', handleDeleteRequest);
+      editor.root.removeEventListener('sgid-edit-request', handleEditRequest);
     };
   }, []);
 
@@ -224,9 +355,30 @@ export function RichTextDocumentModelEditor({
     if (itemToDelete.type === 'metadata') {
       const fieldNode = editor.root.querySelector(`[data-field-id="${itemToDelete.id}"]`);
       if (fieldNode) {
+        // Encontrar o tópico relacionado ao metadado
+        const topicId = fieldNode.getAttribute('data-topic-id');
         const blot = Quill.find(fieldNode) as any;
         if (blot && typeof blot.remove === 'function') {
           blot.remove();
+
+          // Se há um tópico relacionado, perguntar se também deve ser removido
+          if (topicId) {
+            const shouldRemoveTopic = confirm(`Também deseja remover o tópico relacionado "${itemToDelete.title}"?`);
+            if (shouldRemoveTopic) {
+              const topicNode = editor.root.querySelector(`[data-topic-id="${topicId}"]`);
+              if (topicNode) {
+                const topicBlot = Quill.find(topicNode) as any;
+                if (topicBlot && typeof topicBlot.remove === 'function') {
+                  topicBlot.remove();
+                  toast.success('Metadado e tópico relacionado removidos.');
+                  setDeleteConfirmOpen(false);
+                  setItemToDelete(null);
+                  return;
+                }
+              }
+            }
+          }
+
           toast.success('Metadado removido.');
         }
       }
@@ -260,24 +412,73 @@ export function RichTextDocumentModelEditor({
     if (initialData) {
       setName(initialData.name);
       setType(initialData.type);
+      setAiGuidance(initialData.aiGuidance || '');
       setEditorData(initialData.templateContent);
+      // Também precisamos atualizar a ref para o Quill não se perder
+      editorContentRef.current = initialData.templateContent;
     }
   }, [initialData]);
 
   useEffect(() => {
     ensureCustomBlotsRegistered();
+
+    // Se estamos editando um modelo ou um rascunho existente (passado via initialData)
+    // o useEffect de [initialData] já cuida de preencher os campos.
+    // O rascunho temporário do localStorage só deve ser carregado se não houver initialData
+    // MAS o usuário pediu que ao "Criar Novo", abra sempre em branco.
+    // Portanto, não chamamos loadDraftFromLocalStorage() aqui.
   }, []);
+
+  // Limpar campos quando o modal de campo é fechado
+  useEffect(() => {
+    if (!fieldDialogOpen) {
+      setItemToEdit(null);
+      setFieldTitle('');
+      setFieldHelp('');
+      setAssociatedTopic('');
+    }
+  }, [fieldDialogOpen]);
+
+  // Salvar automaticamente como rascunho quando o conteúdo muda
+  useEffect(() => {
+    // Agora observa editorData (mudança no texto) e aiGuidance (prompt)
+    if (isDraft && (name || type || aiGuidance || editorData)) {
+      const timeoutId = setTimeout(() => {
+        saveDraftToLocalStorage();
+        if (onDraftStatusChange) {
+          onDraftStatusChange(true, true);
+          setTimeout(() => onDraftStatusChange(true, false), 2000);
+        }
+      }, 2000); // Salvar após 2 segundos de inatividade
+
+      return () => clearTimeout(timeoutId);
+    }
+  }, [name, type, aiGuidance, editorData, isDraft, onDraftStatusChange]);
+
+  // Notificar mudança de status quando deixa de ser rascunho
+  useEffect(() => {
+    if (!isDraft && onDraftStatusChange) {
+      onDraftStatusChange(false, false);
+    }
+  }, [isDraft, onDraftStatusChange]);
 
   const toolbarId = useMemo(() => `model-toolbar-${Math.random().toString(16).slice(2)}`, []);
 
-  const handleSubmit = async (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent, publish: boolean = false) => {
     e.preventDefault();
     const currentContent = editorContentRef.current;
     if (!name.trim() || !type.trim() || !currentContent.trim()) {
       toast.error('Por favor, preencha todos os campos obrigatórios e o conteúdo do template.');
       return;
     }
-    await onSave(name, type, currentContent);
+
+    const finalIsDraft = publish ? false : isDraft;
+    await onSave(name, type, currentContent, finalIsDraft, aiGuidance);
+
+    if (publish) {
+      setIsDraft(false);
+      clearDraftFromLocalStorage();
+    }
   };
 
   const openFieldDialog = () => {
@@ -351,56 +552,85 @@ export function RichTextDocumentModelEditor({
       return;
     }
 
-    const topic = existingTopics.find(t => t.id === associatedTopic);
-    const titleToUse = topic ? topic.name : 'Campo';
-    const baseId = slugify(titleToUse);
-    const uniqueId = generateUniqueId(baseId);
-
-    editor.focus();
-    const range = editor.getSelection(true);
-    let insertAt = range ? range.index : editor.getLength();
-
-    // Garante que o embed comece em uma nova linha
-    if (insertAt > 0 && editor.getText(insertAt - 1, 1) !== '\n') {
-        editor.insertText(insertAt, '\n', 'user');
-        insertAt += 1;
-    }
-
-    // Inserir o Blot de Metadado
-    editor.insertEmbed(insertAt, 'metadataField', { 
-      id: uniqueId, 
-      title: titleToUse,
-      help: fieldHelp.trim(),
-      topicId: associatedTopic
-    }, 'user');
-    
-    // Remove parágrafos vazios duplicados entre tópico e metadado
-    const contents = editor.getContents(insertAt - 1, 2);
-    if (contents.ops.length > 1 && contents.ops[0].insert === '\n' && contents.ops[1].insert === '\n') {
-       editor.deleteText(insertAt, 1, 'user');
-    }
-
-    // Garante linha vazia após o embed para o usuário continuar escrevendo
-    editor.insertText(insertAt + 1, '\n', 'user');
-    
-    // Mover o cursor para após o metadado
-    setTimeout(() => {
+    if (itemToEdit) {
+      // Modo edição: atualizar o metadado existente
       try {
-    editor.setSelection(insertAt + 2, 0, 'user');
-      } catch (e) {
-        // Silencioso
+        const blot = Quill.find(itemToEdit.element) as any;
+        if (blot && typeof blot.updateData === 'function') {
+          // Atualizar dados do blot
+          blot.updateData({
+            title: fieldTitle.trim() || itemToEdit.title,
+            help: fieldHelp.trim(),
+            topicId: associatedTopic
+          });
+          toast.success(`Metadado "${fieldTitle || itemToEdit.title}" atualizado.`);
+        } else {
+          toast.error('Não foi possível atualizar o metadado.');
+        }
+      } catch (error) {
+        toast.error('Erro ao atualizar metadado.');
+        console.error('Erro ao editar metadado:', error);
       }
-    }, 100);
+
+      setItemToEdit(null);
+    } else {
+      // Modo criação: inserir novo metadado
+      const topic = existingTopics.find(t => t.id === associatedTopic);
+      const titleToUse = fieldTitle.trim() || (topic ? topic.name : 'Campo');
+      const baseId = slugify(titleToUse);
+      const uniqueId = generateUniqueId(baseId);
+
+      editor.focus();
+      const range = editor.getSelection(true);
+      let insertAt = range ? range.index : editor.getLength();
+
+      // Garante que o embed comece em uma nova linha
+      if (insertAt > 0 && editor.getText(insertAt - 1, 1) !== '\n') {
+          editor.insertText(insertAt, '\n', 'user');
+          insertAt += 1;
+      }
+
+      // Inserir o Blot de Metadado
+      editor.insertEmbed(insertAt, 'metadataField', {
+        id: uniqueId,
+        title: titleToUse,
+        help: fieldHelp.trim(),
+        topicId: associatedTopic
+      }, 'user');
+
+      // Remove parágrafos vazios duplicados entre tópico e metadado
+      const contents = editor.getContents(insertAt - 1, 2);
+      if (contents.ops.length > 1 && contents.ops[0].insert === '\n' && contents.ops[1].insert === '\n') {
+         editor.deleteText(insertAt, 1, 'user');
+      }
+
+      // Garante linha vazia após o embed para o usuário continuar escrevendo
+      editor.insertText(insertAt + 1, '\n', 'user');
+
+      // Mover o cursor para após o metadado
+      setTimeout(() => {
+        try {
+      editor.setSelection(insertAt + 2, 0, 'user');
+        } catch (e) {
+          // Silencioso
+        }
+      }, 100);
+
+      toast.success(`Metadado "${titleToUse}" adicionado.`);
+    }
 
     setFieldDialogOpen(false);
-    toast.success(`Metadado para "${titleToUse}" adicionado.`);
+    // Limpar campos
+    setFieldTitle('');
+    setFieldHelp('');
+    setAssociatedTopic('');
   };
 
   return (
     <div className="sgid-model-editor-container h-full flex flex-col bg-white">
       {/* Header Info */}
       <div className="p-6 border-b bg-white shrink-0">
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-6 max-w-[1440px] mx-auto">
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-6 max-w-[1440px] mx-auto">
           <div className="space-y-2">
             <Label htmlFor="model-name" className="text-sm font-semibold text-gray-700">Nome do Modelo *</Label>
             <div className="relative">
@@ -423,9 +653,24 @@ export function RichTextDocumentModelEditor({
               <Input
                 id="model-type"
                 className="pl-10 h-11 border-gray-200 focus:ring-blue-500 rounded-lg"
-                placeholder="Ex: Jurídico, Técnico, Financeiro"
+                placeholder="Ex: Ofício, Minuta, etc."
                 value={type}
                 onChange={(e) => setType(e.target.value)}
+                required
+                disabled={isLoading}
+              />
+            </div>
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="model-ai-guidance" className="text-sm font-semibold text-gray-700">Orientação para IA *</Label>
+            <div className="relative">
+              <AlertCircle className="absolute left-3 top-3 w-4 h-4 text-gray-400" />
+              <Textarea
+                id="model-ai-guidance"
+                className="pl-10 h-24 border-gray-200 focus:ring-blue-500 rounded-lg resize-none"
+                placeholder="Ex: Comporte-se como um analista de requisitos..."
+                value={aiGuidance}
+                onChange={(e) => setAiGuidance(e.target.value)}
                 required
                 disabled={isLoading}
               />
@@ -447,6 +692,15 @@ export function RichTextDocumentModelEditor({
               defaultValue={editorContentRef.current}
               onChange={handleEditorChange}
               readOnly={isLoading}
+              onFocus={() => {
+                // Garantir que o editor receba foco quando clicado
+                setTimeout(() => {
+                  const editor = quillRef.current?.getEditor();
+                  if (editor && !editor.hasFocus()) {
+                    editor.focus();
+                  }
+                }, 10);
+              }}
               modules={{
                 toolbar: {
                   container: `#${toolbarId}`,
@@ -524,15 +778,38 @@ export function RichTextDocumentModelEditor({
             
             <div className="w-px h-6 bg-gray-200 mx-2"></div>
 
-            <button
-              type="button"
-              className="sgid-toolbar-custom-btn primary"
-              onClick={handleSubmit}
-              disabled={isLoading}
-            >
-              {isLoading ? <span className="animate-spin mr-2">...</span> : <Save className="w-4 h-4 mr-1.5" />}
-              Salvar Modelo
-            </button>
+            {isDraft ? (
+              <>
+                <button
+                  type="button"
+                  className="sgid-toolbar-custom-btn hover:bg-amber-50 hover:text-amber-600"
+                  onClick={(e) => handleSubmit(e, false)}
+                  disabled={isLoading}
+                >
+                  {isLoading ? <span className="animate-spin mr-2">...</span> : <Save className="w-4 h-4 mr-1.5" />}
+                  Salvar Rascunho
+                </button>
+                <button
+                  type="button"
+                  className="sgid-toolbar-custom-btn primary"
+                  onClick={(e) => handleSubmit(e, true)}
+                  disabled={isLoading}
+                >
+                  <Save className="w-4 h-4 mr-1.5" />
+                  Publicar Modelo
+                </button>
+              </>
+            ) : (
+              <button
+                type="button"
+                className="sgid-toolbar-custom-btn primary"
+                onClick={(e) => handleSubmit(e, false)}
+                disabled={isLoading}
+              >
+                {isLoading ? <span className="animate-spin mr-2">...</span> : <Save className="w-4 h-4 mr-1.5" />}
+                Salvar Alterações
+              </button>
+            )}
           </div>
         </div>
       </div>
@@ -543,14 +820,32 @@ export function RichTextDocumentModelEditor({
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
               <Database className="w-5 h-5 text-indigo-600" />
-              Criar Metadado
+              {itemToEdit ? 'Editar Metadado' : 'Criar Metadado'}
             </DialogTitle>
             <DialogDescription>
-              Campos de metadados tornam-se seções editáveis no documento final.
+              {itemToEdit
+                ? 'Modifique as informações do metadado selecionado.'
+                : 'Campos de metadados tornam-se seções editáveis no documento final.'
+              }
             </DialogDescription>
           </DialogHeader>
 
           <div className="space-y-4 py-4">
+            <div className="space-y-2">
+              <Label htmlFor="field-title" className="text-sm font-medium">Título do Metadado *</Label>
+              <Input
+                id="field-title"
+                className="rounded-lg"
+                placeholder="Ex: Descrição do Projeto, Objetivos, etc."
+                value={fieldTitle}
+                onChange={(e) => setFieldTitle(e.target.value)}
+                required
+              />
+              <p className="text-xs text-gray-500">
+                Este será o título exibido no documento final para esta seção editável.
+              </p>
+            </div>
+
             <div className="space-y-2">
               <Label htmlFor="associated-topic" className="text-sm font-medium">Associar a um Tópico *</Label>
               <Select value={associatedTopic} onValueChange={setAssociatedTopic}>
@@ -579,13 +874,32 @@ export function RichTextDocumentModelEditor({
               />
             </div>
             
-            <div className="pt-4 flex justify-end gap-3">
-              <Button variant="outline" onClick={() => setFieldDialogOpen(false)} className="rounded-lg px-6">
-                Cancelar
-              </Button>
-              <Button onClick={insertMetadataField} className="rounded-lg px-6 bg-indigo-600 hover:bg-indigo-700">
-                Inserir Metadado
-              </Button>
+            <div className="pt-4 flex justify-between items-center">
+              {/* Botão de excluir (apenas no modo edição) */}
+              {itemToEdit && (
+                <Button
+                  variant="destructive"
+                  onClick={() => {
+                    setItemToDelete({ id: itemToEdit.id, type: 'metadata', title: itemToEdit.title });
+                    setDeleteConfirmOpen(true);
+                    setFieldDialogOpen(false); // Fecha o modal de edição
+                  }}
+                  className="rounded-lg px-4 flex items-center gap-2"
+                >
+                  <Trash2 className="w-4 h-4" />
+                  Excluir Metadado
+                </Button>
+              )}
+
+              {/* Botões de ação */}
+              <div className="flex gap-3 ml-auto">
+                <Button variant="outline" onClick={() => setFieldDialogOpen(false)} className="rounded-lg px-6">
+                  Cancelar
+                </Button>
+                <Button onClick={insertMetadataField} className="rounded-lg px-6 bg-indigo-600 hover:bg-indigo-700">
+                  {itemToEdit ? 'Atualizar Metadado' : 'Inserir Metadado'}
+                </Button>
+              </div>
             </div>
           </div>
         </DialogContent>
@@ -602,7 +916,12 @@ export function RichTextDocumentModelEditor({
               <DialogTitle className="text-red-900">Confirmar Exclusão</DialogTitle>
             </div>
             <DialogDescription className="text-gray-600 pt-2">
-              Tem certeza que deseja remover este {itemToDelete?.type === 'topic' ? 'tópico' : 'metadado'}?
+              Tem certeza que deseja excluir este {itemToDelete?.type === 'topic' ? 'tópico' : 'metadado'}?
+              {itemToDelete?.type === 'metadata' && (
+                <div className="mt-2 p-3 bg-amber-50 border border-amber-200 rounded-lg text-sm text-amber-800">
+                  <strong>Atenção:</strong> Ao excluir este metadado, você também terá a opção de excluir o tópico relacionado.
+                </div>
+              )}
               {itemToDelete?.title && (
                 <div className="mt-3 p-3 bg-gray-50 rounded-lg border border-gray-100 italic text-sm text-gray-700">
                   "{itemToDelete.title.substring(0, 100)}{itemToDelete.title.length > 100 ? '...' : ''}"
@@ -629,7 +948,7 @@ export function RichTextDocumentModelEditor({
               className="rounded-lg px-6 flex items-center gap-2"
             >
               <Trash2 className="w-4 h-4" />
-              Excluir
+              Confirmar Exclusão
             </Button>
           </div>
         </DialogContent>
