@@ -1,7 +1,6 @@
 // API Service - Configurável para qualquer banco de dados
 
 import { manusAPIService, type ManusConfig } from './manus-api';
-import { supabase } from './supabase';
 
 export interface DatabaseConfig {
   host: string;
@@ -55,17 +54,17 @@ export interface DocumentVersion {
 export interface Document {
   id: string;
   projectId: string;
-  name: string;
-  groupId?: string;
-  securityLevel: 'public' | 'restricted' | 'confidential' | 'secret';
-  status: 'RASCUNHO' | 'EM_APROVACAO' | 'APROVADO' | 'RECUSADO'; // Alinhado com o banco
-  templateId?: string;
+  name: string; // Nome do documento
+  groupId?: string; // ID do grupo responsável
+  securityLevel: 'public' | 'restricted' | 'confidential' | 'secret'; // Nível de sigilo
+  templateId?: string; // ID do template/modelo utilizado
   creatorId: string;
   creatorName: string;
-  currentVersionId: string;
-  sharedWith?: { userId: string; permissions: ('view' | 'edit' | 'comment')[] }[];
+  currentVersionId: string; // ID da versão atual
+  sharedWith?: { userId: string; permissions: ('view' | 'edit' | 'comment')[] }[]; // Adicionado para compartilhamento
   createdAt: string;
   updatedAt: string;
+  // Propriedades adicionadas para compatibilidade com a interface esperada pelo frontend
   content?: DocumentContent;
   version?: number;
   updatedBy?: string;
@@ -86,10 +85,9 @@ export interface UploadedFile {
   id: string;
   projectId: string;
   name: string;
-  type: 'pdf' | 'doc' | 'docx' | 'txt' | 'audio' | 'other';
+  type: 'pdf' | 'doc' | 'docx' | 'txt' | 'audio' | 'other'; // Adicionado txt e audio
   size: number;
   status: 'processing' | 'processed' | 'error';
-  isDataSource?: boolean; // Adicionado para identificar fontes de dados da IA
   uploadedBy: string;
   uploadedAt: string;
 }
@@ -122,11 +120,8 @@ export interface DocumentModel {
   id: string;
   name: string;
   type: string; // Ex: Ofício, Minuta, Especificação de Requisitos
-  aiGuidance?: string; // Orientação para a IA
   templateContent: string; // Conteúdo do template em formato HTML
   isGlobal: boolean; // Se o modelo está disponível para todos os projetos
-  isDraft?: boolean; // Adicionado para identificar se o modelo é um rascunho
-  isLocalDraft?: boolean; // Adicionado para identificar rascunhos salvos apenas no localStorage
   projectId?: string; // Adicionado para vincular o modelo a um projeto específico
   createdAt: string;
   updatedAt: string;
@@ -134,7 +129,6 @@ export interface DocumentModel {
 
 class APIService {
   private readonly storageKey = 'sgid:mockdb:v1';
-  private listeners: Set<{ event: string; callback: Function; filter?: any }> = new Set();
   // Em uma implementação real, esta classe seria um cliente HTTP que interage com um backend real.
   // A persistência de dados seria no banco de dados e não em memória (mock data).
   // A autenticação e autorização seriam tratadas por tokens JWT/OAuth com um servidor de autenticação.
@@ -482,123 +476,32 @@ class APIService {
   // que retornaria um token JWT ou OAuth após validar as credenciais.
   // O token seria armazenado no cliente e enviado em todas as requisições subsequentes para autorização.
   async login(email: string, password: string): Promise<User | null> {
-    try {
-      console.log(`[APIService] Tentando login Supabase para: ${email}`);
-      const { data: authData, error: authError } = await supabase.auth.signInWithPassword({
-        email,
-        password,
-      });
-
-      if (!authError && authData.user) {
-        console.log('[APIService] Login Supabase Auth bem-sucedido, buscando dados na tabela public.users');
-        
-        const { data: userData, error: userError } = await supabase
-          .from('users')
-          .select('*')
-          .eq('email', email)
-          .single();
-
-        if (!userError && userData) {
-          const user: User = {
-            id: userData.id,
-            email: userData.email,
-            name: userData.nome || 'Usuário',
-            password: '', 
-            role: (userData.role as any) || 'operational',
-            createdAt: userData.created_at || new Date().toISOString(),
-            isActive: userData.status === 'ATIVO',
-            forcePasswordChange: userData.force_password_change || false
-          };
-          
-          this.currentUser = user;
-          localStorage.setItem('current_user', JSON.stringify(user));
-          console.log('[APIService] Login completo com sucesso:', user);
-          return user;
-        } else {
-          console.warn('[APIService] Usuário autenticado no Auth, mas não encontrado na tabela public.users:', userError);
-          const fallbackUser: User = {
-            id: authData.user.id,
-            email: authData.user.email!,
-            name: authData.user.user_metadata?.full_name || authData.user.email!.split('@')[0],
-            password: '',
-            role: 'operational',
-            createdAt: authData.user.created_at,
-            isActive: true,
-            forcePasswordChange: false
-          };
-          this.currentUser = fallbackUser;
-          localStorage.setItem('current_user', JSON.stringify(fallbackUser));
-          return fallbackUser;
-        }
-      }
-    } catch (err) {
-      console.error('[APIService] Erro inesperado no login Supabase:', err);
+    // Localiza o usuário por email
+    let user = this.mockUsers.find(u => u.email === email);
+    
+    if (!user) {
+      // Se o usuário não existir, retorna null (falha no login)
+      return null;
     }
 
-    console.log('[APIService] Tentando login via Mock Users (fallback)');
-    let user = this.mockUsers.find(u => u.email === email);
-    if (!user) return null;
-    if (password !== user.password) return null;
-    if (!user.isActive) throw new Error('Usuário inativo. Entre em contato com o administrador.');
+    // Valida a senha (em produção seria comparada com hash)
+    if (password !== user.password) {
+      return null;
+    }
+
+    if (!user.isActive) {
+      throw new Error('Usuário inativo. Entre em contato com o administrador.');
+    }
     
     this.currentUser = user;
     localStorage.setItem('current_user', JSON.stringify(user));
     return user;
   }
 
-  async register(email: string, password: string, name: string, role: User['role'] = 'operational', forcePasswordChange: boolean = true): Promise<User | null> {
-    try {
-      console.log(`[APIService] Tentando registro Supabase para: ${email}`);
-      const { data: authData, error: authError } = await supabase.auth.signUp({
-        email,
-        password,
-        options: { data: { full_name: name } }
-      });
-
-      if (authError) throw authError;
-
-      if (authData.user) {
-        console.log('[APIService] Registro Supabase Auth bem-sucedido, criando entrada na tabela public.users');
-        
-        const roleToTipo: Record<string, string> = {
-          'admin': 'ADM',
-          'director': 'DIRETOR',
-          'manager': 'GERENTE',
-          'technical_responsible': 'TECNICO',
-          'operational': 'OPERACIONAL'
-        };
-
-        const { error: userError } = await supabase
-          .from('users')
-          .insert({
-            id: authData.user.id,
-            email,
-            nome: name,
-            tipo: roleToTipo[role] || 'OPERACIONAL',
-            role: role,
-            status: 'ATIVO',
-            force_password_change: forcePasswordChange,
-            ai_preferences: {}
-          });
-
-        if (userError) console.error('[APIService] Erro ao salvar usuário na tabela public.users:', userError);
-
-        const user: User = {
-          id: authData.user.id,
-          email,
-          name,
-          password: '',
-          role,
-          createdAt: new Date().toISOString(),
-          isActive: true,
-          forcePasswordChange
-        };
-        return user;
-      }
-    } catch (err: any) {
-      console.error('[APIService] Erro inesperado no registro Supabase:', err);
-    }
-
+  async register(email: string, password: string, name: string, role: User['role'] = 'operational'): Promise<User | null> {
+    // Em um ambiente de produção, este método registraria o usuário em um banco de dados real
+    // e aplicaria regras de validação de senha e unicidade de e-mail.
+    // No mock, esta função será chamada apenas pelo UserManagementPanel, onde as regras de permissão são aplicadas.
     const newUser: User = {
       id: Date.now().toString(),
       email,
@@ -606,16 +509,16 @@ class APIService {
       password,
       role,
       createdAt: new Date().toISOString(),
-      isActive: true,
-      forcePasswordChange
+      isActive: true, // Novo usuário é sempre ativo por padrão
+      forcePasswordChange: true // Força mudança de senha no primeiro login
     };
+    
     this.mockUsers.push(newUser);
     this.persistToLocalStorage();
     return newUser;
   }
 
   logout(): void {
-    supabase.auth.signOut().catch(err => console.error('[APIService] Erro ao deslogar do Supabase:', err));
     this.currentUser = null;
     localStorage.removeItem('current_user');
   }
@@ -642,139 +545,6 @@ class APIService {
     })));
   }
 
-  // Realtime Subscriptions (Mock & Supabase)
-  subscribeToDocuments(projectId: string | null, callback: () => void) {
-    console.log(`[APIService] Subscribing to documents for project: ${projectId}`);
-    
-    // Supabase Realtime (se as tabelas existirem)
-    const channel = supabase
-      .channel('public:documents')
-      .on('postgres_changes', { 
-        event: '*', 
-        schema: 'public', 
-        table: 'documents',
-        filter: projectId ? `project_id=eq.${projectId}` : undefined 
-      }, () => {
-        callback();
-      })
-      .subscribe();
-
-    // Mock local listener
-    const listener = { event: 'documents_changed', callback, filter: projectId };
-    this.listeners.add(listener);
-
-    return {
-      unsubscribe: () => {
-        console.log(`[APIService] Unsubscribing from documents: ${projectId}`);
-        supabase.removeChannel(channel);
-        this.listeners.delete(listener);
-      }
-    };
-  }
-
-  subscribeToDocument(documentId: string, callback: (doc: Document) => void) {
-    console.log(`[APIService] Subscribing to document: ${documentId}`);
-    
-    const channel = supabase
-      .channel(`document:${documentId}`)
-      .on('postgres_changes', { 
-        event: 'UPDATE', 
-        schema: 'public', 
-        table: 'documents',
-        filter: `id=eq.${documentId}` 
-      }, (payload) => {
-        callback(payload.new as Document);
-      })
-      .subscribe();
-
-    const listener = { event: `document_changed:${documentId}`, callback };
-    this.listeners.add(listener);
-
-    return {
-      unsubscribe: () => {
-        supabase.removeChannel(channel);
-        this.listeners.delete(listener);
-      }
-    };
-  }
-
-  subscribeToLocks(documentId: string, callback: (locks: any[]) => void) {
-    console.log(`[APIService] Subscribing to locks for document: ${documentId}`);
-    
-    // Em produção, isso usaria Supabase Presence ou uma tabela de locks
-    const channel = supabase
-      .channel(`locks:${documentId}`)
-      .on('presence', { event: 'sync' }, () => {
-        const state = channel.presenceState();
-        const locks = Object.values(state).flat();
-        callback(locks);
-      })
-      .subscribe();
-
-    const listener = { event: `locks_changed:${documentId}`, callback };
-    this.listeners.add(listener);
-
-    return {
-      unsubscribe: () => {
-        supabase.removeChannel(channel);
-        this.listeners.delete(listener);
-      }
-    };
-  }
-
-  private notifyListeners(event: string, data?: any, filter?: any) {
-    this.listeners.forEach(l => {
-      if (l.event === event) {
-        if (!l.filter || l.filter === filter) {
-          l.callback(data);
-        }
-      }
-    });
-  }
-
-  // Métodos de Bloqueio (Locks)
-  async getActiveLocks(documentId: string): Promise<any[]> {
-    // Mock: em produção usaria Supabase Presence
-    return [];
-  }
-
-  async acquireSectionLock(documentId: string, sectionId: string): Promise<void> {
-    const user = this.getCurrentUser();
-    if (!user) return;
-    console.log(`[APIService] Usuário ${user.name} adquiriu lock na seção ${sectionId}`);
-    // Notifica outros listeners locais (mock)
-    this.notifyListeners(`locks_changed:${documentId}`, []);
-  }
-
-  async releaseSectionLock(documentId: string, sectionId: string): Promise<void> {
-    console.log(`[APIService] Lock liberado na seção ${sectionId}`);
-    // Notifica outros listeners locais (mock)
-  }
-
-  async updateDocumentSection(documentId: string, sectionId: string, content: string): Promise<void> {
-    const doc = await this.getDocumentById(documentId);
-    if (!doc || !doc.content) return;
-
-    const updatedSections = doc.content.sections.map(s => 
-      s.id === sectionId ? { ...s, content } : s
-    );
-
-    await this.updateDocument(documentId, { sections: updatedSections });
-    this.notifyListeners(`document_changed:${documentId}`, { ...doc, content: { sections: updatedSections } });
-    this.notifyListeners('documents_changed', null, doc.projectId);
-  }
-
-  async hasExistingSummary(projectId: string): Promise<boolean> {
-    // Mock: verifica se existe algum log de IA ou se há documentos processados
-    const files = await this.getProjectFiles(projectId);
-    return files.some(f => f.status === 'processed');
-  }
-
-  isUUID(id: string): boolean {
-    const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-    return uuidRegex.test(id);
-  }
-
   // Reset: Limpa cache e restaura dados padrão
   resetToDefaults(): void {
     console.warn('[SGID] Resetando dados para valores padrão');
@@ -783,122 +553,45 @@ class APIService {
     window.location.reload();
   }
 
-  // Busca rascunhos que foram salvos automaticamente pelo editor no localStorage
-  getLocalModelDrafts(): DocumentModel[] {
-    const drafts: DocumentModel[] = [];
-    for (let i = 0; i < localStorage.length; i++) {
-      const key = localStorage.key(i);
-      // Pega qualquer rascunho, inclusive o 'new' se tiver algo nele
-      if (key?.startsWith('model_draft_')) {
-        try {
-          const raw = localStorage.getItem(key);
-          if (raw) {
-            const draft = JSON.parse(raw);
-            // Só adiciona se tiver pelo menos um nome ou conteúdo
-            if (draft.name || (draft.templateContent && draft.templateContent !== '<p><br></p>')) {
-              drafts.push({
-                ...draft,
-                id: key, 
-                name: draft.name || (key === 'model_draft_new' ? 'Novo Modelo (Rascunho)' : 'Modelo sem nome'),
-                type: draft.type || 'Tipo não definido',
-                aiGuidance: draft.aiGuidance || '',
-                templateContent: draft.templateContent || '',
-                isLocalDraft: true,
-                isDraft: true,
-                isGlobal: false,
-                createdAt: draft.lastSaved || new Date().toISOString(),
-                updatedAt: draft.lastSaved || new Date().toISOString()
-              } as DocumentModel & { isLocalDraft: boolean });
-            }
-          }
-        } catch (e) {
-          console.warn('[SGID] Erro ao carregar rascunho local:', key);
-        }
-      }
-    }
-    return drafts;
-  }
 
-
+  // Projetos
   async getProjects(): Promise<Project[]> {
     const user = this.getCurrentUser();
     if (!user) return [];
 
-    try {
-      console.log('[APIService] Buscando projetos do Supabase');
-      const { data, error } = await supabase
-        .from('projects')
-        .select('*');
-
-      if (error) throw error;
-
-      if (data) {
-        return data.map(p => ({
-          id: p.id,
-          name: p.name,
-          description: p.description,
-          creatorId: p.creator_id,
-          creatorName: 'Usuário', // Join com admin_users omitido por simplicidade
-          status: p.status as any,
-          createdAt: p.created_at,
-          updatedAt: p.updated_at,
-          responsibleIds: p.responsible_id ? [p.responsible_id] : [],
-          groupIds: [],
-          documentIds: []
-        }));
-      }
-    } catch (err) {
-      console.error('[APIService] Erro ao buscar projetos do Supabase:', err);
-    }
-
+    // RBAC: Filtrar projetos baseado no papel do usuário
     if (user.role === 'admin') {
       return this.mockProjects;
     }
-    return this.mockProjects.filter(p => p.creatorId === user.id);
+
+    if (user.role === 'manager') {
+      // Gerente vê seus projetos + projetos de usuários sob supervisão + projetos dos grupos que é membro
+      const userGroupIds = this.mockGroups
+        .filter(g => g.memberIds.includes(user.id))
+        .map(g => g.id);
+
+      return this.mockProjects.filter(p => 
+        p.creatorId === user.id || 
+        this.mockUsers.find(u => u.id === p.creatorId)?.managerId === user.id ||
+        (p.groupIds && p.groupIds.length > 0 && userGroupIds.some(groupId => p.groupIds?.includes(groupId)))
+      );
+    }
+
+    // Usuário padrão vê apenas seus projetos + projetos dos grupos que é membro
+    const userGroupIds = this.mockGroups
+      .filter(g => g.memberIds.includes(user.id))
+      .map(g => g.id);
+
+    return this.mockProjects.filter(p => 
+      p.creatorId === user.id ||
+      (p.groupIds && p.groupIds.length > 0 && userGroupIds.some(groupId => p.groupIds?.includes(groupId)))
+    );
   }
 
   async createProject(name: string, description?: string, responsibleIds?: string[], groupIds?: string[]): Promise<Project> {
     const user = this.getCurrentUser();
     if (!user) throw new Error('Usuário não autenticado');
 
-    try {
-      console.log('[APIService] Criando projeto no Supabase (novo schema)');
-      const { data, error } = await supabase
-        .from('projects')
-        .insert({
-          name: name,
-          description: description || '',
-          status: 'draft',
-          creator_id: user.id,
-          responsible_id: responsibleIds && responsibleIds.length > 0 ? responsibleIds[0] : null
-        })
-        .select()
-        .single();
-
-      if (error) throw error;
-
-      if (data) {
-        const newProject: Project = {
-          id: data.id,
-          name: data.name,
-          description: data.description,
-          creatorId: data.creator_id,
-          creatorName: user.name,
-          status: data.status as any,
-          createdAt: data.created_at,
-          updatedAt: data.updated_at,
-          responsibleIds: data.responsible_id ? [data.responsible_id] : [],
-          groupIds: groupIds || [],
-          documentIds: []
-        };
-        this.addAuditLog(newProject.id, 'project_created', user.id, user.name, `Projeto "${name}" criado no Supabase`);
-        return newProject;
-      }
-    } catch (err) {
-      console.error('[APIService] Erro ao criar projeto no Supabase:', err);
-    }
-
-    // Fallback Mock
     const newProject: Project = {
       id: Date.now().toString(),
       name,
@@ -914,7 +607,41 @@ class APIService {
     };
 
     this.mockProjects.push(newProject);
-    this.addAuditLog(newProject.id, 'project_created', user.id, user.name, `Projeto "${name}" criado no mock`);
+
+    // Default sections for project document
+    let initialSections: DocumentSection[] = [
+      { id: 'intro', title: '1. Introdução', content: '', isEditable: true },
+      { id: 'overview', title: '2. Visão Geral do Sistema', content: '', isEditable: true },
+      { id: 'functional', title: '3. Requisitos Funcionais', content: '', isEditable: true },
+      { id: 'nonfunctional', title: '4. Requisitos Não Funcionais', content: '', isEditable: true },
+      { id: 'business-rules', title: '5. Regras de Negócio', content: '', isEditable: true },
+      { id: 'constraints', title: '6. Premissas e Restrições', content: '', isEditable: true }
+    ];
+
+    const firstVersionId = `v${newProject.id}_1`;
+    const firstVersion: DocumentVersion = {
+      id: firstVersionId,
+      documentId: newProject.id,
+      versionNumber: 1,
+      updatedAt: new Date().toISOString(),
+      updatedBy: user.name,
+      content: {
+        sections: initialSections
+      }
+    };
+
+    const newDocument: Document = {
+      id: newProject.id,
+      projectId: newProject.id,
+      currentVersionId: firstVersionId,
+      sharedWith: [],
+    };
+
+    this.mockDocuments.set(newProject.id, newDocument);
+    this.mockDocumentVersions.set(newProject.id, [firstVersion]);
+
+    // Log de auditoria
+    this.addAuditLog(newProject.id, 'project_created', user.id, user.name, `Projeto "${name}" criado`);
     this.persistToLocalStorage();
 
     return newProject;
@@ -1060,71 +787,12 @@ class APIService {
   }
 
   async getProject(projectId: string): Promise<Project | null> {
-    try {
-      if (!this.isUUID(projectId)) {
-        return this.mockProjects.find(p => p.id === projectId) || null;
-      }
-
-      const { data, error } = await supabase
-        .from('projects')
-        .select('*')
-        .eq('id', projectId)
-        .single();
-
-      if (error) throw error;
-
-      if (data) {
-        return {
-          id: data.id,
-          name: data.name,
-          description: data.description,
-          creatorId: data.creator_id,
-          creatorName: 'Usuário',
-          status: data.status as any,
-          createdAt: data.created_at,
-          updatedAt: data.updated_at,
-          responsibleIds: data.responsible_id ? [data.responsible_id] : [],
-          groupIds: [],
-          documentIds: []
-        };
-      }
-    } catch (err) {
-      console.error('[APIService] Erro ao buscar projeto no Supabase:', err);
-    }
     return this.mockProjects.find(p => p.id === projectId) || null;
   }
 
   async updateProject(updatedProject: Project): Promise<Project> {
     const user = this.getCurrentUser();
     if (!user) throw new Error('Usuário não autenticado');
-
-    try {
-      if (this.isUUID(updatedProject.id)) {
-        console.log('[APIService] Atualizando projeto no Supabase:', updatedProject.id);
-        const { data, error } = await supabase
-          .from('projects')
-          .update({
-            name: updatedProject.name,
-            description: updatedProject.description,
-            status: updatedProject.status,
-            responsible_id: updatedProject.responsibleIds && updatedProject.responsibleIds.length > 0 ? updatedProject.responsibleIds[0] : null,
-            updated_at: new Date().toISOString()
-          })
-          .eq('id', updatedProject.id)
-          .select()
-          .single();
-
-        if (error) throw error;
-        if (data) {
-          return {
-            ...updatedProject,
-            updatedAt: data.updated_at
-          };
-        }
-      }
-    } catch (err) {
-      console.error('[APIService] Erro ao atualizar projeto no Supabase:', err);
-    }
 
     const index = this.mockProjects.findIndex(p => p.id === updatedProject.id);
     if (index === -1) {
@@ -1145,7 +813,7 @@ class APIService {
     this.mockProjects[index] = projectToUpdate;
 
     // Log de auditoria
-    this.addAuditLog(projectToUpdate.id, 'project_updated', user.id, user.name, `Projeto "${projectToUpdate.name}" atualizado no mock`);
+    this.addAuditLog(projectToUpdate.id, 'project_updated', user.id, user.name, `Projeto "${projectToUpdate.name}" atualizado`);
     this.persistToLocalStorage();
 
     return projectToUpdate;
@@ -1153,88 +821,37 @@ class APIService {
 
   // Documentos
   async getDocument(projectId: string): Promise<Document | null> {
-    try {
-      if (this.isUUID(projectId)) {
-        const { data, error } = await supabase
-          .from('documents')
-          .select('*')
-          .eq('project_id', projectId)
-          .order('updated_at', { ascending: false })
-          .limit(1)
-          .maybeSingle();
-
-        if (error) throw error;
-        if (data) {
-          return {
-            id: data.id,
-            projectId: data.project_id,
-            name: data.nome,
-            templateId: data.template_id,
-            securityLevel: data.nivel_sigilo as any,
-            status: data.status as any,
-            creatorId: data.created_by,
-            creatorName: 'Usuário',
-            currentVersionId: data.id,
-            createdAt: data.created_at,
-            updatedAt: data.updated_at,
-            content: data.conteudo as any,
-            version: 1
-          } as Document;
-        }
-      }
-    } catch (err) {
-      console.error('[APIService] Erro ao buscar documento no Supabase:', err);
-    }
     const doc = this.mockDocuments.get(projectId);
     if (!doc) return null;
+
     const versions = this.mockDocumentVersions.get(projectId);
     const currentVersion = versions?.find(v => v.id === doc.currentVersionId);
+
     if (!currentVersion) return null;
+
+    // Retornar um objeto que se pareça com a interface Document antiga para compatibilidade temporária
+    // Os componentes serão atualizados posteriormente para usar DocumentVersion diretamente
     return {
-      ...doc,
-      content: currentVersion.content,
-      version: currentVersion.versionNumber,
-      updatedAt: currentVersion.updatedAt,
-      updatedBy: currentVersion.updatedBy,
-    } as Document;
+      id: doc.id,
+      projectId: doc.projectId,
+      currentVersionId: doc.currentVersionId,
+      sharedWith: doc.sharedWith,
+      content: currentVersion.content, // Conteúdo vem da versão atual
+      version: currentVersion.versionNumber, // Versão vem da versão atual
+      updatedAt: currentVersion.updatedAt, // Data de atualização vem da versão atual
+      updatedBy: currentVersion.updatedBy, // Usuário que atualizou vem da versão atual
+    } as Document; // Adiciona o cast para incluir as propriedades de DocumentVersion que o frontend espera
   }
 
   async getDocumentById(documentId: string): Promise<Document | null> {
-    try {
-      if (this.isUUID(documentId)) {
-        const { data, error } = await supabase
-          .from('documents')
-          .select('*')
-          .eq('id', documentId)
-          .single();
-
-        if (error) throw error;
-        if (data) {
-          return {
-            id: data.id,
-            projectId: data.project_id,
-            name: data.nome,
-            templateId: data.template_id,
-            securityLevel: data.nivel_sigilo as any,
-            status: data.status as any,
-            creatorId: data.created_by,
-            creatorName: 'Usuário',
-            currentVersionId: data.id,
-            createdAt: data.created_at,
-            updatedAt: data.updated_at,
-            content: data.conteudo as any,
-            version: 1
-          } as Document;
-        }
-      }
-    } catch (err) {
-      console.error('[APIService] Erro ao buscar documento por ID no Supabase:', err);
-    }
     const doc = this.mockDocuments.get(documentId);
     if (!doc) return null;
+
     const versions = this.mockDocumentVersions.get(documentId);
     const currentVersion = versions?.find(v => v.id === doc.currentVersionId);
+
     if (!currentVersion) return null;
+
     return {
       ...doc,
       content: currentVersion.content,
@@ -1246,40 +863,6 @@ class APIService {
   async updateDocument(projectIdOrDocumentId: string, content: DocumentContent): Promise<Document> {
     const user = this.getCurrentUser();
     if (!user) throw new Error('Usuário não autenticado');
-
-    try {
-      if (this.isUUID(projectIdOrDocumentId)) {
-        const { data, error } = await supabase
-          .from('documents')
-          .update({
-            conteudo: content,
-            updated_at: new Date().toISOString()
-          })
-          .eq('id', projectIdOrDocumentId)
-          .select()
-          .single();
-
-        if (!error && data) {
-          return {
-            id: data.id,
-            projectId: data.project_id,
-            name: data.nome,
-            templateId: data.template_id,
-            securityLevel: data.nivel_sigilo as any,
-            status: data.status as any,
-            creatorId: data.created_by,
-            creatorName: user.name,
-            currentVersionId: data.id,
-            createdAt: data.created_at,
-            updatedAt: data.updated_at,
-            content: data.conteudo as any,
-            version: 1
-          } as Document;
-        }
-      }
-    } catch (err) {
-      console.error('[APIService] Erro ao atualizar documento no Supabase:', err);
-    }
 
     const doc = this.mockDocuments.get(projectIdOrDocumentId);
     if (!doc) throw new Error('Documento não encontrado');
@@ -1308,7 +891,8 @@ class APIService {
     this.addAuditLog(doc.projectId, 'document_edited', user.id, user.name, `Documento editado manualmente (versão ${newVersionNumber})`);
     this.persistToLocalStorage();
 
-    const updatedDoc = {
+    // Retornar o documento atualizado (formato compatível)
+    return {
       id: doc.id,
       projectId: doc.projectId,
       currentVersionId: doc.currentVersionId,
@@ -1318,11 +902,6 @@ class APIService {
       updatedAt: newVersion.updatedAt, // Data de atualização vem da nova versão
       updatedBy: newVersion.updatedBy, // Usuário que atualizou vem da nova versão
     } as Document;
-
-    this.notifyListeners(`document_changed:${doc.id}`, updatedDoc);
-    this.notifyListeners('documents_changed', null, doc.projectId);
-
-    return updatedDoc;
   }
 
   /**
@@ -1376,70 +955,16 @@ class APIService {
     return versions.sort((a, b) => b.versionNumber - a.versionNumber); // Mais recente primeiro
   }
 
+  // Gerenciamento de documentos dentro de projetos
   async createDocument(
     projectId: string,
     name: string,
+    groupId: string,
     templateId: string | undefined,
-    securityLevel: 'public' | 'restricted' | 'confidential' | 'secret',
-    groupId?: string
+    securityLevel: 'public' | 'restricted' | 'confidential' | 'secret'
   ): Promise<Document> {
     const user = this.getCurrentUser();
     if (!user) throw new Error('Usuário não autenticado');
-
-    try {
-      if (this.isUUID(projectId)) {
-        let initialSections: DocumentSection[] = [];
-        if (templateId && this.isUUID(templateId)) {
-          const { data: templateData } = await supabase
-            .from('templates')
-            .select('sections')
-            .eq('id', templateId)
-            .single();
-          if (templateData?.sections) {
-            initialSections = this.parseTemplateContentToSections((templateData.sections as any).html || '');
-          }
-        } else {
-          initialSections = [{ id: 'section1', title: 'Seção 1', content: '', isEditable: true }];
-        }
-
-        const { data, error } = await supabase
-          .from('documents')
-          .insert({
-            nome: name,
-            project_id: projectId,
-            template_id: templateId || null,
-            status: 'RASCUNHO', // Ajustado para o padrão do banco
-            nivel_sigilo: securityLevel,
-            created_by: user.id,
-            conteudo: { sections: initialSections }
-          })
-          .select()
-          .single();
-
-        if (error) throw error;
-        if (data) {
-          const doc: Document = {
-            id: data.id,
-            projectId: data.project_id,
-            name: data.nome,
-            templateId: data.template_id,
-            securityLevel: data.nivel_sigilo as any,
-            status: data.status as any, // Adicionado mapeamento de status
-            creatorId: data.created_by,
-            creatorName: user.name,
-            currentVersionId: data.id,
-            createdAt: data.created_at,
-            updatedAt: data.updated_at,
-            content: data.conteudo as any,
-            version: 1
-          };
-          this.addAuditLog(projectId, 'document_created', user.id, user.name, `Documento "${name}" criado no Supabase`);
-          return doc;
-        }
-      }
-    } catch (err) {
-      console.error('[APIService] Erro ao criar documento no Supabase:', err);
-    }
 
     const project = await this.getProject(projectId);
     if (!project) throw new Error('Projeto não encontrado');
@@ -1482,7 +1007,6 @@ class APIService {
       name,
       groupId,
       securityLevel,
-      status: 'RASCUNHO', // Inicializado como rascunho
       templateId,
       creatorId: user.id,
       creatorName: user.name,
@@ -1497,9 +1021,10 @@ class APIService {
     this.mockDocumentVersions.set(newDocumentId, [firstVersion]);
 
     // Adicionar documento à lista de documentos do projeto
-    if (project.documentIds) {
-      project.documentIds.push(newDocumentId);
+    if (!project.documentIds) {
+      project.documentIds = [];
     }
+    project.documentIds.push(newDocumentId);
     project.updatedAt = new Date().toISOString();
     
     const projectIndex = this.mockProjects.findIndex(p => p.id === projectId);
@@ -1508,51 +1033,28 @@ class APIService {
     }
 
     // Log de auditoria
-    this.addAuditLog(projectId, 'document_created', user.id, user.name, `Documento "${name}" criado no projeto mock`);
+    this.addAuditLog(projectId, 'document_created', user.id, user.name, `Documento "${name}" criado no projeto`);
     this.persistToLocalStorage();
 
     return newDocument;
   }
 
   async listProjectDocuments(projectId: string): Promise<Document[]> {
-    try {
-      if (this.isUUID(projectId)) {
-        const { data, error } = await supabase
-          .from('documents')
-          .select('*')
-          .eq('project_id', projectId);
-
-        if (error) throw error;
-        if (data) {
-          return data.map(d => ({
-            id: d.id,
-            projectId: d.project_id,
-            name: d.nome,
-            templateId: d.template_id,
-            securityLevel: d.nivel_sigilo as any,
-            status: d.status as any,
-            creatorId: d.created_by,
-            creatorName: 'Usuário',
-            createdAt: d.created_at,
-            updatedAt: d.updated_at,
-            content: d.conteudo as any,
-            version: 1
-          })) as Document[];
-        }
-      }
-    } catch (err) {
-      console.error('[APIService] Erro ao listar documentos do projeto no Supabase:', err);
-    }
+    const user = this.getCurrentUser();
+    if (!user) throw new Error('Usuário não autenticado');
 
     const project = await this.getProject(projectId);
     if (!project) throw new Error('Projeto não encontrado');
 
     const documents: Document[] = [];
+    
     for (const docId of project.documentIds || []) {
       const doc = this.mockDocuments.get(docId);
       if (doc) {
+        // Enriquecer documento com informações de versão
         const versions = this.mockDocumentVersions.get(docId);
         const currentVersion = versions?.find(v => v.id === doc.currentVersionId);
+        
         documents.push({
           ...doc,
           content: currentVersion?.content,
@@ -1561,6 +1063,7 @@ class APIService {
         });
       }
     }
+
     return documents;
   }
 
@@ -1568,33 +1071,22 @@ class APIService {
     const user = this.getCurrentUser();
     if (!user) throw new Error('Usuário não autenticado');
 
-    try {
-      if (this.isUUID(documentId)) {
-        const { error } = await supabase
-          .from('documents')
-          .delete()
-          .eq('id', documentId);
-
-        if (error) throw error;
-        this.addAuditLog(projectId, 'document_deleted', user.id, user.name, `Documento "${documentId}" deletado no Supabase`);
-        return;
-      }
-    } catch (err) {
-      console.error('[APIService] Erro ao deletar documento no Supabase:', err);
-    }
-
     const project = await this.getProject(projectId);
     if (!project) throw new Error('Projeto não encontrado');
 
     const document = this.mockDocuments.get(documentId);
     if (!document) throw new Error('Documento não encontrado');
 
+    // Lógica de permissão: apenas criador do documento, criador do projeto ou admin podem deletar
     if (document.creatorId !== user.id && project.creatorId !== user.id && user.role !== 'admin') {
       throw new Error('Permissão negada: Você não tem permissão para deletar este documento.');
     }
 
+    // Remover documento dos dados
     this.mockDocuments.delete(documentId);
     this.mockDocumentVersions.delete(documentId);
+
+    // Remover documento da lista do projeto
     if (project.documentIds) {
       project.documentIds = project.documentIds.filter(id => id !== documentId);
     }
@@ -1605,7 +1097,8 @@ class APIService {
       this.mockProjects[projectIndex] = project;
     }
 
-    this.addAuditLog(projectId, 'document_deleted', user.id, user.name, `Documento "${documentId}" deletado no mock`);
+    // Log de auditoria
+    this.addAuditLog(projectId, 'document_deleted', user.id, user.name, `Documento "${documentId}" deletado`);
     this.persistToLocalStorage();
   }
 
@@ -1689,11 +1182,11 @@ class APIService {
     return document;
   }
 
-  async generateWithAI(projectId: string, sectionId: string, sectionTitle?: string, helpText?: string): Promise<string> {
+  async generateWithAI(projectId: string, sectionId: string): Promise<string> {
     const user = this.getCurrentUser();
     if (!user) throw new Error('Usuário não autenticado');
 
-    console.log(`[IA] Iniciando geração de conteúdo para a seção "${sectionId}" (${sectionTitle}) no projeto "${projectId}"`);
+    console.log(`[IA] Iniciando geração de conteúdo para a seção "${sectionId}" no projeto "${projectId}"`);
 
     const aiConfig = this.getAIConfiguracao();
     if (!aiConfig || !aiConfig.apiKey) {
@@ -1707,9 +1200,18 @@ class APIService {
     // Se o provider for Manus, usar serviço específico
     if (aiConfig.provider === 'manus') {
       try {
+        const sectionTitles: Record<string, string> = {
+          'intro': 'Introdução',
+          'overview': 'Visão Geral do Sistema',
+          'functional': 'Requisitos Funcionais',
+          'nonfunctional': 'Requisitos Não Funcionais',
+          'business-rules': 'Regras de Negócio',
+          'constraints': 'Premissas e Restrições'
+        };
+
         const response = await manusAPIService.generateSectionContent(
           projectId,
-          sectionTitle || sectionId,
+          sectionTitles[sectionId] || sectionId,
           sectionId
         );
 
@@ -1733,9 +1235,16 @@ class APIService {
     const documentType = documentModel?.type || 'documento'; // Padrão para 'documento'
 
     // Preparar contexto para a IA
-    const title = sectionTitle || sectionId;
+    const sectionTitles: Record<string, string> = {
+      'intro': 'Introdução',
+      'overview': 'Visão Geral do Sistema',
+      'functional': 'Requisitos Funcionais',
+      'nonfunctional': 'Requisitos Não Funcionais',
+      'business-rules': 'Regras de Negócio',
+      'constraints': 'Premissas e Restrições'
+    };
 
-    const prompt = `Você é um assistente especializado em Engenharia de Requisitos. \nVocê está gerando conteúdo para um **${documentType}**.\nAnalise os documentos fornecidos e gere conteúdo para a seção "${title}" deste ${documentType}.\n\n${helpText ? `INSTRUÇÕES ADICIONAIS: ${helpText}\n\n` : ''}IMPORTANTE:\n- Base-se APENAS nos documentos fornecidos\n- Se não encontrar informação relevante, escreva "Não identificado: [breve explicação]"\n- Para requisitos funcionais, use o formato: RF001, RF002, etc.\n- Para requisitos não funcionais, use: RNF001, RNF002, etc.\n- Para regras de negócio, use: RN001, RN002, etc.\n- Mantenha a linguagem e formalidade adequadas para um **${documentType}**.\n- Seja objetivo e técnico\n\nDocumentos disponíveis: ${processedFiles.map(f => f.name).join(', ') || 'Nenhum documento enviado ainda'}\n\nGere o conteúdo:`;
+    const prompt = `Você é um assistente especializado em Engenharia de Requisitos. \nVocê está gerando conteúdo para um **${documentType}**.\nAnalise os documentos fornecidos e gere conteúdo para a seção "${sectionTitles[sectionId]}" deste ${documentType}.\n\nIMPORTANTE:\n- Base-se APENAS nos documentos fornecidos\n- Se não encontrar informação relevante, escreva "Não identificado: [breve explicação]"\n- Para requisitos funcionais, use o formato: RF001, RF002, etc.\n- Para requisitos não funcionais, use: RNF001, RNF002, etc.\n- Para regras de negócio, use: RN001, RN002, etc.\n- Mantenha a linguagem e formalidade adequadas para um **${documentType}**.\n- Seja objetivo e técnico\n\nDocumentos disponíveis: ${processedFiles.map(f => f.name).join(', ') || 'Nenhum documento enviado ainda'}\n\nGere o conteúdo:`;
 
     try {
       console.log('[IA] Chamando API da IA para gerar conteúdo...', { provider: aiConfig.provider, sectionId });
@@ -2005,210 +1514,102 @@ class APIService {
   }
 
   // Upload de arquivos
-  async uploadFile(projectId: string, file: File, isDataSource: boolean = false): Promise<UploadedFile> {
+  async uploadFile(projectId: string, file: File): Promise<UploadedFile> {
     const user = this.getCurrentUser();
     if (!user) throw new Error('Usuário não autenticado');
 
-    try {
-      // Proteção: Não tenta upload real se o projeto não for real (UUID)
-      if (!this.isUUID(projectId)) {
-        console.warn('[APIService] Tentativa de upload para projeto mock. Salvando apenas no mock local.');
-        const mockUploadedFile: UploadedFile = {
-          id: Date.now().toString(),
-          projectId,
-          name: file.name,
-          type: 'other',
-          size: file.size,
-          status: 'processed',
-          isDataSource,
-          uploadedBy: user.name,
-          uploadedAt: new Date().toISOString()
+    const uploadedFile: UploadedFile = {
+      id: Date.now().toString(),
+      projectId,
+      name: file.name,
+      type: file.name.endsWith('.pdf') ? 'pdf' :
+            file.name.endsWith('.docx') ? 'docx' :
+            file.name.endsWith('.doc') ? 'doc' :
+            file.name.endsWith('.txt') ? 'txt' :
+            file.type.startsWith('audio/') ? 'audio' : 'other',
+      size: file.size,
+      status: 'processing',
+      uploadedBy: user.name,
+      uploadedAt: new Date().toISOString()
+    };
+
+    const projectFiles = this.mockFiles.get(projectId) || [];
+    projectFiles.push(uploadedFile);
+    this.mockFiles.set(projectId, projectFiles);
+
+    // Processar documento com Manus se configurado
+    const aiConfig = this.getAIConfiguracao();
+    if (aiConfig?.provider === 'manus' && aiConfig.apiKey) {
+      try {
+        console.log('Processando documento com Manus...', file.name);
+        const manusConfig: ManusConfig = {
+          apiKey: aiConfig.apiKey,
+          endpoint: (aiConfig as any).endpoint
         };
-        const projectFiles = this.mockFiles.get(projectId) || [];
-        projectFiles.push(mockUploadedFile);
-        this.mockFiles.set(projectId, projectFiles);
-        return mockUploadedFile;
+        
+        // Processar documento com Manus
+        const manusDoc = await manusAPIService.processDocument(projectId, file);
+        console.log('Documento processado com Manus:', manusDoc.id);
+        
+        // Atualizar status
+        uploadedFile.status = 'processed';
+        
+        // Log de auditoria específico
+        this.addAuditLog(
+          projectId, 
+          'file_processed_manus', 
+          user.id, 
+          user.name, 
+          `Documento \"${file.name}\" processado pela IA Manus`
+        );
+      } catch (error: any) {
+        console.error('Erro ao processar documento com Manus:', error);
+        uploadedFile.status = 'error';
+        this.addAuditLog(
+          projectId, 
+          'file_processing_error', 
+          user.id, 
+          user.name, 
+          `Erro ao processar \"${file.name}\": ${error.message}`
+        );
       }
-
-      console.log(`[APIService] Iniciando upload Supabase para projeto ${projectId}: ${file.name}`);
-      
-      const filePath = `${projectId}/${file.name}`;
-      
-      // 1. Upload para o Storage (Bucket: Documentos)
-      const { data: storageData, error: storageError } = await supabase.storage
-        .from('Documentos')
-        .upload(filePath, file, {
-          upsert: true // Permite sobrescrever se o arquivo com mesmo nome já existir na pasta do projeto
-        });
-
-      if (storageError) throw storageError;
-
-      // 2. Inserir metadados na tabela project_materials
-      const fileType = file.name.endsWith('.pdf') ? 'pdf' :
-                       file.name.endsWith('.docx') ? 'docx' :
-                       file.name.endsWith('.doc') ? 'doc' :
-                       file.name.endsWith('.txt') ? 'txt' :
-                       file.type.startsWith('audio/') ? 'audio' : 'other';
-
-      const { data: dbData, error: dbError } = await supabase
-        .from('project_materials')
-        .insert({
-          project_id: projectId,
-          file_name: file.name,
-          file_path: filePath,
-          file_type: fileType,
-          file_size: file.size,
-          is_data_source: isDataSource,
-          uploaded_by: user.id,
-          status: 'processed'
-        })
-        .select()
-        .single();
-
-      if (dbError) {
-        console.warn('[APIService] Arquivo enviado ao storage, mas erro ao salvar metadados no banco. Verifique se a tabela project_materials existe.');
-        throw dbError;
-      }
-
-      const uploadedFile: UploadedFile = {
-        id: dbData.id,
-        projectId: dbData.project_id,
-        name: dbData.file_name,
-        type: dbData.file_type as any,
-        size: dbData.file_size,
-        status: dbData.status as any,
-        isDataSource: dbData.is_data_source,
-        uploadedBy: user.name,
-        uploadedAt: dbData.created_at
-      };
-
-      // Processar documento com Manus se configurado
-      const aiConfig = this.getAIConfiguracao();
-      if (aiConfig?.provider === 'manus' && aiConfig.apiKey) {
-        try {
-          const manusConfig: ManusConfig = { apiKey: aiConfig.apiKey, endpoint: (aiConfig as any).endpoint };
-          await manusAPIService.processDocument(projectId, file);
-          this.addAuditLog(projectId, 'file_processed_manus', user.id, user.name, `Documento "${file.name}" processado pela IA Manus`);
-        } catch (error: any) {
-          console.error('Erro ao processar com Manus:', error);
-        }
-      }
-
-      this.addAuditLog(projectId, 'file_uploaded', user.id, user.name, `Arquivo "${file.name}" enviado para o Supabase`);
-      return uploadedFile;
-
-    } catch (err) {
-      console.error('[APIService] Erro no upload Supabase:', err);
-      // Fallback para Mock se falhar
-      const fallbackFile: UploadedFile = {
-        id: Date.now().toString(),
-        projectId,
-        name: file.name,
-        type: 'other',
-        size: file.size,
-        status: 'processed',
-        isDataSource,
-        uploadedBy: user.name,
-        uploadedAt: new Date().toISOString()
-      };
-      return fallbackFile;
+    } else {
+      // Simula processamento local se Manus não estiver configurado
+      setTimeout(() => {
+        uploadedFile.status = 'processed';
+      }, 2000);
     }
+
+    // Log de auditoria
+    this.addAuditLog(projectId, 'file_uploaded', user.id, user.name, `Arquivo \"${file.name}\" enviado`);
+    this.persistToLocalStorage();
+
+    return uploadedFile;
   }
 
   async getProjectFiles(projectId: string): Promise<UploadedFile[]> {
-    try {
-      // Proteção: se o ID não for um UUID, não consulta o Supabase (evita erro 400/22P02)
-      if (!this.isUUID(projectId)) {
-        return this.mockFiles.get(projectId) || [];
-      }
-
-      console.log('[APIService] Buscando arquivos do projeto no Supabase:', projectId);
-      const { data, error } = await supabase
-        .from('project_materials')
-        .select('*')
-        .eq('project_id', projectId);
-
-      if (error) throw error;
-
-      if (data) {
-        return data.map(f => ({
-          id: f.id,
-          projectId: f.project_id,
-          name: f.file_name,
-          type: f.file_type as any,
-          size: f.file_size,
-          status: f.status as any,
-          isDataSource: f.is_data_source,
-          uploadedBy: 'Usuário',
-          uploadedAt: f.created_at
-        }));
-      }
-    } catch (err) {
-      console.error('[APIService] Erro ao buscar arquivos do Supabase:', err);
-    }
     return this.mockFiles.get(projectId) || [];
   }
 
-  private addAuditLog(entidadeId: string, acao: string, userId: string, userName: string, details: string): void {
-    try {
-      if (this.isUUID(entidadeId) && this.isUUID(userId)) {
-        supabase
-          .from('audit_logs')
-          .insert({
-            user_id: userId,
-            acao: acao,
-            entidade: 'desconhecido', // Pode ser refinado
-            entidade_id: entidadeId,
-            detalhes: { message: details, user_name: userName }
-          })
-          .then(({ error }) => {
-            if (error) console.error('[APIService] Erro ao salvar log de auditoria no Supabase:', error);
-          });
-      }
-    } catch (err) {
-      console.error('[APIService] Erro ao processar log de auditoria:', err);
-    }
-
+  // Auditoria
+  private addAuditLog(projectId: string, action: string, userId: string, userName: string, details: string): void {
     const log: AuditLog = {
       id: Date.now().toString(),
-      projectId: entidadeId,
-      action: acao,
+      projectId,
+      action,
       userId,
       userName,
       details,
       timestamp: new Date().toISOString()
     };
 
-    const logs = this.mockAuditLogs.get(entidadeId) || [];
+    const logs = this.mockAuditLogs.get(projectId) || [];
     logs.unshift(log);
-    this.mockAuditLogs.set(entidadeId, logs);
+    this.mockAuditLogs.set(projectId, logs);
     this.persistToLocalStorage();
   }
 
   async getAuditLogs(projectId: string): Promise<AuditLog[]> {
-    try {
-      if (this.isUUID(projectId)) {
-        const { data, error } = await supabase
-          .from('audit_logs')
-          .select('*')
-          .eq('entidade_id', projectId)
-          .order('created_at', { ascending: false });
-
-        if (!error && data) {
-          return data.map(l => ({
-            id: l.id,
-            projectId: l.entidade_id,
-            action: l.acao,
-            userId: l.user_id,
-            userName: (l.detalhes as any)?.user_name || 'Usuário',
-            details: (l.detalhes as any)?.message || '',
-            timestamp: l.created_at
-          }));
-        }
-      }
-    } catch (err) {
-      console.error('[APIService] Erro ao buscar logs de auditoria no Supabase:', err);
-    }
     return this.mockAuditLogs.get(projectId) || [];
   }
 
@@ -2226,58 +1627,14 @@ class APIService {
   }
 
   async getAllUsers(): Promise<User[]> {
-    try {
-      const { data, error } = await supabase
-        .from('users')
-        .select('*');
-
-      if (error) throw error;
-
-      if (data) {
-        return data.map(u => ({
-          id: u.id,
-          email: u.email,
-          name: u.nome || 'Usuário',
-          password: '',
-          role: (u.role as any) || 'operational',
-          createdAt: u.created_at || new Date().toISOString(),
-          isActive: u.status === 'ATIVO',
-          forcePasswordChange: false
-        }));
-      }
-    } catch (err) {
-      console.error('[APIService] Erro ao buscar todos os usuários do Supabase:', err);
-    }
     return this.mockUsers;
   }
 
+  async getTotalUsersCount(): Promise<number> {
+    return this.mockUsers.length;
+  }
+
   async getUser(id: string): Promise<User | null> {
-    try {
-      if (this.isUUID(id)) {
-        const { data, error } = await supabase
-          .from('users')
-          .select('*')
-          .eq('id', id)
-          .single();
-
-        if (error) throw error;
-
-        if (data) {
-          return {
-            id: data.id,
-            email: data.email,
-            name: data.nome || 'Usuário',
-            password: '',
-            role: (data.role as any) || 'operational',
-            createdAt: data.created_at || new Date().toISOString(),
-            isActive: data.status === 'ATIVO',
-            forcePasswordChange: false
-          };
-        }
-      }
-    } catch (err) {
-      console.error('[APIService] Erro ao buscar usuário no Supabase:', err);
-    }
     return this.mockUsers.find(user => user.id === id) || null;
   }
 
@@ -2285,51 +1642,28 @@ class APIService {
     const user = this.getCurrentUser();
     if (!user) throw new Error('Usuário não autenticado');
 
-    try {
-      if (this.isUUID(updatedUser.id)) {
-        const roleToTipo: Record<string, string> = {
-          'admin': 'ADM',
-          'director': 'DIRETOR',
-          'manager': 'GERENTE',
-          'technical_responsible': 'TECNICO',
-          'operational': 'OPERACIONAL'
-        };
-
-        const { data, error } = await supabase
-          .from('users')
-          .update({
-            nome: updatedUser.name,
-            role: updatedUser.role,
-            tipo: roleToTipo[updatedUser.role] || 'OPERACIONAL',
-            status: updatedUser.isActive ? 'ATIVO' : 'SUSPENSO',
-            updated_at: new Date().toISOString()
-          })
-          .eq('id', updatedUser.id)
-          .select()
-          .single();
-
-        if (error) throw error;
-        if (data) {
-          if (this.currentUser?.id === updatedUser.id) {
-            this.currentUser = updatedUser;
-            localStorage.setItem('current_user', JSON.stringify(updatedUser));
-          }
-          return updatedUser;
-        }
-      }
-    } catch (err) {
-      console.error('[APIService] Erro ao atualizar usuário no Supabase:', err);
+    const index = this.mockUsers.findIndex(u => u.id === updatedUser.id);
+    if (index === -1) {
+      throw new Error('Usuário não encontrado');
     }
 
-    const index = this.mockUsers.findIndex(u => u.id === updatedUser.id);
-    if (index === -1) throw new Error('Usuário não encontrado');
+    // Lógica de permissão simplificada: apenas admin pode editar usuários (exceto o próprio)
+    if (user.role !== 'admin' && user.id !== updatedUser.id) {
+      throw new Error('Permissão negada: Somente administradores podem editar usuários.');
+    }
 
     this.mockUsers[index] = updatedUser;
+
+    // Se o usuário logado está sendo atualizado, atualiza o localStorage
     if (this.currentUser?.id === updatedUser.id) {
       this.currentUser = updatedUser;
       localStorage.setItem('current_user', JSON.stringify(updatedUser));
     }
+
+    // Log de auditoria
+    this.addAuditLog('system', 'user_updated', user.id, user.name, `Usuário "${updatedUser.name}" (${updatedUser.email}) atualizado`);
     this.persistToLocalStorage();
+
     return updatedUser;
   }
 
@@ -2337,327 +1671,103 @@ class APIService {
     const user = this.getCurrentUser();
     if (!user) throw new Error('Usuário não autenticado');
 
-    try {
-      if (this.isUUID(userId)) {
-        const { error } = await supabase
-          .from('users')
-          .delete()
-          .eq('id', userId);
+    // Apenas admin pode excluir usuários
+    if (user.role !== 'admin') {
+      throw new Error('Permissão negada: Somente administradores podem excluir usuários.');
+    }
 
-        if (error) throw error;
-        return true;
-      }
-    } catch (err) {
-      console.error('[APIService] Erro ao excluir usuário no Supabase:', err);
+    // Não permite excluir o próprio usuário
+    if (user.id === userId) {
+      throw new Error('Você não pode excluir seu próprio usuário.');
     }
 
     const initialLength = this.mockUsers.length;
     this.mockUsers = this.mockUsers.filter(u => u.id !== userId);
+
     if (this.mockUsers.length < initialLength) {
+      // Log de auditoria
+      this.addAuditLog('system', 'user_deleted', user.id, user.name, `Usuário com ID "${userId}" excluído`);
       this.persistToLocalStorage();
       return true;
     }
     return false;
-  }
-
-  // Métodos adicionais para compatibilidade com componentes
-  async deleteDocumentModel(modelId: string): Promise<boolean> {
-    const index = this.mockDocumentModels.findIndex(m => m.id === modelId);
-    if (index !== -1) {
-      this.mockDocumentModels.splice(index, 1);
-      this.persistToLocalStorage();
-      return true;
-    }
-    return false;
-  }
-
-  async analyzeProjectModels(projectId: string, onStatusChange?: (status: string) => void): Promise<void> {
-    onStatusChange?.('Analisando modelos...');
-    await new Promise(r => setTimeout(r, 1000));
-    onStatusChange?.('Concluído');
-  }
-
-  async analyzeProjectMaterials(projectId: string, onStatusChange?: (status: string) => void, forceRefresh: boolean = false): Promise<string> {
-    onStatusChange?.('Analisando materiais...');
-    await new Promise(r => setTimeout(r, 1500));
-    onStatusChange?.('Resumo gerado com sucesso');
-    return 'Resumo automático dos materiais do projeto.';
-  }
-
-  async getFilePublicUrl(projectId: string, fileName: string): Promise<string> {
-    try {
-      if (!this.isUUID(projectId)) return '#';
-
-      const { data, error } = await supabase
-        .from('project_materials')
-        .select('file_path')
-        .eq('project_id', projectId)
-        .eq('file_name', fileName)
-        .single();
-
-      if (data?.file_path) {
-        const { data: urlData } = supabase.storage
-          .from('Documentos')
-          .getPublicUrl(data.file_path);
-        
-        return urlData.publicUrl;
-      }
-    } catch (err) {
-      console.error('[APIService] Erro ao obter URL do arquivo:', err);
-    }
-    return '#';
-  }
-
-  async deleteFile(projectId: string, fileId: string): Promise<void> {
-    try {
-      if (this.isUUID(fileId)) {
-        const { data: fileData } = await supabase
-          .from('project_materials')
-          .select('file_path')
-          .eq('id', fileId)
-          .single();
-
-        if (fileData?.file_path) {
-          await supabase.storage.from('Documentos').remove([fileData.file_path]);
-          await supabase.from('project_materials').delete().eq('id', fileId);
-          console.log('[APIService] Arquivo deletado com sucesso do Supabase');
-        }
-      }
-    } catch (err) {
-      console.error('[APIService] Erro ao deletar arquivo do Supabase:', err);
-    }
-
-    const files = this.mockFiles.get(projectId) || [];
-    const updated = files.filter(f => f.id !== fileId);
-    this.mockFiles.set(projectId, updated);
-    this.persistToLocalStorage();
-  }
-
-  async setFileAsDataSource(projectId: string, fileId: string, isDataSource: boolean): Promise<void> {
-    try {
-      if (this.isUUID(fileId)) {
-        await supabase
-          .from('project_materials')
-          .update({ is_data_source: isDataSource })
-          .eq('id', fileId);
-        
-        console.log(`[APIService] Status de fonte de dados atualizado no Supabase para ${fileId}`);
-      }
-    } catch (err) {
-      console.error('[APIService] Erro ao atualizar status de fonte de dados:', err);
-    }
-  }
-
-  async uploadModelFile(projectId: string, file: File): Promise<void> {
-    console.log(`[APIService] Upload de arquivo de modelo: ${file.name}`);
-  }
-
-  async deleteModelFile(projectId: string, fileName: string): Promise<void> {
-    console.log(`[APIService] Arquivo de modelo deletado: ${fileName}`);
-  }
-
-  async listWikiDocuments(page: number, pageSize: number): Promise<{ data: Document[], total: number }> {
-    try {
-      const { data, error, count } = await supabase
-        .from('documents')
-        .select('*', { count: 'exact' })
-        .range((page - 1) * pageSize, page * pageSize - 1);
-
-      if (!error && data) {
-        return {
-          data: data.map(d => ({
-            id: d.id,
-            projectId: d.project_id,
-            name: d.nome,
-            content: d.conteudo as any,
-            updatedAt: d.updated_at
-          })) as Document[],
-          total: count || 0
-        };
-      }
-    } catch (err) {
-      console.error('[APIService] Erro ao listar documentos da Wiki no Supabase:', err);
-    }
-    const allDocs = Array.from(this.mockDocuments.values());
-    return {
-      data: allDocs.slice((page - 1) * pageSize, page * pageSize),
-      total: allDocs.length
-    };
   }
 
   async updateUserPassword(userId: string, newPassword: string, forcePasswordChange?: boolean): Promise<User> {
     const user = this.getCurrentUser();
     if (!user) throw new Error('Usuário não autenticado');
 
+    // Qualquer usuário pode alterar sua própria senha
+    // Apenas admin pode alterar senha de outros usuários
     if (user.id !== userId && user.role !== 'admin') {
       throw new Error('Permissão negada: Você só pode alterar sua própria senha.');
     }
 
+    const targetUser = this.mockUsers.find(u => u.id === userId);
+    if (!targetUser) throw new Error('Usuário não encontrado');
+
+    // Validação de força de senha (mínimo 6 caracteres)
     if (newPassword.length < 6) {
       throw new Error('A senha deve ter pelo menos 6 caracteres.');
     }
 
-    try {
-      if (this.isUUID(userId)) {
-        // 1. Atualizar senha no Supabase Auth
-        // Nota: updateUser só funciona para o usuário logado no momento.
-        // Se for admin alterando de outro, o Supabase Auth requer o uso da Admin API (servidor).
-        // Aqui assumimos que é o próprio usuário alterando (caso do forcePasswordChange).
-        if (user.id === userId) {
-          const { error: authError } = await supabase.auth.updateUser({
-            password: newPassword
-          });
-          if (authError) throw authError;
-        }
-
-        // 2. Atualizar flag na tabela public.users
-        const { data: userData, error: userError } = await supabase
-          .from('users')
-          .update({
-            force_password_change: forcePasswordChange === true,
-            updated_at: new Date().toISOString()
-          })
-          .eq('id', userId)
-          .select()
-          .single();
-
-        if (userError) throw userError;
-
-        if (userData) {
-          const updatedUser: User = {
-            ...user,
-            forcePasswordChange: userData.force_password_change,
-          };
-          if (this.currentUser?.id === userId) {
-            this.currentUser = updatedUser;
-            localStorage.setItem('current_user', JSON.stringify(updatedUser));
-          }
-          return updatedUser;
-        }
-      }
-    } catch (err) {
-      console.error('[APIService] Erro ao atualizar senha no Supabase:', err);
-    }
-
-    // Fallback Mock
-    const targetUser = this.mockUsers.find(u => u.id === userId);
-    if (!targetUser) throw new Error('Usuário não encontrado');
-
+    // Atualiza a senha e remove o flag de forcePasswordChange (a menos que seja especificado)
     targetUser.password = newPassword;
-    targetUser.forcePasswordChange = forcePasswordChange === true;
+    targetUser.forcePasswordChange = forcePasswordChange === true ? true : false;
     targetUser.updatedAt = new Date().toISOString();
 
+    // Se o usuário logado está alterando a própria senha, atualiza no localStorage
     if (this.currentUser?.id === userId) {
       this.currentUser = targetUser;
       localStorage.setItem('current_user', JSON.stringify(targetUser));
     }
 
+    // Log de auditoria
+    this.addAuditLog('system', 'password_changed', user.id, user.name, `Senha alterada para o usuário "${targetUser.name}" (${targetUser.email})`);
     this.persistToLocalStorage();
+
     return targetUser;
   }
   // Gerenciamento de Modelos de Documento
   async getDocumentModels(projectId?: string): Promise<DocumentModel[]> {
-    try {
-      console.log('[APIService] Buscando modelos do Supabase (tabela templates)');
-      let query = supabase.from('templates').select('*');
+    const user = this.getCurrentUser();
+    if (!user) return [];
 
-      if (projectId) {
-        // Busca modelos globais OU modelos vinculados a este projeto específico
-        query = query.or(`global.eq.true,project_id.eq.${projectId}`);
-      }
-
-      const { data, error } = await query;
-
-      if (error) throw error;
-
-      if (data) {
-        return data.map(t => ({
-          id: t.id,
-          name: t.nome,
-          type: t.tipo_documento,
-          aiGuidance: t.descricao || '',
-          templateContent: (t.sections as any)?.html || '', // Recupera o HTML salvo no JSONB
-          isGlobal: t.global,
-          isDraft: false, // A tabela templates não tem coluna is_draft no schema fornecido
-          projectId: t.project_id,
-          createdAt: t.created_at,
-          updatedAt: t.updated_at
-        } as DocumentModel));
-      }
-    } catch (err) {
-      console.error('[APIService] Erro ao buscar modelos do Supabase:', err);
-    }
-
-    console.log('[APIService] Fallback para modelos mock');
     let models = this.mockDocumentModels;
+
     if (projectId) {
+      // Retornar modelos globais e modelos específicos do projeto
       models = models.filter(m => m.isGlobal || m.projectId === projectId);
     }
+
     return models;
   }
 
-  async createDocumentModel(name: string, type: string, templateContent: string, isGlobal: boolean = false, projectId?: string, isDraft: boolean = false, aiGuidance?: string): Promise<DocumentModel> {
+  async createDocumentModel(name: string, type: string, templateContent: string, isGlobal: boolean = false, projectId?: string): Promise<DocumentModel> {
     const user = this.getCurrentUser();
     if (!user) throw new Error('Usuário não autenticado');
 
-    try {
-      console.log('[APIService] Criando modelo no Supabase (tabela templates)');
-      
-      const newTemplate = {
-        nome: name,
-        tipo_documento: type,
-        descricao: aiGuidance || '',
-        global: isGlobal,
-        project_id: projectId || null,
-        created_by: user.id,
-        file_url: 'internal_template', // Campo NOT NULL, inserindo placeholder
-        sections: { html: templateContent } // Salvando o HTML dentro do JSONB
-      };
-
-      const { data, error } = await supabase
-        .from('templates')
-        .insert(newTemplate)
-        .select()
-        .single();
-
-      if (!error && data) {
-        const model: DocumentModel = {
-          id: data.id,
-          name: data.nome,
-          type: data.tipo_documento,
-          aiGuidance: data.descricao,
-          templateContent: (data.sections as any)?.html || '',
-          isGlobal: data.global,
-          isDraft: false,
-          projectId: data.project_id,
-          createdAt: data.created_at,
-          updatedAt: data.updated_at
-        };
-        console.log('[APIService] Modelo criado com sucesso no banco:', model.id);
-        return model;
-      } else {
-        if (error) console.error('[APIService] Erro ao inserir no Supabase:', error.message);
-      }
-    } catch (err) {
-      console.error('[APIService] Erro inesperado ao criar modelo no Supabase:', err);
+    // Apenas ADM ou Gerente podem criar modelos (simplificado)
+    // Se for um modelo específico de projeto, o criador do projeto também pode criar
+    if (user.role !== 'admin' && user.role !== 'manager' && !projectId) {
+      throw new Error('Permissão negada: Somente administradores ou gerentes podem criar modelos globais.');
     }
 
-    // Fallback para Mock se o banco falhar ou não estiver configurado
     const newModel: DocumentModel = {
       id: Date.now().toString(),
       name,
       type,
-      aiGuidance,
-      templateContent, 
+      templateContent, // Usar o novo campo templateContent
       isGlobal,
-      isDraft, 
-      projectId, 
+      projectId, // Atribuir o projectId
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     };
 
     this.mockDocumentModels.push(newModel);
-    this.addAuditLog(projectId || 'system', 'document_model_created', user.id, user.name, `Modelo "${name}" criado no mock`);
+
+    // Log de auditoria
+    this.addAuditLog(projectId || 'system', 'document_model_created', user.id, user.name, `Modelo de documento \"${name}\" criado`);
     this.persistToLocalStorage();
 
     return newModel;
@@ -2667,63 +1777,27 @@ class APIService {
     const user = this.getCurrentUser();
     if (!user) throw new Error('Usuário não autenticado');
 
-    try {
-      if (this.isUUID(updatedModel.id)) {
-        console.log('[APIService] Atualizando modelo no Supabase:', updatedModel.id);
-        
-        const updateData = {
-          nome: updatedModel.name,
-          tipo_documento: updatedModel.type,
-          descricao: updatedModel.aiGuidance || '',
-          global: updatedModel.isGlobal,
-          project_id: updatedModel.projectId || null,
-          sections: { html: updatedModel.templateContent },
-          updated_at: new Date().toISOString()
-        };
-
-        const { data, error } = await supabase
-          .from('templates')
-          .update(updateData)
-          .eq('id', updatedModel.id)
-          .select()
-          .single();
-
-        if (!error && data) {
-          return {
-            id: data.id,
-            name: data.nome,
-            type: data.tipo_documento,
-            aiGuidance: data.descricao,
-            templateContent: (data.sections as any)?.html || '',
-            isGlobal: data.global,
-            isDraft: false,
-            projectId: data.project_id,
-            createdAt: data.created_at,
-            updatedAt: data.updated_at
-          };
-        } else {
-          if (error) console.error('[APIService] Erro ao atualizar no Supabase:', error.message);
-        }
-      }
-    } catch (err) {
-      console.error('[APIService] Erro inesperado ao atualizar modelo no Supabase:', err);
-    }
-
-    // Fallback Mock
     const index = this.mockDocumentModels.findIndex(m => m.id === updatedModel.id);
     if (index === -1) {
       throw new Error('Modelo de documento não encontrado');
     }
 
+    // Lógica de permissão: Apenas admin ou o criador do modelo podem editar (simplificado)
+    // Em um cenário real, também verificaria permissões de projeto se projectId estiver presente
+    const existingModel = this.mockDocumentModels[index];
+    if (user.role !== 'admin') { // && user.id !== existingModel.creatorId (se tivéssemos creatorId no modelo)
+      throw new Error('Permissão negada: Somente administradores ou gerentes podem editar modelos de documento.');
+    }
+
     const modelToUpdate: DocumentModel = {
       ...updatedModel,
-      isDraft: updatedModel.isDraft,
-      aiGuidance: updatedModel.aiGuidance,
-      updatedAt: new Date().toISOString()
+      updatedAt: new Date().toISOString() // Atualizar timestamp de atualização
     };
 
     this.mockDocumentModels[index] = modelToUpdate;
-    this.addAuditLog(modelToUpdate.projectId || 'system', 'document_model_updated', user.id, user.name, `Modelo "${modelToUpdate.name}" atualizado no mock`);
+
+    // Log de auditoria
+    this.addAuditLog(modelToUpdate.projectId || 'system', 'document_model_updated', user.id, user.name, `Modelo de documento \"${modelToUpdate.name}\" atualizado`);
     this.persistToLocalStorage();
 
     return modelToUpdate;
@@ -2734,83 +1808,28 @@ class APIService {
     const user = this.getCurrentUser();
     if (!user) throw new Error('Usuário não autenticado');
 
-    try {
-      console.log('[APIService] Buscando grupos do Supabase');
-      const { data: groupsData, error: groupsError } = await supabase
-        .from('groups')
-        .select('*');
-
-      if (groupsError) throw groupsError;
-
-      if (groupsData) {
-        const groupsWithMembers = await Promise.all(groupsData.map(async (g) => {
-          const { data: membersData } = await supabase
-            .from('group_members')
-            .select('user_id')
-            .eq('group_id', g.id);
-          
-          return {
-            id: g.id,
-            name: g.nome,
-            description: g.descricao,
-            responsibleId: g.responsavel_id,
-            memberIds: membersData?.map(m => m.user_id) || [],
-            createdAt: g.created_at,
-            updatedAt: g.updated_at,
-            projectIds: g.project_id ? [g.project_id] : []
-          } as Group;
-        }));
-        return groupsWithMembers;
-      }
-    } catch (err) {
-      console.error('[APIService] Erro ao buscar grupos do Supabase:', err);
+    // Lógica de permissão simplificada para grupos
+    if (user.role === 'admin' || user.role === 'director') {
+      return this.mockGroups; // Administradores e diretores veem todos os grupos
     }
 
-    if (user.role === 'admin' || user.role === 'director') return this.mockGroups;
-    return this.mockGroups.filter(g => g.responsibleId === user.id || g.memberIds.includes(user.id));
+    // Gerentes veem grupos que são responsáveis ou onde são membros
+    if (user.role === 'manager') {
+      return this.mockGroups.filter(g => 
+        g.responsibleId === user.id || g.memberIds.includes(user.id)
+      );
+    }
+
+    // Responsáveis técnicos e operacionais veem grupos onde são membros
+    return this.mockGroups.filter(g => g.memberIds.includes(user.id));
   }
 
   async createGroup(name: string, description?: string, parentId?: string, memberIds: string[] = [], responsibleId?: string, projectIds: string[] = []): Promise<Group> {
     const user = this.getCurrentUser();
     if (!user) throw new Error('Usuário não autenticado');
-
-    try {
-      console.log('[APIService] Criando grupo no Supabase');
-      const { data: groupData, error: groupError } = await supabase
-        .from('groups')
-        .insert({
-          nome: name,
-          descricao: description || '',
-          responsavel_id: responsibleId || user.id,
-          project_id: projectIds && projectIds.length > 0 ? projectIds[0] : null
-        })
-        .select()
-        .single();
-
-      if (groupError) throw groupError;
-
-      if (groupData) {
-        if (memberIds.length > 0) {
-          const membersToInsert = memberIds.map(uid => ({
-            group_id: groupData.id,
-            user_id: uid
-          }));
-          await supabase.from('group_members').insert(membersToInsert);
-        }
-
-        return {
-          id: groupData.id,
-          name: groupData.nome,
-          description: groupData.descricao,
-          responsibleId: groupData.responsavel_id,
-          memberIds: memberIds,
-          createdAt: groupData.created_at,
-          updatedAt: groupData.updated_at,
-          projectIds: projectIds
-        };
-      }
-    } catch (err) {
-      console.error('[APIService] Erro ao criar grupo no Supabase:', err);
+    // Apenas ADM ou Gerente podem criar grupos no escopo deste mock
+    if (user.role !== 'admin' && user.role !== 'manager') {
+      throw new Error('Permissão negada: Somente administradores ou gerentes podem criar grupos.');
     }
 
     const newGroup: Group = {
@@ -2824,6 +1843,7 @@ class APIService {
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     };
+
     this.mockGroups.push(newGroup);
     this.persistToLocalStorage();
     return newGroup;
@@ -2908,155 +1928,98 @@ class APIService {
     const user = this.getCurrentUser();
     if (!user) throw new Error('Usuário não autenticado');
 
-    try {
-      if (this.isUUID(updatedGroup.id)) {
-        const { data, error } = await supabase
-          .from('groups')
-          .update({
-            nome: updatedGroup.name,
-            descricao: updatedGroup.description,
-            responsavel_id: updatedGroup.responsibleId,
-            project_id: updatedGroup.projectIds && updatedGroup.projectIds.length > 0 ? updatedGroup.projectIds[0] : null,
-            updated_at: new Date().toISOString()
-          })
-          .eq('id', updatedGroup.id)
-          .select()
-          .single();
-
-        if (error) throw error;
-
-        await supabase.from('group_members').delete().eq('group_id', updatedGroup.id);
-        if (updatedGroup.memberIds.length > 0) {
-          const membersToInsert = updatedGroup.memberIds.map(uid => ({
-            group_id: updatedGroup.id,
-            user_id: uid
-          }));
-          await supabase.from('group_members').insert(membersToInsert);
-        }
-
-        return { ...updatedGroup, updatedAt: data.updated_at };
-      }
-    } catch (err) {
-      console.error('[APIService] Erro ao atualizar grupo no Supabase:', err);
+    const index = this.mockGroups.findIndex(g => g.id === updatedGroup.id);
+    if (index === -1) {
+      throw new Error('Grupo não encontrado');
     }
 
-    const index = this.mockGroups.findIndex(g => g.id === updatedGroup.id);
-    if (index === -1) throw new Error('Grupo não encontrado');
-    this.mockGroups[index] = { ...updatedGroup, updatedAt: new Date().toISOString() };
+    // Lógica de permissão: Apenas admin ou o responsável pelo grupo podem editar
+    const existingGroup = this.mockGroups[index];
+    if (user.role !== 'admin' && user.id !== existingGroup.responsibleId) {
+      throw new Error('Permissão negada: Você não tem permissão para editar este grupo.');
+    }
+
+    const groupToUpdate: Group = {
+      ...updatedGroup,
+      updatedAt: new Date().toISOString() // Atualizar timestamp de atualização
+    };
+
+    this.mockGroups[index] = groupToUpdate;
+
+    // Log de auditoria
+    this.addAuditLog('system', 'group_updated', user.id, user.name, `Grupo "${groupToUpdate.name}" atualizado`);
     this.persistToLocalStorage();
-    return this.mockGroups[index];
+
+    return groupToUpdate;
   }
 
   async assignProjectToGroup(groupId: string, projectId: string): Promise<Group> {
     const user = this.getCurrentUser();
     if (!user) throw new Error('Usuário não autenticado');
-
-    try {
-      if (this.isUUID(groupId) && this.isUUID(projectId)) {
-        const { data, error } = await supabase
-          .from('groups')
-          .update({ project_id: projectId })
-          .eq('id', groupId)
-          .select()
-          .single();
-
-        if (error) throw error;
-        if (data) {
-          return {
-            id: data.id,
-            name: data.nome,
-            projectIds: [data.project_id]
-          } as any;
-        }
-      }
-    } catch (err) {
-      console.error('[APIService] Erro ao atribuir projeto ao grupo no Supabase:', err);
+    if (user.role !== 'admin' && user.role !== 'manager') {
+      throw new Error('Permissão negada: Somente administradores ou gerentes podem atribuir projetos a grupos.');
     }
 
     const group = this.mockGroups.find(g => g.id === groupId);
     if (!group) throw new Error('Grupo não encontrado');
-    if (!group.projectIds) group.projectIds = [];
+
+    const project = this.mockProjects.find(p => p.id === projectId);
+    if (!project) throw new Error('Projeto não encontrado');
+
+    // Evitar duplicatas
+    if (!group.projectIds) {
+      group.projectIds = [];
+    }
     if (!group.projectIds.includes(projectId)) {
       group.projectIds.push(projectId);
+      group.updatedAt = new Date().toISOString();
+      this.addAuditLog('system', 'project_assigned_to_group', user.id, user.name, `Projeto "${project.name}" atribuído ao grupo "${group.name}"`);
       this.persistToLocalStorage();
     }
+
     return group;
   }
 
   async removeProjectFromGroup(groupId: string, projectId: string): Promise<Group> {
     const user = this.getCurrentUser();
     if (!user) throw new Error('Usuário não autenticado');
-
-    try {
-      if (this.isUUID(groupId)) {
-        const { data, error } = await supabase
-          .from('groups')
-          .update({ project_id: null })
-          .eq('id', groupId)
-          .select()
-          .single();
-
-        if (error) throw error;
-        if (data) {
-          return {
-            id: data.id,
-            name: data.nome,
-            projectIds: []
-          } as any;
-        }
-      }
-    } catch (err) {
-      console.error('[APIService] Erro ao remover projeto do grupo no Supabase:', err);
+    if (user.role !== 'admin' && user.role !== 'manager') {
+      throw new Error('Permissão negada: Somente administradores ou gerentes podem remover projetos de grupos.');
     }
 
     const group = this.mockGroups.find(g => g.id === groupId);
     if (!group) throw new Error('Grupo não encontrado');
+
+    const project = this.mockProjects.find(p => p.id === projectId);
+    if (!project) throw new Error('Projeto não encontrado');
+
     if (group.projectIds) {
       group.projectIds = group.projectIds.filter(id => id !== projectId);
+      group.updatedAt = new Date().toISOString();
+      this.addAuditLog('system', 'project_removed_from_group', user.id, user.name, `Projeto "${project.name}" removido do grupo "${group.name}"`);
       this.persistToLocalStorage();
     }
+
     return group;
   }
 
   async getGroupProjects(groupId: string): Promise<Project[]> {
-    try {
-      if (this.isUUID(groupId)) {
-        const { data: groupData } = await supabase
-          .from('groups')
-          .select('project_id')
-          .eq('id', groupId)
-          .single();
-
-        if (groupData?.project_id) {
-          const project = await this.getProject(groupData.project_id);
-          return project ? [project] : [];
-        }
-      }
-    } catch (err) {
-      console.error('[APIService] Erro ao buscar projetos do grupo no Supabase:', err);
-    }
+    const user = this.getCurrentUser();
+    if (!user) throw new Error('Usuário não autenticado');
 
     const group = this.mockGroups.find(g => g.id === groupId);
-    if (!group || !group.projectIds) return [];
+    if (!group) throw new Error('Grupo não encontrado');
+
+    if (!group.projectIds) {
+      return [];
+    }
+
     return this.mockProjects.filter(p => group.projectIds?.includes(p.id));
   }
 
   async deleteGroup(groupId: string): Promise<boolean> {
     const user = this.getCurrentUser();
     if (!user) throw new Error('Usuário não autenticado');
-
-    try {
-      if (this.isUUID(groupId)) {
-        const { error } = await supabase
-          .from('groups')
-          .delete()
-          .eq('id', groupId);
-        if (error) throw error;
-        return true;
-      }
-    } catch (err) {
-      console.error('[APIService] Erro ao excluir grupo no Supabase:', err);
-    }
 
     // Apenas admin pode excluir grupos
     if (user.role !== 'admin') {
@@ -3079,20 +2042,6 @@ class APIService {
     const user = this.getCurrentUser();
     if (!user) throw new Error('Usuário não autenticado');
 
-    try {
-      if (this.isUUID(projectId)) {
-        const { error } = await supabase
-          .from('projects')
-          .delete()
-          .eq('id', projectId);
-
-        if (error) throw error;
-        return true;
-      }
-    } catch (err) {
-      console.error('[APIService] Erro ao excluir projeto no Supabase:', err);
-    }
-
     // Apenas admin pode excluir projetos
     if (user.role !== 'admin') {
       throw new Error('Permissão negada: Somente administradores podem excluir projetos.');
@@ -3103,7 +2052,7 @@ class APIService {
 
     if (this.mockProjects.length < initialLength) {
       // Log de auditoria
-      this.addAuditLog('system', 'project_deleted', user.id, user.name, `Projeto com ID "${projectId}" excluído no mock`);
+      this.addAuditLog('system', 'project_deleted', user.id, user.name, `Projeto com ID "${projectId}" excluído`);
       this.persistToLocalStorage();
       return true;
     }

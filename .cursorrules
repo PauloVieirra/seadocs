@@ -5,3 +5,12 @@
 3. **Sem Restauração Automática**: Não tente restaurar versões de arquivos ou desfazer alterações de forma automática. Qualquer reversão deve ser solicitada.
 4. **Foco no Usuário**: Sempre valide se uma alteração estrutural (como mudar um banco de dados) não quebrará a visualização atual de dados do usuário.
 
+
+
+
+
+
+
+
+
+

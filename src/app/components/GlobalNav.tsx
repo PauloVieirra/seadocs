@@ -44,6 +44,8 @@ export function GlobalNav({
       'manager': 'Gerente',
       'technical_responsible': 'Técnico Operacional',
       'operational': 'Operacional',
+      'director': 'Diretor',
+      'user': 'Usuário',
       'external': 'Usuário Externo'
     };
     return labels[role] || role;

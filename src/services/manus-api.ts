@@ -19,7 +19,7 @@ export interface ManusDocument {
 }
 
 export interface ManusChatMessage {
-  role: 'user' | 'assistant';
+  role: 'user' | 'assistant' | 'system';
   content: string;
 }
 

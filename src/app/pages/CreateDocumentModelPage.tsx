@@ -24,7 +24,7 @@ export function CreateDocumentModelPage() {
       // Aqui, você pode adicionar a lógica de permissão se a página for acessível diretamente
       // por exemplo, verificando o currentUser.role antes de chamar a API
       await apiService.createDocumentModel(name, type, templateContent, false, undefined, isDraft, aiGuidance); 
-      toast.success(isDraft ? 'Rascunho salvo com sucesso!' : 'Modelo de documento publicado com sucesso!');
+      toast.success(isDraft ? 'Rascunho salvo no banco de dados!' : 'Modelo de documento salvo com sucesso!');
       navigate('/document-models'); // Navegar de volta para o painel de gerenciamento de modelos
     } catch (error: any) {
       toast.error(`Erro ao salvar modelo: ${error.message}`);

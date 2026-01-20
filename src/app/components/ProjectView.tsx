@@ -35,8 +35,14 @@ export function ProjectView({ projectId, onBack, onSelectDocument }: ProjectView
       loadData();
     });
 
+    // Inscreve para mudanças nos modelos de documentos
+    const modelSubscription = apiService.subscribeToDocumentModels(() => {
+      loadData();
+    });
+
     return () => {
       if (subscription) subscription.unsubscribe();
+      if (modelSubscription) modelSubscription.unsubscribe();
     };
   }, [projectId]);
 

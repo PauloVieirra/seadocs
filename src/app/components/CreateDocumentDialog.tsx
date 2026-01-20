@@ -40,6 +40,21 @@ export function CreateDocumentDialog({
     }
   }, [open]);
 
+  // Validar se o modelo selecionado ainda existe em tempo real
+  useEffect(() => {
+    if (templateId && documentModels.length > 0) {
+      const modelExists = documentModels.some(m => m.id === templateId);
+      if (!modelExists) {
+        console.warn(`O modelo selecionado (${templateId}) foi removido.`);
+        setTemplateId('');
+        // Opcional: toast informativo se o diálogo estiver aberto
+        if (open) {
+          toast.info('O modelo selecionado foi removido por outro usuário.');
+        }
+      }
+    }
+  }, [documentModels, templateId, open]);
+
   const loadAllUsers = async () => {
     try {
       const users = await apiService.getAllUsers();

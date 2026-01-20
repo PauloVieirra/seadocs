@@ -29,6 +29,15 @@ export function DocumentModelManagementPanel({ currentUser }: DocumentModelManag
 
   useEffect(() => {
     loadDocumentModels();
+
+    // Inscrever para mudanças em tempo real (Supabase ou Mock local)
+    const subscription = apiService.subscribeToDocumentModels(() => {
+      loadDocumentModels();
+    });
+
+    return () => {
+      subscription.unsubscribe();
+    };
   }, []);
 
   const loadDocumentModels = async () => {
@@ -73,7 +82,7 @@ export function DocumentModelManagementPanel({ currentUser }: DocumentModelManag
         await apiService.updateDocumentModel(updatedModel);
       }
 
-      toast.success(isDraft ? 'Rascunho atualizado com sucesso!' : 'Modelo de documento publicado com sucesso!');
+      toast.success(isDraft ? 'Rascunho salvo no banco de dados!' : 'Modelo de documento salvo com sucesso!');
       setEditDialogOpen(false);
       loadDocumentModels();
     } catch (error: any) {
@@ -94,18 +103,35 @@ export function DocumentModelManagementPanel({ currentUser }: DocumentModelManag
     setEditDialogOpen(true);
   };
 
-  const handleDeleteModel = async (modelId: string) => {
+  const handleDeleteModel = async (model: DocumentModel) => {
     if (currentUser.role !== 'admin' && currentUser.role !== 'manager' && currentUser.role !== 'technical_responsible') {
       toast.error('Permissão negada: Somente administradores, gerentes ou técnicos responsáveis podem excluir modelos.');
       return;
     }
 
-    setDeletingModelId(modelId);
+    console.log('[DocumentModelPanel] Iniciando exclusão do modelo:', model.id);
+    setDeletingModelId(model.id);
     try {
-      await apiService.deleteDocumentModel(modelId);
-      toast.success('Modelo excluído com sucesso!');
-      loadDocumentModels(); // Recarregar a lista
+      if (model.isLocalDraft) {
+        // Se for um rascunho local, removemos diretamente do localStorage
+        localStorage.removeItem(model.id);
+        toast.success('Rascunho local excluído com sucesso!');
+      } else {
+        // Se for um modelo do banco, chamamos a API
+        const success = await apiService.deleteDocumentModel(model.id);
+        
+        if (success) {
+          // Também tenta limpar qualquer rascunho local que possa existir para este ID
+          localStorage.removeItem(`model_draft_${model.id}`);
+          toast.success('Modelo excluído com sucesso!');
+        } else {
+          toast.error('Não foi possível encontrar o modelo para excluir.');
+        }
+      }
+      
+      await loadDocumentModels(); // Recarregar a lista para refletir a exclusão
     } catch (error: any) {
+      console.error('[DocumentModelPanel] Erro ao excluir modelo:', error);
       toast.error(error.message || 'Erro ao excluir modelo');
     } finally {
       setDeletingModelId(null);
@@ -193,37 +219,46 @@ export function DocumentModelManagementPanel({ currentUser }: DocumentModelManag
                     <Button
                       variant="ghost"
                       size="icon"
-                      onClick={() => handleEditModelClick(model)}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleEditModelClick(model);
+                      }}
                       title="Editar modelo"
                     >
                       <Edit className="h-4 w-4" />
                     </Button>
                     <AlertDialog>
-                      <AlertDialogTrigger asChild>
+                      <AlertDialogTrigger asChild onClick={(e) => e.stopPropagation()}>
                         <Button
                           variant="ghost"
                           size="icon"
                           title="Excluir modelo"
                           className="text-red-600 hover:text-red-700 hover:bg-red-50"
+                          disabled={deletingModelId === model.id}
                         >
-                          <Trash2 className="h-4 w-4" />
+                          {deletingModelId === model.id ? (
+                            <div className="h-4 w-4 animate-spin rounded-full border-2 border-red-600 border-t-transparent" />
+                          ) : (
+                            <Trash2 className="h-4 w-4" />
+                          )}
                         </Button>
                       </AlertDialogTrigger>
-                      <AlertDialogContent>
+                      <AlertDialogContent onClick={(e) => e.stopPropagation()}>
                         <AlertDialogHeader>
                           <AlertDialogTitle>Confirmar exclusão</AlertDialogTitle>
                           <AlertDialogDescription>
                             Tem certeza que deseja excluir o modelo "{model.name}"?
-                            Esta ação não pode ser desfeita e pode afetar documentos que utilizam este modelo.
+                            Esta ação não pode ser desfeita e removerá o modelo permanentemente {model.isLocalDraft ? 'do seu navegador' : 'do banco de dados'}.
                           </AlertDialogDescription>
                         </AlertDialogHeader>
                         <AlertDialogFooter>
-                          <AlertDialogCancel>Cancelar</AlertDialogCancel>
+                          <AlertDialogCancel disabled={deletingModelId === model.id}>Cancelar</AlertDialogCancel>
                           <AlertDialogAction
-                            onClick={() => handleDeleteModel(model.id)}
+                            onClick={() => handleDeleteModel(model)}
                             className="bg-red-600 hover:bg-red-700"
+                            disabled={deletingModelId === model.id}
                           >
-                            Excluir
+                            {deletingModelId === model.id ? 'Excluindo...' : 'Excluir permanentemente'}
                           </AlertDialogAction>
                         </AlertDialogFooter>
                       </AlertDialogContent>

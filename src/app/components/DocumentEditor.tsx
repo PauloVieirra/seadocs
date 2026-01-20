@@ -1,12 +1,22 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Button } from './ui/button';
 import { Textarea } from './ui/textarea';
-import { Sparkles, RotateCw, Plus, Save, FileDown, Edit3, Lock } from 'lucide-react'; // Adicionado Lock
+import { Sparkles, RotateCw, Plus, Save, FileDown, Edit3, Lock, RefreshCw } from 'lucide-react'; // Adicionado RefreshCw
 import 'react-quill/dist/quill.snow.css'; // ES6
 import { apiService, type Document, type DocumentContent, type DocumentSection } from '../../services/api';
 import { toast } from 'sonner';
 import { Badge } from './ui/badge';
 import { NewSectionDialog } from './NewSectionDialog'; // Importar NewSectionDialog
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "./ui/alert-dialog";
 
 interface DocumentEditorProps {
   document: Document;
@@ -22,7 +32,10 @@ export function DocumentEditor({ document, onSave, projectId, viewMode = false, 
   const [updatingSections, setUpdatingSections] = useState<Set<string>>(new Set()); // Seções que estão sendo atualizadas via Realtime
   const currentUser = apiService.getCurrentUser();
   const [isGeneratingAll, setIsGeneratingAll] = useState(false);
+  const [sectionsBeingGeneratedByAI, setSectionsBeingGeneratedByAI] = useState<Set<string>>(new Set());
   const [isSummaryReady, setIsSummaryReady] = useState(false);
+  const [confirmRegenOpen, setConfirmRegenOpen] = useState(false);
+  const [regenTarget, setRegenTarget] = useState<'all' | string | null>(null);
   const [isSavingToLocalStorage, setIsSavingToLocalStorage] = useState(false);
   const [newSectionDialogOpen, setNewSectionDialogOpen] = useState(false); 
   const [isAddingSection, setIsAddingSection] = useState(false); 
@@ -91,7 +104,7 @@ export function DocumentEditor({ document, onSave, projectId, viewMode = false, 
     });
   }, [document.content, activeLocks, currentUser?.id]);
 
-  // 2. Inscrição de Bloqueios
+  // 2. Inscrição de Bloqueios e Gestão de Foco Global
   useEffect(() => {
     apiService.getActiveLocks(document.id).then(setActiveLocks);
 
@@ -99,10 +112,39 @@ export function DocumentEditor({ document, onSave, projectId, viewMode = false, 
       setActiveLocks(locks);
     });
 
+    // Função para forçar o desbloqueio ao clicar fora de qualquer área de edição
+    const handleGlobalClick = (e: MouseEvent) => {
+      const target = e.target as HTMLElement;
+      const activeEl = document.activeElement;
+      
+      // Se estamos editando um campo
+      if (activeEl instanceof HTMLElement && (activeEl.tagName === 'TEXTAREA' || activeEl.tagName === 'INPUT')) {
+        // Se clicar em algo que NÃO é o campo atual E NÃO é um botão
+        if (target !== activeEl && !target.closest('button')) {
+          console.log('[Editor] Clique fora reforçado. Forçando perda de foco para liberar lock.');
+          activeEl.blur();
+        }
+      }
+    };
+
+    // Evento para liberar locks ao fechar a aba ou atualizar a página
+    const handleBeforeUnload = () => {
+      apiService.releaseAllMyLocks(document.id);
+    };
+
+    window.addEventListener('mousedown', handleGlobalClick);
+    window.addEventListener('beforeunload', handleBeforeUnload);
+
+    // Cleanup: Libera qualquer lock que este usuário tenha deixado para trás ao sair do documento
     return () => {
       if (lockSub) lockSub.unsubscribe();
+      window.removeEventListener('mousedown', handleGlobalClick);
+      window.removeEventListener('beforeunload', handleBeforeUnload);
+      
+      // Limpa todos os locks deste usuário para este documento específico
+      apiService.releaseAllMyLocks(document.id);
     };
-  }, [document.id]);
+  }, [document.id, currentUser?.id]);
 
   const handleSectionFocus = async (sectionId: string) => {
     if (viewMode) return;
@@ -116,25 +158,25 @@ export function DocumentEditor({ document, onSave, projectId, viewMode = false, 
     const sectionToSave = content.sections.find(s => s.id === sectionId);
     if (!sectionToSave) return;
 
-    // Cancela auto-salvamento pendente
-    if (saveTimerRef.current) {
-      clearTimeout(saveTimerRef.current);
-      saveTimerRef.current = null;
-    }
+    console.log(`[Editor] Perda de foco na seção ${sectionId}. Liberando lock...`);
 
     try {
-      // 1. Salva APENAS esta seção no banco imediatamente
+      // Cancela auto-salvamento pendente
+      if (saveTimerRef.current) {
+        clearTimeout(saveTimerRef.current);
+        saveTimerRef.current = null;
+      }
+
+      // Libera o lock AGUARDANDO a confirmação para garantir que não fique preso
+      await apiService.releaseSectionLock(document.id, sectionId);
+
+      // Salva APENAS esta seção no banco
       await apiService.updateDocumentSection(document.id, sectionId, sectionToSave.content);
       
-      // 2. Libera o bloqueio
-      await apiService.releaseSectionLock(document.id, sectionId);
-      
-      // 3. Notifica o componente pai
+      // Notifica o componente pai
       onSave(content);
     } catch (err) {
-      console.error('Erro ao salvar e liberar seção:', err);
-      // Mesmo com erro no save, tentamos liberar o lock para não travar o doc
-      await apiService.releaseSectionLock(document.id, sectionId);
+      console.error('Erro ao salvar seção ou liberar lock:', err);
     }
   };
 
@@ -199,20 +241,9 @@ export function DocumentEditor({ document, onSave, projectId, viewMode = false, 
 
         {/* Document Page */}
         <div className="w-full max-w-[21cm] bg-white shadow-2xl p-[2.5cm] min-h-[29.7cm] flex flex-col print:shadow-none print:p-0 print:w-full">
-          <div className="mb-10 text-center">
-            <h1 className="text-3xl font-bold uppercase tracking-tight text-gray-900 mb-2">{document.name}</h1>
-            <div className="h-1 w-20 bg-blue-600 mx-auto rounded-full mb-4"></div>
-            <p className="text-gray-500 text-sm italic">Especificação Técnica de Requisitos</p>
-          </div>
-
           <div className="space-y-8">
             {content.sections.map((section) => (
               <div key={section.id} className="break-inside-avoid">
-                {section.title && (
-                  <h2 className="text-xl font-bold text-gray-800 border-b border-gray-100 pb-2 mb-4">
-                    {section.title}
-                  </h2>
-                )}
                 <div 
                   className="max-w-none text-gray-700 leading-relaxed text-justify space-y-4"
                   dangerouslySetInnerHTML={{ __html: section.content || '<p class="text-gray-400 italic">Conteúdo pendente...</p>' }}
@@ -236,20 +267,85 @@ export function DocumentEditor({ document, onSave, projectId, viewMode = false, 
       return;
     }
 
-    // Identifica apenas as seções editáveis que estão realmente vazias
-    const emptySections = content.sections.filter(s => 
-      s.isEditable && (!s.content || s.content.trim() === '')
-    );
+    setRegenTarget('all');
+    setConfirmRegenOpen(true);
+  };
 
-    if (emptySections.length === 0) {
-      toast.info('Todas as seções já possuem conteúdo. Nada para gerar automaticamente.');
+  const executeRegeneration = async () => {
+    setConfirmRegenOpen(false);
+    
+    if (regenTarget === 'all') {
+      await performFullRegeneration();
+    } else if (typeof regenTarget === 'string') {
+      await performSectionRegeneration(regenTarget);
+    }
+    
+    setRegenTarget(null);
+  };
+
+  const performSectionRegeneration = async (sectionId: string) => {
+    const section = content.sections.find(s => s.id === sectionId);
+    if (!section || !section.isEditable) return;
+
+    try {
+      setSectionsBeingGeneratedByAI(prev => {
+        const next = new Set(prev);
+        next.add(sectionId);
+        return next;
+      });
+
+      if (apiService.isUUID(document.id)) {
+        await apiService.acquireSectionLock(document.id, sectionId);
+      }
+
+      toast.loading(`Refazendo conteúdo para: ${section.title}...`, { id: 'regen-section' });
+
+      const aiContent = await apiService.generateWithAI(
+        projectId, 
+        section.id, 
+        section.title, 
+        section.helpText
+      );
+
+      const updatedSections = content.sections.map(s => 
+        s.id === sectionId ? { ...s, content: aiContent } : s
+      );
+
+      if (apiService.isUUID(document.id)) {
+        await apiService.updateDocumentSection(document.id, sectionId, aiContent);
+        await apiService.releaseSectionLock(document.id, sectionId);
+      }
+
+      setContent({ ...content, sections: updatedSections });
+      onSave({ ...content, sections: updatedSections });
+      toast.success(`Seção "${section.title}" recriada com sucesso!`, { id: 'regen-section' });
+
+    } catch (err: any) {
+      console.error(`Erro ao refazer seção ${section.title}:`, err);
+      toast.error(`Falha ao refazer ${section.title}: ${err.message}`, { id: 'regen-section' });
+    } finally {
+      setSectionsBeingGeneratedByAI(prev => {
+        const next = new Set(prev);
+        next.delete(sectionId);
+        return next;
+      });
+      if (apiService.isUUID(document.id)) {
+        await apiService.releaseSectionLock(document.id, sectionId);
+      }
+    }
+  };
+
+  const performFullRegeneration = async () => {
+    // Identifica seções editáveis
+    const targetSections = content.sections.filter(s => s.isEditable);
+
+    if (targetSections.length === 0) {
+      toast.info('Nenhuma seção editável encontrada.');
       return;
     }
 
     setIsGeneratingAll(true);
-    let completed = 0;
-
-    toast.info(`Iniciando preenchimento: ${emptySections.length} seções vazias encontradas.`);
+    toast.info(`Iniciando recriação completa: ${targetSections.length} seções.`);
 
     try {
       const updatedSections = [...content.sections];
@@ -257,9 +353,18 @@ export function DocumentEditor({ document, onSave, projectId, viewMode = false, 
       for (let i = 0; i < updatedSections.length; i++) {
         const section = updatedSections[i];
         
-        // SÓ GERA SE ESTIVER VAZIO E FOR EDITÁVEL
-        if (section.isEditable && (!section.content || section.content.trim() === '')) {
+        if (section.isEditable) {
           try {
+            setSectionsBeingGeneratedByAI(prev => {
+              const next = new Set(prev);
+              next.add(section.id);
+              return next;
+            });
+
+            if (apiService.isUUID(document.id)) {
+              await apiService.acquireSectionLock(document.id, section.id);
+            }
+
             toast.loading(`Gerando conteúdo para: ${section.title}...`, { id: 'gen-progress' });
             
             const aiContent = await apiService.generateWithAI(
@@ -271,31 +376,40 @@ export function DocumentEditor({ document, onSave, projectId, viewMode = false, 
 
             updatedSections[i] = { ...section, content: aiContent };
             
-            // Grava no banco a cada seção gerada para salvar o progresso
             if (apiService.isUUID(document.id)) {
               await apiService.updateDocumentSection(document.id, section.id, aiContent);
+              await apiService.releaseSectionLock(document.id, section.id);
             }
             
-            // Atualiza o estado progressivamente para o usuário ver acontecendo
             setContent({ ...content, sections: [...updatedSections] });
             
-            completed++;
+            setSectionsBeingGeneratedByAI(prev => {
+              const next = new Set(prev);
+              next.delete(section.id);
+              return next;
+            });
+
           } catch (err: any) {
             console.error(`Erro ao gerar seção ${section.title}:`, err);
-            toast.error(`Falha ao gerar ${section.title}: ${err.message}`, { id: 'gen-error-' + i });
+            toast.error(`Falha ao gerar ${section.title}: ${err.message}`);
+            setSectionsBeingGeneratedByAI(prev => {
+              const next = new Set(prev);
+              next.delete(section.id);
+              return next;
+            });
+            if (apiService.isUUID(document.id)) {
+              await apiService.releaseSectionLock(document.id, section.id);
+            }
           }
         }
       }
 
-      toast.success('Geração concluída para as seções vazias!', { id: 'gen-progress' });
-      
-      // Salva o documento inteiro após a geração massiva
-      const finalContent = { ...content, sections: updatedSections };
-      onSave(finalContent);
+      toast.success('Recriação concluída!', { id: 'gen-progress' });
+      onSave({ ...content, sections: updatedSections });
       
     } catch (error) {
-      console.error('Erro na geração em massa:', error);
-      toast.error('Ocorreu um erro durante a geração automática.');
+      console.error('Erro na recriação em massa:', error);
+      toast.error('Ocorreu um erro durante a recriação automática.');
     } finally {
       setIsGeneratingAll(false);
     }
@@ -315,7 +429,6 @@ export function DocumentEditor({ document, onSave, projectId, viewMode = false, 
         {/* Document Header */}
         <div className="mb-8 pb-6 border-b border-gray-200 flex justify-between items-center">
           <div>
-            <h1 className="text-3xl font-extrabold text-gray-900 mb-2">{document.name}</h1>
             <p className="text-gray-600 text-lg">
               Projeto: <span className="font-semibold">{document.projectId}</span>
             </p>
@@ -355,43 +468,70 @@ export function DocumentEditor({ document, onSave, projectId, viewMode = false, 
             
             return (
               <div key={section.id} className="group relative">
-                <h3 className="text-lg font-semibold text-gray-800 mb-3 flex items-center justify-between">
-                  {section.title}
-                  <div className="flex gap-2 items-center">
-                    {lock && (
-                      <Badge variant="destructive" className="animate-pulse flex items-center gap-1 text-[10px]">
-                        <Lock className="w-3 h-3" />
-                        Editando por: {lock.user_name}
-                      </Badge>
-                    )}
-                    {section.helpText && (
-                      <Badge variant="outline" className="text-[10px] font-normal opacity-50">
-                        Instruções IA
-                      </Badge>
-                    )}
-                  </div>
-                </h3>
+                <div className="flex gap-2 items-center mb-2 justify-end">
+                  {section.helpText && (
+                    <Badge variant="outline" className="text-[10px] font-normal opacity-50">
+                      Instruções IA
+                    </Badge>
+                  )}
+                </div>
                 
                 {section.isEditable ? (
                   <div className="relative">
+                    <div className="flex gap-2 absolute top-3 right-3 z-20 opacity-0 group-hover:opacity-100 transition-opacity">
+                      <Button
+                        size="sm"
+                        variant="secondary"
+                        className="h-7 text-xs bg-white/80 hover:bg-white border shadow-sm"
+                        onClick={() => {
+                          setRegenTarget(section.id);
+                          setConfirmRegenOpen(true);
+                        }}
+                        disabled={isGeneratingAll || sectionsBeingGeneratedByAI.has(section.id) || !!lock}
+                      >
+                        <RefreshCw className={`w-3 h-3 mr-1.5 ${sectionsBeingGeneratedByAI.has(section.id) ? 'animate-spin' : ''}`} />
+                        Refazer
+                      </Button>
+                    </div>
+
                     <Textarea
                       value={section.content || ''}
                       onChange={(e) => handleSectionChange(section.id, e.target.value)}
                       onFocus={() => handleSectionFocus(section.id)}
                       onBlur={() => handleSectionBlur(section.id)}
                       placeholder={lock ? `Bloqueado por ${lock.user_name}` : `Digite aqui para "${section.title}"...`}
-                      disabled={!!lock}
+                      disabled={!!lock || sectionsBeingGeneratedByAI.has(section.id)}
                       className={`min-h-[140px] transition-all ${
                         lock ? 'bg-gray-50 border-red-200 cursor-not-allowed opacity-60' : 
+                        sectionsBeingGeneratedByAI.has(section.id) ? 'bg-indigo-50/30 border-indigo-300' :
                         updatingSections.has(section.id) ? 'border-blue-400 bg-blue-50/30' : ''
                       }`}
                     />
-                    {lock && (
+                    
+                    {/* Tag de edição interna */}
+                    {(lock || sectionsBeingGeneratedByAI.has(section.id)) && (
+                      <div className="absolute top-3 left-3 flex items-center pointer-events-none">
+                        <Badge 
+                          variant={sectionsBeingGeneratedByAI.has(section.id) ? "default" : "destructive"} 
+                          className={`flex items-center gap-1.5 text-[11px] font-medium animate-pulse py-1 px-2 ${
+                            sectionsBeingGeneratedByAI.has(section.id) ? 'bg-indigo-600' : ''
+                          }`}
+                        >
+                          <Lock className="w-3 h-3" />
+                          {sectionsBeingGeneratedByAI.has(section.id) 
+                            ? 'Tópico em edição por IA' 
+                            : `Tópico em edição por ${lock?.user_name || 'outro usuário'}`
+                          }
+                        </Badge>
+                      </div>
+                    )}
+
+                    {lock && !sectionsBeingGeneratedByAI.has(section.id) && (
                       <div className="absolute inset-0 z-10 flex items-center justify-center bg-gray-50/20" 
                            onClick={() => toast.warning(`Este campo está sendo editado por ${lock.user_name}`)}>
                       </div>
                     )}
-                    {updatingSections.has(section.id) && (
+                    {updatingSections.has(section.id) && !sectionsBeingGeneratedByAI.has(section.id) && (
                       <div className="absolute right-3 bottom-3 flex items-center gap-1.5 text-[10px] text-blue-600 font-medium animate-pulse">
                         <RotateCw className="w-3 h-3 animate-spin" />
                         Atualizando...
@@ -435,6 +575,26 @@ export function DocumentEditor({ document, onSave, projectId, viewMode = false, 
         onSave={handleAddNewSection}
         isSaving={isAddingSection}
       />
+
+      <AlertDialog open={confirmRegenOpen} onOpenChange={setConfirmRegenOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Confirmar recriação de conteúdo</AlertDialogTitle>
+            <AlertDialogDescription>
+              {regenTarget === 'all' 
+                ? "Tem certeza que deseja recriar TODO o documento? O conteúdo atual de todas as seções editáveis será substituído por uma nova versão gerada pela IA, corrigindo escrita e contexto."
+                : "Tem certeza que deseja recriar esta seção? O conteúdo atual será substituído por uma nova versão gerada pela IA, corrigindo escrita e contexto."
+              }
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel onClick={() => setRegenTarget(null)}>Cancelar</AlertDialogCancel>
+            <AlertDialogAction onClick={executeRegeneration} className="bg-indigo-600 hover:bg-indigo-700 text-white">
+              Sim, Recriar com IA
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }
