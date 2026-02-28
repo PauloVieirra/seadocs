@@ -306,7 +306,11 @@ class APIService {
   getCurrentUser(): User | null {
     if (this.currentUser) return this.currentUser;
     const stored = localStorage.getItem('current_user');
-    return stored ? JSON.parse(stored) : null;
+    if (stored) {
+      this.currentUser = JSON.parse(stored);
+      return this.currentUser;
+    }
+    return null;
   }
 
   async updateUser(updatedUser: User): Promise<User> {
@@ -490,6 +494,9 @@ class APIService {
 
   async createProject(name: string, description?: string, responsibleIds?: string[], groupIds?: string[]): Promise<Project> {
     try {
+      // Garantir que temos o usuário carregado
+      if (!this.currentUser) this.getCurrentUser();
+
       if (supabase && this.currentUser && this.isUUID(this.currentUser.id)) {
         // Tentamos inserir com os nomes em português (padrão do projeto) e inglês como fallback
         const projectToInsert: any = {
@@ -516,9 +523,9 @@ class APIService {
         if (!error && data) {
           return {
             id: data.id,
-            name: data.nome || data.name,
-            description: data.descricao || data.description,
-            creatorId: data.criado_por || data.created_by,
+            name: data.nome || data.name || name,
+            description: data.descricao || data.description || description || '',
+            creatorId: data.criado_por || data.created_by || this.currentUser.id,
             creatorName: this.currentUser.name,
             status: (data.status?.toLowerCase() || 'draft') as Project['status'],
             createdAt: data.created_at,
@@ -528,10 +535,10 @@ class APIService {
             documentIds: []
           };
         } else if (error) {
-          console.warn('[APIService] Falha ao inserir projeto no Supabase, tentando com nomes em inglês:', error);
+          console.warn('[APIService] Falha ao inserir projeto no Supabase (primeira tentativa):', error);
           
           // Fallback para nomes em inglês caso o banco use outro padrão
-          const fallbackProject = {
+          const fallbackProject: any = {
             name,
             description: description || '',
             status: 'DRAFT',
@@ -540,6 +547,11 @@ class APIService {
               ? responsibleIds[0] 
               : this.currentUser.id
           };
+
+          // Adicionar group_id ao fallback também se disponível
+          if (groupIds && groupIds.length > 0 && this.isUUID(groupIds[0])) {
+            fallbackProject.group_id = groupIds[0];
+          }
 
           const { data: fallbackData, error: fallbackError } = await supabase
             .from('projects')
@@ -550,9 +562,9 @@ class APIService {
           if (!fallbackError && fallbackData) {
             return {
               id: fallbackData.id,
-              name: fallbackData.name || fallbackData.nome,
-              description: fallbackData.description || fallbackData.descricao,
-              creatorId: fallbackData.created_by || fallbackData.criado_por,
+              name: fallbackData.name || fallbackData.nome || name,
+              description: fallbackData.description || fallbackData.descricao || description || '',
+              creatorId: fallbackData.created_by || fallbackData.criado_por || this.currentUser.id,
               creatorName: this.currentUser.name,
               status: (fallbackData.status?.toLowerCase() || 'draft') as Project['status'],
               createdAt: fallbackData.created_at,
@@ -561,13 +573,21 @@ class APIService {
               groupIds: fallbackData.group_id ? [fallbackData.group_id] : (fallbackData.grupo_id ? [fallbackData.grupo_id] : []),
               documentIds: []
             };
+          } else if (fallbackError) {
+            console.error('[APIService] Falha total ao inserir projeto no Supabase:', fallbackError);
+            throw new Error(`Erro ao salvar no banco de dados: ${fallbackError.message || error.message}`);
           }
         }
       } else if (supabase && this.currentUser && !this.isUUID(this.currentUser.id)) {
         console.warn('[APIService] Usuário logado com conta MOCK. Para persistir no Supabase, use uma conta real.');
+      } else if (supabase && !this.currentUser) {
+        throw new Error('Usuário não identificado. Por favor, faça login novamente.');
       }
-    } catch (err) {
-      console.error('[APIService] Erro createProject Supabase:', err);
+    } catch (err: any) {
+      console.error('[APIService] Erro inesperado createProject:', err);
+      if (supabase && this.currentUser && this.isUUID(this.currentUser.id)) {
+        throw err; // Propaga o erro se for uma tentativa real de salvar no Supabase
+      }
     }
 
     // Se tudo falhar ou estiver usando mock, usa o mock local
@@ -633,6 +653,56 @@ class APIService {
     this.mockProjects = this.mockProjects.filter(p => p.id !== projectId);
     this.persistToLocalStorage();
     return this.mockProjects.length < initialLength;
+  }
+
+  async publishProject(projectId: string): Promise<Project> {
+    const project = await this.getProject(projectId);
+    if (!project) throw new Error('Projeto não encontrado');
+
+    // Se o projeto for local (não UUID), tenta criar no Supabase
+    if (!this.isUUID(projectId)) {
+      const created = await this.createProject(project.name, project.description, project.responsibleIds, project.groupIds);
+      
+      // Remove o projeto local se a criação no Supabase foi bem sucedida
+      if (this.isUUID(created.id)) {
+        this.mockProjects = this.mockProjects.filter(p => p.id !== projectId);
+        this.persistToLocalStorage();
+      } else {
+        throw new Error('Não foi possível converter o projeto local para o banco de dados. Verifique sua conexão ou se o banco está configurado.');
+      }
+      return created;
+    }
+
+    // Se já for UUID, apenas muda o status para IN-PROGRESS
+    const updated = { ...project, status: 'in-progress' as const, updatedAt: new Date().toISOString() };
+    return this.updateProject(updated);
+  }
+
+  async verifyPassword(password: string): Promise<boolean> {
+    if (!this.currentUser) this.getCurrentUser();
+    if (!this.currentUser) return false;
+
+    try {
+      if (supabase && this.isUUID(this.currentUser.id)) {
+        const { error } = await supabase.auth.signInWithPassword({
+          email: this.currentUser.email,
+          password: password
+        });
+        return !error;
+      }
+    } catch (err) {}
+
+    // Fallback para mock
+    const mockUser = this.mockUsers.find(u => u.email === this.currentUser?.email);
+    return mockUser?.password === password;
+  }
+
+  async deleteProjectWithPassword(projectId: string, password: string): Promise<boolean> {
+    const isPasswordValid = await this.verifyPassword(password);
+    if (!isPasswordValid) {
+      throw new Error('Senha incorreta');
+    }
+    return this.deleteProject(projectId);
   }
 
   // Documentos
@@ -759,6 +829,9 @@ class APIService {
 
   async createDocument(projectId: string, name: string, groupId: string, templateId: string | undefined, securityLevel: 'public' | 'restricted' | 'confidential' | 'secret'): Promise<Document> {
     try {
+      // Garantir que temos o usuário carregado
+      if (!this.currentUser) this.getCurrentUser();
+
       if (supabase && this.isUUID(projectId)) {
         const { data, error } = await supabase
           .from('documents')
@@ -861,6 +934,7 @@ class APIService {
 
   // Locks (Presence)
   async acquireSectionLock(documentId: string, sectionId: string) {
+    if (!this.currentUser) this.getCurrentUser();
     const lockKey = `${documentId}:${sectionId}`;
     if (this.mockLocks.has(lockKey) && this.mockLocks.get(lockKey)?.userId !== this.currentUser?.id) return false;
     this.mockLocks.set(lockKey, { userId: this.currentUser?.id || '0', userName: this.currentUser?.name || 'Sistema', timestamp: new Date().toISOString() });
@@ -872,6 +946,7 @@ class APIService {
   }
 
   async releaseAllMyLocks(documentId: string) {
+    if (!this.currentUser) this.getCurrentUser();
     for (const [key, lock] of this.mockLocks.entries()) { if (key.startsWith(`${documentId}:`) && lock.userId === this.currentUser?.id) this.mockLocks.delete(key); }
   }
 
@@ -889,6 +964,7 @@ class APIService {
   // Files
   async uploadFile(projectId: string, file: File, isDataSource: boolean = false): Promise<UploadedFile> {
     try {
+      if (!this.currentUser) this.getCurrentUser();
       if (supabase && this.isUUID(projectId)) {
         const filePath = `${projectId}/${file.name}`;
         await supabase.storage.from('Documentos').upload(filePath, file, { upsert: true });

@@ -7,12 +7,13 @@ import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, 
 import { Input } from './ui/input';
 import { Label } from './ui/label';
 import { Textarea } from './ui/textarea';
-import { Plus, FileText, Search, Trash2, Settings } from 'lucide-react'; // Adicionado Trash2, Settings
+import { Plus, FileText, Search, Trash2, Settings, Rocket, Trash } from 'lucide-react'; // Adicionado Trash2, Settings
 import { apiService, type Project, type User, type Group } from '../../services/api';
 import { DatabaseConfigDialog } from './DatabaseConfigDialog';
 import { MultiSelect } from './ui/multi-select'; // Importar MultiSelect
 import { UserSearchSelect } from './UserSearchSelect'; // Importar novo componente
 import { ProjectSettingsDialog } from './ProjectSettingsDialog'; // Importar ProjectSettingsDialog
+import { PasswordConfirmationDialog } from './PasswordConfirmationDialog'; // Importar novo componente
 import { toast } from 'sonner';
 // Removido Tabs, TabsContent, TabsList, TabsTrigger, UserManagementPanel, DocumentModelManagementPanel
 
@@ -36,6 +37,9 @@ export function Dashboard({ user, onProjectSelect }: DashboardProps) { // Removi
   const [allGroups, setAllGroups] = useState<Group[]>([]); // Novo estado para todos os grupos
   const [selectedGroupIds, setSelectedGroupIds] = useState<string[]>([]); // Novo estado para IDs de grupos selecionados
   const [deletingProjectId, setDeletingProjectId] = useState<string | null>(null);
+  const [passwordDialogOpen, setPasswordDialogOpen] = useState(false);
+  const [projectToPublish, setProjectToPublish] = useState<string | null>(null);
+  const [projectToRemove, setProjectToRemove] = useState<string | null>(null);
   const [settingsProjectId, setSettingsProjectId] = useState<string | null>(null);
   const [settingsDialogOpen, setSettingsDialogOpen] = useState(false);
 
@@ -51,6 +55,32 @@ export function Dashboard({ user, onProjectSelect }: DashboardProps) { // Removi
     setProjects(data);
     setFilteredProjects(data);
     setLoading(false);
+  };
+
+  const handlePublishProject = async (projectId: string) => {
+    try {
+      setLoading(true);
+      await apiService.publishProject(projectId);
+      toast.success('Projeto publicado com sucesso!');
+      await loadProjects();
+    } catch (error: any) {
+      toast.error(error.message || 'Erro ao publicar projeto');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleRemoveProjectWithPassword = async (password: string) => {
+    if (!projectToRemove) return;
+    
+    try {
+      await apiService.deleteProjectWithPassword(projectToRemove, password);
+      toast.success('Projeto removido com sucesso!');
+      await loadProjects();
+      setProjectToRemove(null);
+    } catch (error: any) {
+      throw error; // Re-throw para o diálogo lidar com o erro
+    }
   };
 
   const handleSearchChange = (value: string) => {
@@ -342,6 +372,33 @@ export function Dashboard({ user, onProjectSelect }: DashboardProps) { // Removi
                           >
                             <Settings className="w-4 h-4" />
                           </Button>
+                          
+                          {/* Novo Botão Publicar / Remover conforme regras */}
+                          {!apiService.isUUID(project.id) ? (
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              className="bg-green-50 text-green-700 border-green-200 hover:bg-green-100 h-8 text-[11px] px-2"
+                              onClick={() => handlePublishProject(project.id)}
+                            >
+                              <Rocket className="w-3 h-3 mr-1" />
+                              Publicar
+                            </Button>
+                          ) : (
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              className="bg-red-50 text-red-700 border-red-200 hover:bg-red-100 h-8 text-[11px] px-2"
+                              onClick={() => {
+                                setProjectToRemove(project.id);
+                                setPasswordDialogOpen(true);
+                              }}
+                            >
+                              <Trash className="w-3 h-3 mr-1" />
+                              Remover Projeto
+                            </Button>
+                          )}
+
                           <AlertDialog>
                             <AlertDialogTrigger asChild>
                               <Button
@@ -427,6 +484,15 @@ export function Dashboard({ user, onProjectSelect }: DashboardProps) { // Removi
       </main>
 
       <DatabaseConfigDialog open={configDialogOpen} onOpenChange={setConfigDialogOpen} />
+      
+      <PasswordConfirmationDialog
+        open={passwordDialogOpen}
+        onOpenChange={setPasswordDialogOpen}
+        onConfirm={handleRemoveProjectWithPassword}
+        title="Remover Projeto"
+        description="Esta ação requer sua senha para confirmar a remoção permanente do projeto do Supabase."
+        confirmLabel="Remover do Banco de Dados"
+      />
       
       {settingsProjectId && (
         <ProjectSettingsDialog

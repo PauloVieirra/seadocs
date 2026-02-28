@@ -3,10 +3,11 @@ import { Button } from './ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from './ui/card';
 import { Badge } from './ui/badge';
 import { Input } from './ui/input';
-import { ArrowLeft, Plus, FileText, Trash2, Search, Settings } from 'lucide-react';
+import { ArrowLeft, Plus, FileText, Trash2, Search, Settings, Rocket, Trash } from 'lucide-react';
 import { apiService, type Project, type Document, type DocumentModel, type Group } from '../../services/api';
 import { CreateDocumentDialog } from './CreateDocumentDialog';
 import { ProjectSettingsDialog } from './ProjectSettingsDialog';
+import { PasswordConfirmationDialog } from './PasswordConfirmationDialog'; // Importar PasswordConfirmationDialog
 import { toast } from 'sonner';
 
 interface ProjectViewProps {
@@ -26,6 +27,7 @@ export function ProjectView({ projectId, onBack, onSelectDocument }: ProjectView
   const [allDocumentModels, setAllDocumentModels] = useState<DocumentModel[]>([]);
   const [allGroups, setAllGroups] = useState<Group[]>([]);
   const [deleting, setDeleting] = useState<string | null>(null);
+  const [passwordDialogOpen, setPasswordDialogOpen] = useState(false);
 
   useEffect(() => {
     loadData();
@@ -115,6 +117,34 @@ export function ProjectView({ projectId, onBack, onSelectDocument }: ProjectView
     }
   };
 
+  const handlePublishProject = async () => {
+    try {
+      setLoading(true);
+      const updatedProject = await apiService.publishProject(projectId);
+      toast.success('Projeto publicado com sucesso!');
+      // Se o ID mudou (local -> UUID), precisamos atualizar a URL ou voltar
+      if (updatedProject.id !== projectId) {
+        onBack();
+      } else {
+        await loadData();
+      }
+    } catch (error: any) {
+      toast.error(error.message || 'Erro ao publicar projeto');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleRemoveProjectWithPassword = async (password: string) => {
+    try {
+      await apiService.deleteProjectWithPassword(projectId, password);
+      toast.success('Projeto removido com sucesso!');
+      onBack();
+    } catch (error: any) {
+      throw error;
+    }
+  };
+
   const handleDeleteDocument = async (documentId: string) => {
     if (!confirm('Tem certeza que deseja deletar este documento?')) {
       return;
@@ -197,6 +227,25 @@ export function ProjectView({ projectId, onBack, onSelectDocument }: ProjectView
                   <Plus className="w-4 h-4 mr-2" />
                   Novo Documento
                 </Button>
+                
+                {/* Novo Botão Publicar / Remover conforme regras */}
+                {!apiService.isUUID(projectId) ? (
+                  <Button 
+                    onClick={handlePublishProject}
+                    className="bg-green-600 hover:bg-green-700 text-white"
+                  >
+                    <Rocket className="w-4 h-4 mr-2" />
+                    Publicar Projeto
+                  </Button>
+                ) : (
+                  <Button 
+                    variant="destructive"
+                    onClick={() => setPasswordDialogOpen(true)}
+                  >
+                    <Trash className="w-4 h-4 mr-2" />
+                    Remover Projeto
+                  </Button>
+                )}
               </div>
             )}
           </div>
@@ -323,6 +372,15 @@ export function ProjectView({ projectId, onBack, onSelectDocument }: ProjectView
         open={settingsDialogOpen}
         onOpenChange={setSettingsDialogOpen}
         onUpdateSuccess={loadData}
+      />
+
+      <PasswordConfirmationDialog
+        open={passwordDialogOpen}
+        onOpenChange={setPasswordDialogOpen}
+        onConfirm={handleRemoveProjectWithPassword}
+        title="Remover Projeto do Supabase"
+        description="Esta ação requer sua senha para confirmar a remoção permanente do projeto do banco de dados real."
+        confirmLabel="Confirmar Remoção"
       />
     </div>
   );
