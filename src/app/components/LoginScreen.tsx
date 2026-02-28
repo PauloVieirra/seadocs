@@ -77,8 +77,7 @@ export function LoginScreen({ onLoginSuccess }: LoginScreenProps) {
         signUpEmail, 
         signUpPassword, 
         signUpName, 
-        'operational', 
-        false // forcePasswordChange: false para auto-cadastro
+        'operational'
       );
       
       if (newUser) {

@@ -38,6 +38,7 @@ export function ProjectSettingsDialog({
   const [editedName, setEditedName] = useState('');
   const [editedDescription, setEditedDescription] = useState('');
   const [editedResponsibleIds, setEditedResponsibleIds] = useState<string[]>([]);
+  const [editedGroupIds, setEditedGroupIds] = useState<string[]>([]);
 
   // Dados auxiliares
   const [allUsers, setAllUsers] = useState<User[]>([]);
@@ -64,6 +65,7 @@ export function ProjectSettingsDialog({
         setEditedName(projectData.name);
         setEditedDescription(projectData.description || '');
         setEditedResponsibleIds(projectData.responsibleIds || []);
+        setEditedGroupIds(projectData.groupIds || []);
       }
       setAllUsers(users);
       setAllGroups(groups);
@@ -86,6 +88,7 @@ export function ProjectSettingsDialog({
         name: editedName,
         description: editedDescription,
         responsibleIds: editedResponsibleIds,
+        groupIds: editedGroupIds,
       };
       await apiService.updateProject(updatedProject);
       toast.success('Projeto atualizado com sucesso!');
@@ -118,8 +121,9 @@ export function ProjectSettingsDialog({
             <div className="px-6 border-b bg-gray-50/50 shrink-0">
               <TabsList className="w-full justify-start h-12 bg-transparent gap-6">
                 <TabsTrigger value="details" className="data-[state=active]:bg-white data-[state=active]:shadow-sm">Detalhes</TabsTrigger>
+                <TabsTrigger value="participants" className="data-[state=active]:bg-white data-[state=active]:shadow-sm">Participantes</TabsTrigger>
                 <TabsTrigger value="models" className="data-[state=active]:bg-white data-[state=active]:shadow-sm">Modelos (Padrão IA)</TabsTrigger>
-                <TabsTrigger value="association" className="data-[state=active]:bg-white data-[state=active]:shadow-sm">Associação</TabsTrigger>
+                <TabsTrigger value="groups" className="data-[state=active]:bg-white data-[state=active]:shadow-sm">Grupos</TabsTrigger>
                 <TabsTrigger value="documents" className="data-[state=active]:bg-white data-[state=active]:shadow-sm">Documentos do projeto</TabsTrigger>
                 <TabsTrigger value="datasources" className="data-[state=active]:bg-white data-[state=active]:shadow-sm">Fonte de dados</TabsTrigger>
                 <TabsTrigger value="history" className="data-[state=active]:bg-white data-[state=active]:shadow-sm">Auditoria</TabsTrigger>
@@ -165,38 +169,97 @@ export function ProjectSettingsDialog({
                     </form>
                   </TabsContent>
 
+                  <TabsContent value="participants" className="m-0 space-y-4">
+                    <div className="space-y-4">
+                      <div className="bg-gray-50 border border-gray-200 p-4 rounded-lg">
+                        <h4 className="text-sm font-semibold text-gray-900 mb-1">Responsáveis Técnicos</h4>
+                        <p className="text-xs text-gray-600">Gerencie quem são os responsáveis pela execução técnica deste projeto.</p>
+                      </div>
+
+                      <div className="space-y-4">
+                        <Label>Adicionar/Remover Responsáveis</Label>
+                        <UserSearchSelect
+                          users={allUsers}
+                          selectedIds={editedResponsibleIds}
+                          onSelectedChange={setEditedResponsibleIds}
+                          placeholder="Busque por nome ou email..."
+                          maxResults={8}
+                        />
+                      </div>
+
+                      <div className="space-y-3 pt-2">
+                        <Label className="text-xs text-gray-500 uppercase font-semibold">Lista de Acesso</Label>
+                        <div className="grid grid-cols-1 gap-2">
+                          {editedResponsibleIds.length > 0 ? (
+                            editedResponsibleIds.map(id => {
+                              const user = allUsers.find(u => u.id === id);
+                              if (!user) return null;
+                              return (
+                                <div key={id} className="flex items-center justify-between p-2 border rounded-md bg-white">
+                                  <div className="flex items-center gap-3">
+                                    <Avatar className="h-8 w-8">
+                                      <AvatarFallback className="text-[10px] bg-slate-100">{user.name.charAt(0).toUpperCase()}</AvatarFallback>
+                                    </Avatar>
+                                    <div>
+                                      <p className="text-sm font-medium">{user.name}</p>
+                                      <p className="text-[10px] text-gray-500">{user.email}</p>
+                                    </div>
+                                  </div>
+                                  <Button 
+                                    variant="ghost" 
+                                    size="sm" 
+                                    className="text-red-500 hover:text-red-700 hover:bg-red-50 h-8 px-2"
+                                    onClick={() => setEditedResponsibleIds(prev => prev.filter(uid => uid !== id))}
+                                  >
+                                    Remover
+                                  </Button>
+                                </div>
+                              );
+                            })
+                          ) : (
+                            <p className="text-sm text-gray-500 italic py-2 text-center border border-dashed rounded-md">Nenhum responsável técnico atribuído.</p>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  </TabsContent>
+
                   <TabsContent value="models" className="m-0 space-y-4">
                     <ProjectModelsPanel projectId={projectId} />
                   </TabsContent>
 
-                  <TabsContent value="association" className="m-0 space-y-4">
+                  <TabsContent value="groups" className="m-0 space-y-4">
                     <div className="space-y-4">
                       <div className="bg-blue-50 border border-blue-100 p-4 rounded-lg">
-                        <h4 className="text-sm font-semibold text-blue-900 mb-1">Grupo Associado</h4>
-                        <p className="text-xs text-blue-700">Este projeto está vinculado ao seguinte grupo:</p>
+                        <h4 className="text-sm font-semibold text-blue-900 mb-1">Associação de Grupos</h4>
+                        <p className="text-xs text-blue-700">Vincule este projeto a grupos específicos. Membros destes grupos terão acesso automático ao projeto.</p>
                       </div>
 
                       <div className="space-y-4">
-                        {project?.groupIds && project.groupIds.length > 0 ? (
-                          <div className="flex flex-wrap gap-2">
-                            {project.groupIds.map(id => {
-                              const group = allGroups.find(g => g.id === id);
-                              if (!group) return null;
-                              return (
-                                <Badge key={id} variant="secondary" className="px-4 py-2 text-sm">
-                                  {group.name}
-                                </Badge>
-                              );
-                            })}
-                          </div>
-                        ) : (
-                          <div className="bg-amber-50 border border-amber-200 p-4 rounded-lg">
-                            <p className="text-sm text-amber-800 font-medium">O projeto ainda não foi designado.</p>
-                            <p className="text-xs text-amber-700 mt-1">
-                              Apenas você (criador do projeto) pode visualizá-lo até que seja associado a um grupo.
-                            </p>
-                          </div>
-                        )}
+                        <Label>Selecionar Grupos</Label>
+                        <div className="grid grid-cols-1 gap-2">
+                          {allGroups.map(group => (
+                            <div key={group.id} className="flex items-center space-x-2 p-2 border rounded-md hover:bg-gray-50">
+                              <input
+                                type="checkbox"
+                                id={`group-${group.id}`}
+                                checked={editedGroupIds.includes(group.id)}
+                                onChange={(e) => {
+                                  if (e.target.checked) {
+                                    setEditedGroupIds(prev => [...prev, group.id]);
+                                  } else {
+                                    setEditedGroupIds(prev => prev.filter(id => id !== group.id));
+                                  }
+                                }}
+                                className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                              />
+                              <Label htmlFor={`group-${group.id}`} className="text-sm font-medium cursor-pointer flex-1">
+                                {group.name}
+                              </Label>
+                              {group.description && <span className="text-xs text-gray-500">{group.description}</span>}
+                            </div>
+                          ))}
+                        </div>
                       </div>
                     </div>
                   </TabsContent>
