@@ -49,3 +49,4 @@ npm run build
 - **Supabase** - Backend e banco de dados
 - **shadcn/ui** - Componentes de UI
 - **Vite** - Build tool
+# seadocs
