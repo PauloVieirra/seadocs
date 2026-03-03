@@ -8,6 +8,7 @@ import { MultiSelect } from './ui/multi-select';
 import { UserSearchSelect } from './UserSearchSelect';
 import { type DocumentModel, type Group, type User } from '../../services/api';
 import { apiService } from '../../services/api';
+import { toast } from 'sonner';
 
 interface CreateDocumentDialogProps {
   open: boolean;

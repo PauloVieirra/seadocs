@@ -4,7 +4,7 @@ import 'react-quill/dist/quill.snow.css'; // ES6
 import { Button } from './ui/button';
 import { Input } from './ui/input';
 import { Label } from './ui/label';
-import { DocumentModel } from '../../services/api';
+import { DocumentModel, apiService } from '../../services/api';
 import { toast } from 'sonner';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from './ui/dialog';
 import { Textarea } from './ui/textarea';
@@ -131,17 +131,22 @@ function slugify(input: string) {
 }
 
 interface RichTextDocumentModelEditorProps {
-  onSave: (name: string, type: string, templateContent: string) => Promise<void>;
+  onSave: (name: string, type: string, templateContent: string, isDraft?: boolean, aiGuidance?: string) => Promise<void>;
   onCancel: () => void;
   isLoading: boolean;
-  initialData?: DocumentModel; // Para edição de modelo existente
+  initialData?: DocumentModel;
+  onDraftStatusChange?: (draft: boolean, saved: boolean) => void;
 }
+
+const DRAFT_DEBOUNCE_MS = 1500;
+const DRAFT_NEW_ID = 'model_draft_new';
 
 export function RichTextDocumentModelEditor({
   onSave,
   onCancel,
   isLoading,
   initialData,
+  onDraftStatusChange,
 }: RichTextDocumentModelEditorProps) {
   const quillRef = useRef<ReactQuill | null>(null);
   const [name, setName] = useState(initialData?.name || '');
@@ -170,6 +175,25 @@ export function RichTextDocumentModelEditor({
     ensureCustomBlotsRegistered();
   }, []);
 
+  // Auto-save rascunho local (IndexedDB) no modo criar novo (sem modelo do banco)
+  const isEditMode = initialData && !initialData.isLocalDraft;
+  useEffect(() => {
+    if (isEditMode || isLoading) return;
+    const timer = setTimeout(() => {
+      if (name.trim() || type.trim() || editorData.trim()) {
+        apiService.saveLocalModelDraft({
+          id: DRAFT_NEW_ID,
+          name: name || 'Sem título',
+          type: type || 'Sem tipo',
+          templateContent: editorData || '',
+          aiGuidance: initialData?.aiGuidance ?? '',
+          isDraft: true
+        }).then(() => onDraftStatusChange?.(true, true));
+      }
+    }, DRAFT_DEBOUNCE_MS);
+    return () => clearTimeout(timer);
+  }, [name, type, editorData, isEditMode, isLoading, onDraftStatusChange, initialData?.aiGuidance]);
+
   // Extrair tópicos existentes no documento para associar metadados
   useEffect(() => {
     const parser = new DOMParser();
@@ -190,7 +214,7 @@ export function RichTextDocumentModelEditor({
       toast.error('Por favor, preencha todos os campos obrigatórios e o conteúdo do template.');
       return;
     }
-    await onSave(name, type, editorData);
+    await onSave(name, type, editorData, initialData?.isDraft ?? true, initialData?.aiGuidance ?? '');
   };
 
   const openFieldDialog = () => {

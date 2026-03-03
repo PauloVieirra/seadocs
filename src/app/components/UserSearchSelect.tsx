@@ -27,9 +27,9 @@ export function UserSearchSelect({
   const [open, setOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
 
-  // Filtrar usuários baseado na busca (a partir de 4 caracteres)
+  // Filtrar usuários baseado na busca (a partir de 2 caracteres)
   const filteredUsers = useMemo(() => {
-    if (searchQuery.length < 4) {
+    if (searchQuery.length < 2) {
       return [];
     }
 
@@ -93,14 +93,14 @@ export function UserSearchSelect({
       <PopoverContent className="w-[--radix-popover-trigger-width] p-0" align="start">
         <Command shouldFilter={false}>
           <CommandInput
-            placeholder="Digite pelo menos 4 letras..."
+            placeholder="Digite nome ou email (mín. 2 letras)..."
             value={searchQuery}
             onValueChange={setSearchQuery}
           />
           <CommandList>
-            {searchQuery.length < 4 ? (
+            {searchQuery.length < 2 ? (
               <div className="p-4 text-sm text-muted-foreground text-center">
-                Digite pelo menos 4 letras para buscar
+                Digite pelo menos 2 letras para buscar
               </div>
             ) : filteredUsers.length === 0 ? (
               <CommandEmpty>Nenhum usuário encontrado.</CommandEmpty>

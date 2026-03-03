@@ -3,6 +3,7 @@ import { Button } from './ui/button';
 import { Badge } from './ui/badge';
 import { Upload, FileText, CheckCircle2, AlertCircle, Loader2, File, Headphones, Type, Trash2, RefreshCw, Eye } from 'lucide-react'; // Adicionar Eye
 import { apiService, type UploadedFile } from '../../services/api';
+import { invalidateRAGSummaryCache } from '../../services/local-db';
 import { toast } from 'sonner';
 
 interface DataSourcesPanelProps {
@@ -21,8 +22,8 @@ export function DataSourcesPanel({ projectId }: DataSourcesPanelProps) {
     checkManusConfig();
   }, [projectId]);
 
-  const checkManusConfig = () => {
-    const aiConfig = apiService.getAIConfiguracao();
+  const checkManusConfig = async () => {
+    const aiConfig = await apiService.getAIConfiguracao();
     setManusEnabled(aiConfig?.provider === 'manus');
   };
 
@@ -39,7 +40,7 @@ export function DataSourcesPanel({ projectId }: DataSourcesPanelProps) {
       
       // Busca todos os arquivos reais do projeto no storage
       for (const file of files) {
-        const url = await apiService.getFilePublicUrl(projectId, file.name);
+        const url = await apiService.getFilePublicUrl(projectId, file.id);
         // Abre o download em nova aba (o navegador gerencia o download local)
         window.open(url, '_blank');
       }
@@ -54,7 +55,7 @@ export function DataSourcesPanel({ projectId }: DataSourcesPanelProps) {
 
   const handleViewFile = async (file: UploadedFile) => {
     try {
-      const url = await apiService.getFilePublicUrl(projectId, file.name);
+      const url = await apiService.getFilePublicUrl(projectId, file.id);
       if (url && url !== '#') {
         window.open(url, '_blank');
       } else {
@@ -79,6 +80,7 @@ export function DataSourcesPanel({ projectId }: DataSourcesPanelProps) {
 
     try {
       await apiService.deleteFile(projectId, file.id);
+      await invalidateRAGSummaryCache(projectId);
       toast.success('Arquivo excluído com sucesso.');
       loadFiles();
     } catch (error) {
@@ -120,6 +122,7 @@ export function DataSourcesPanel({ projectId }: DataSourcesPanelProps) {
         apiService.analyzeProjectMaterials(projectId, undefined, true).catch(console.error);
         
         toast.success(`${truncateFilename(file.name, 25)} adicionado e analisado!`);
+        invalidateRAGSummaryCache(projectId).catch(() => {});
       }
 
       loadFiles();
@@ -140,6 +143,7 @@ export function DataSourcesPanel({ projectId }: DataSourcesPanelProps) {
 
     try {
       await apiService.setFileAsDataSource(projectId, file.id, false);
+      await invalidateRAGSummaryCache(projectId);
       toast.success('Documento removido da base de conhecimento.');
       loadFiles();
     } catch (error) {
@@ -152,9 +156,12 @@ export function DataSourcesPanel({ projectId }: DataSourcesPanelProps) {
       case 'processed':
         return <CheckCircle2 className="w-4 h-4 text-green-600" />;
       case 'processing':
+      case 'pending':
         return <Loader2 className="w-4 h-4 text-blue-600 animate-spin" />;
       case 'error':
         return <AlertCircle className="w-4 h-4 text-red-600" />;
+      default:
+        return <Loader2 className="w-4 h-4 text-gray-400" />;
     }
   };
 
@@ -179,9 +186,12 @@ export function DataSourcesPanel({ projectId }: DataSourcesPanelProps) {
       case 'processed':
         return 'Processado';
       case 'processing':
-        return 'Processando';
+      case 'pending':
+        return 'Indexando...';
       case 'error':
         return 'Erro';
+      default:
+        return status || 'Processando';
     }
   };
 

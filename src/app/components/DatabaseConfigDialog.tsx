@@ -27,10 +27,13 @@ export function DatabaseConfigDialog({ open, onOpenChange }: DatabaseConfigDialo
   const [dbLoading, setDbLoading] = useState(false);
 
   useEffect(() => {
-    const existingDbConfig = apiService.getConfiguracao();
-    if (existingDbConfig) {
-      setDbConfig(existingDbConfig);
-      setDbSuccess(true);
+    if (open) {
+      apiService.getConfiguracao().then((existingDbConfig) => {
+        if (existingDbConfig) {
+          setDbConfig(existingDbConfig);
+          setDbSuccess(true);
+        }
+      });
     }
   }, [open]);
 

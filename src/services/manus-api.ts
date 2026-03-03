@@ -1,6 +1,8 @@
 // Serviço de integração com a API Manus
 // Responsável por análise de documentos e chat contextual
 
+import * as localDb from './local-db';
+
 export interface ManusConfig {
   apiKey: string;
   endpoint?: string; // URL base customizável
@@ -46,7 +48,7 @@ class ManusAPIService {
       await this.validateApiKey(config);
       
       this.config = config;
-      localStorage.setItem('manus_config', JSON.stringify(config));
+      await localDb.saveConfig('manus_config', config);
       return true;
     } catch (error) {
       console.error('Erro ao configurar API Manus:', error);
@@ -55,16 +57,10 @@ class ManusAPIService {
   }
 
   // Obter configuração atual
-  getConfig(): ManusConfig | null {
+  async getConfig(): Promise<ManusConfig | null> {
     if (this.config) return this.config;
-    
-    const stored = localStorage.getItem('manus_config');
-    if (stored) {
-      this.config = JSON.parse(stored);
-      return this.config;
-    }
-    
-    return null;
+    this.config = await localDb.getConfig<ManusConfig>('manus_config');
+    return this.config;
   }
 
   // Validar chave de API
@@ -103,7 +99,7 @@ class ManusAPIService {
     projectId: string, 
     file: File
   ): Promise<ManusDocument> {
-    const config = this.getConfig();
+    const config = await this.getConfig();
     if (!config || !config.apiKey) {
       throw new Error('Configure a chave de API do Manus antes de processar documentos');
     }
@@ -221,7 +217,7 @@ class ManusAPIService {
 
   // Obter documentos processados de um projeto
   async getProjectDocuments(projectId: string): Promise<ManusDocument[]> {
-    const config = this.getConfig();
+    const config = await this.getConfig();
     if (!config || !config.apiKey) {
       // Retornar cache local se não houver configuração
       return this.documentsCache.get(projectId) || [];
@@ -257,7 +253,7 @@ class ManusAPIService {
 
   // Chat com contexto dos documentos
   async chat(request: ManusChatRequest): Promise<string> {
-    const config = this.getConfig();
+    const config = await this.getConfig();
     if (!config || !config.apiKey) {
       throw new Error('Configure a chave de API do Manus antes de usar o chat');
     }

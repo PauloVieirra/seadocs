@@ -1,13 +1,15 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useCallback } from 'react';
 import { Button } from './ui/button';
 import { Badge } from './ui/badge';
 import { ArrowLeft, Settings, Share, Eye, Edit3 } from 'lucide-react';
-import { apiService, type Project, type Document, type User } from '../../services/api';
+import { apiService, type Project, type Document, type User, type DocumentSection } from '../../services/api';
 import { DocumentEditor } from './DocumentEditor';
 import { AIChat } from './AIChat';
 import { Avatar, AvatarFallback } from './ui/avatar';
-import { ShareDocumentDialog } from './ShareDocumentDialog'; // Importar ShareDocumentDialog
-import { ProjectSettingsDialog } from './ProjectSettingsDialog'; // Importar ProjectSettingsDialog
+import { ShareDocumentDialog } from './ShareDocumentDialog';
+import { ProjectSettingsDialog } from './ProjectSettingsDialog';
+import { generateSectionContent } from '../../services/rag-api';
+import { toast } from 'sonner';
 
 interface ProjectEditorProps {
   projectId: string;
@@ -21,8 +23,14 @@ export function ProjectEditor({ projectId, documentId, onBack }: ProjectEditorPr
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [activeUsers, setActiveUsers] = useState<User[]>([]);
   const [saving, setSaving] = useState(false);
-  const [shareDialogOpen, setShareDialogOpen] = useState(false); // Estado para controlar o diálogo de compartilhamento
-  const [viewMode, setViewMode] = useState(false); // Estado para o modo de visualização
+  const [shareDialogOpen, setShareDialogOpen] = useState(false);
+  const [viewMode, setViewMode] = useState(false);
+  const [generateRequest, setGenerateRequest] = useState<{
+    documentId: string;
+    projectId: string;
+    sections: DocumentSection[];
+  } | null>(null);
+  const [isGeneratingDocument, setIsGeneratingDocument] = useState(false);
 
   useEffect(() => {
     loadProject();
@@ -70,12 +78,66 @@ export function ProjectEditor({ projectId, documentId, onBack }: ProjectEditorPr
   };
 
   const handleSave = async (content: Document['content']) => {
-    if (viewMode) return; // Não salvar em modo de visualização
+    if (viewMode) return;
     setSaving(true);
     const updatedDoc = await apiService.updateDocument(documentId, content);
     setDocument(updatedDoc);
     setTimeout(() => setSaving(false), 1000);
   };
+
+  const handleRequestGenerateAll = useCallback((sections: DocumentSection[]) => {
+    setGenerateRequest({
+      documentId,
+      projectId,
+      sections,
+    });
+  }, [documentId, projectId]);
+
+  const handleSuggestedGenerateDocument = useCallback(() => {
+    if (!document?.content?.sections) return;
+    const sections = document.content.sections.filter(s => s.isEditable);
+    if (sections.length === 0) {
+      toast.info('Nenhuma seção editável encontrada.');
+      return;
+    }
+    setGenerateRequest({ documentId, projectId, sections });
+  }, [document, documentId, projectId]);
+
+  const handleConfirmGenerate = useCallback(async () => {
+    if (!generateRequest || !document) return;
+    setIsGeneratingDocument(true);
+    toast.info(`Gerando ${generateRequest.sections.length} seção(ões)...`);
+
+    try {
+      let documentContext = '';
+      for (let i = 0; i < generateRequest.sections.length; i++) {
+        const section = generateRequest.sections[i];
+        toast.loading(`Gerando: ${section.title}...`, { id: 'gen-doc' });
+
+        const { content: aiContent } = await generateSectionContent({
+          projectId: generateRequest.projectId,
+          sectionTitle: section.title,
+          helpText: section.helpText,
+          documentContext: documentContext || undefined,
+        });
+
+        if (apiService.isUUID(document.id)) {
+          await apiService.updateDocumentSection(document.id, section.id, aiContent);
+        }
+
+        documentContext += `\n${section.title}: ${aiContent.slice(0, 300)}`;
+      }
+
+      toast.success('Documento gerado com sucesso!', { id: 'gen-doc' });
+      await loadDocument();
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Erro ao gerar documento';
+      toast.error(msg, { id: 'gen-doc' });
+    } finally {
+      setIsGeneratingDocument(false);
+      setGenerateRequest(null);
+    }
+  }, [generateRequest, document]);
 
   if (!project || !document) {
     return (
@@ -174,6 +236,7 @@ export function ProjectEditor({ projectId, documentId, onBack }: ProjectEditorPr
           projectId={projectId}
           viewMode={viewMode}
           onExitViewMode={() => setViewMode(false)}
+          onRequestGenerateAll={handleRequestGenerateAll}
         />
       </main>
 
@@ -186,7 +249,17 @@ export function ProjectEditor({ projectId, documentId, onBack }: ProjectEditorPr
       />
 
       {/* AI Chat Assistant - Ocultar no modo de visualização para foco total */}
-      {!viewMode && <AIChat projectId={projectId} documentId={documentId} />}
+      {!viewMode && (
+        <AIChat
+          projectId={projectId}
+          documentId={documentId}
+          generateRequest={generateRequest}
+          onConfirmGenerate={handleConfirmGenerate}
+          onGenerateComplete={() => setGenerateRequest(null)}
+          forceOpen={!!generateRequest}
+          onSuggestedGenerateDocument={handleSuggestedGenerateDocument}
+        />
+      )}
 
       {/* Diálogo de Compartilhamento */}
       {document && (

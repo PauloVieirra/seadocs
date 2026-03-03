@@ -24,11 +24,13 @@ interface DocumentEditorProps {
   projectId: string;
   viewMode?: boolean; // Propriedade opcional para modo de visualização
   onExitViewMode?: () => void; // Callback para sair do modo de visualização
+  /** Quando fornecido, "Gerar tudo com IA" dispara o fluxo no chat (resumo + confirmação) em vez de gerar direto */
+  onRequestGenerateAll?: (sections: DocumentSection[]) => void;
 }
 
-export function DocumentEditor({ document, onSave, projectId, viewMode = false, onExitViewMode }: DocumentEditorProps) {
+export function DocumentEditor({ document, onSave, projectId, viewMode = false, onExitViewMode, onRequestGenerateAll }: DocumentEditorProps) {
   const [content, setContent] = useState<DocumentContent>(document.content);
-  const [activeLocks, setActiveLocks] = useState<any[]>([]); 
+  const [activeLocks, setActiveLocks] = useState<{ section_id: string; user_id: string; user_name?: string }[]>([]); 
   const [updatingSections, setUpdatingSections] = useState<Set<string>>(new Set()); // Seções que estão sendo atualizadas via Realtime
   const currentUser = apiService.getCurrentUser();
   const [isGeneratingAll, setIsGeneratingAll] = useState(false);
@@ -62,7 +64,8 @@ export function DocumentEditor({ document, onSave, projectId, viewMode = false, 
   // 1. Sincronização Inteligente do Conteúdo
   useEffect(() => {
     // Identifica qual seção o usuário atual está editando localmente
-    const userLock = activeLocks.find(l => l.user_id === currentUser?.id);
+    const locksArray = Array.isArray(activeLocks) ? activeLocks : [];
+    const userLock = locksArray.find(l => l.user_id === currentUser?.id);
     const editingSectionId = userLock?.section_id;
 
     setContent(prev => {
@@ -181,7 +184,8 @@ export function DocumentEditor({ document, onSave, projectId, viewMode = false, 
   };
 
   const getSectionLock = (sectionId: string) => {
-    return activeLocks.find(l => l.section_id === sectionId && l.user_id !== currentUser?.id);
+    const locksArray = Array.isArray(activeLocks) ? activeLocks : [];
+    return locksArray.find(l => l.section_id === sectionId && l.user_id !== currentUser?.id);
   };
 
   const handleSectionChange = (sectionId: string, newContent: string) => {
@@ -267,6 +271,19 @@ export function DocumentEditor({ document, onSave, projectId, viewMode = false, 
       return;
     }
 
+    const targetSections = content.sections.filter(s => s.isEditable);
+    if (targetSections.length === 0) {
+      toast.info('Nenhuma seção editável encontrada.');
+      return;
+    }
+
+    // Novo fluxo: IA lê documento, mostra resumo no chat, usuário confirma e só então gera
+    if (onRequestGenerateAll) {
+      onRequestGenerateAll(targetSections);
+      return;
+    }
+
+    // Fallback: fluxo antigo com confirmação direta
     setRegenTarget('all');
     setConfirmRegenOpen(true);
   };

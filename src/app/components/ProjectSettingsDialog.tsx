@@ -40,6 +40,11 @@ export function ProjectSettingsDialog({
   const [editedResponsibleIds, setEditedResponsibleIds] = useState<string[]>([]);
   const [editedGroupIds, setEditedGroupIds] = useState<string[]>([]);
 
+  // Membros do projeto (project_members)
+  const [projectMembers, setProjectMembers] = useState<{ userId: string; permissionLevel: string }[]>([]);
+  const [memberToAdd, setMemberToAdd] = useState<string | null>(null);
+  const [removingMemberId, setRemovingMemberId] = useState<string | null>(null);
+
   // Dados auxiliares
   const [allUsers, setAllUsers] = useState<User[]>([]);
   const [allGroups, setAllGroups] = useState<Group[]>([]);
@@ -67,6 +72,8 @@ export function ProjectSettingsDialog({
         setEditedResponsibleIds(projectData.responsibleIds || []);
         setEditedGroupIds(projectData.groupIds || []);
       }
+      const members = await apiService.getProjectMembers(projectId);
+      setProjectMembers(members);
       setAllUsers(users);
       setAllGroups(groups);
     } catch (error) {
@@ -180,15 +187,14 @@ export function ProjectSettingsDialog({
                         <Label>Adicionar/Remover Responsáveis</Label>
                         <UserSearchSelect
                           users={allUsers}
-                          selectedIds={editedResponsibleIds}
-                          onSelectedChange={setEditedResponsibleIds}
+                          selectedUsers={editedResponsibleIds}
+                          onSelectionChange={setEditedResponsibleIds}
                           placeholder="Busque por nome ou email..."
-                          maxResults={8}
                         />
                       </div>
 
                       <div className="space-y-3 pt-2">
-                        <Label className="text-xs text-gray-500 uppercase font-semibold">Lista de Acesso</Label>
+                        <Label className="text-xs text-gray-500 uppercase font-semibold">Lista de Responsáveis</Label>
                         <div className="grid grid-cols-1 gap-2">
                           {editedResponsibleIds.length > 0 ? (
                             editedResponsibleIds.map(id => {
@@ -219,6 +225,91 @@ export function ProjectSettingsDialog({
                           ) : (
                             <p className="text-sm text-gray-500 italic py-2 text-center border border-dashed rounded-md">Nenhum responsável técnico atribuído.</p>
                           )}
+                        </div>
+                      </div>
+
+                      <div className="space-y-4 pt-6 border-t mt-6">
+                        <div className="bg-gray-50 border border-gray-200 p-4 rounded-lg">
+                          <h4 className="text-sm font-semibold text-gray-900 mb-1">Membros do Projeto</h4>
+                          <p className="text-xs text-gray-600">Pessoas com acesso ao projeto. Adicione ou remova membros.</p>
+                        </div>
+                        <div className="space-y-2">
+                          <Label>Adicionar membro</Label>
+                          <UserSearchSelect
+                            users={allUsers.filter(u => !projectMembers.some(m => m.userId === u.id))}
+                            selectedUsers={memberToAdd ? [memberToAdd] : []}
+                            onSelectionChange={(ids) => setMemberToAdd(ids[0] || null)}
+                            placeholder="Busque por nome ou email..."
+                            maxSelected={1}
+                          />
+                          {memberToAdd && (
+                            <Button
+                              type="button"
+                              size="sm"
+                              onClick={async () => {
+                                try {
+                                  await apiService.addProjectMember(projectId, memberToAdd, 'EDIT');
+                                  const members = await apiService.getProjectMembers(projectId);
+                                  setProjectMembers(members);
+                                  setMemberToAdd(null);
+                                  toast.success('Membro adicionado');
+                                } catch (e: any) {
+                                  toast.error(e.message);
+                                }
+                              }}
+                            >
+                              Adicionar
+                            </Button>
+                          )}
+                        </div>
+                        <div className="space-y-3 pt-2">
+                          <Label className="text-xs text-gray-500 uppercase font-semibold">Lista de Membros</Label>
+                          <div className="grid grid-cols-1 gap-2">
+                            {projectMembers.length > 0 ? (
+                              projectMembers.map(({ userId, permissionLevel }) => {
+                                const user = allUsers.find(u => u.id === userId);
+                                if (!user) return null;
+                                return (
+                                  <div key={userId} className="flex items-center justify-between p-2 border rounded-md bg-white">
+                                    <div className="flex items-center gap-3">
+                                      <Avatar className="h-8 w-8">
+                                        <AvatarFallback className="text-[10px] bg-slate-100">{user.name.charAt(0).toUpperCase()}</AvatarFallback>
+                                      </Avatar>
+                                      <div>
+                                        <p className="text-sm font-medium">{user.name}</p>
+                                        <p className="text-[10px] text-gray-500">{user.email}</p>
+                                      </div>
+                                      <Badge variant="outline" className="text-[10px]">{permissionLevel}</Badge>
+                                    </div>
+                                    <Button 
+                                      variant="ghost" 
+                                      size="sm" 
+                                      className="text-red-500 hover:text-red-700 hover:bg-red-50 h-8 px-2"
+                                      disabled={removingMemberId === userId || userId === project?.creatorId}
+                                      title={userId === project?.creatorId ? 'Criador do projeto não pode ser removido' : undefined}
+                                      onClick={async () => {
+                                        if (userId === project?.creatorId) return;
+                                        setRemovingMemberId(userId);
+                                        try {
+                                          await apiService.removeProjectMember(projectId, userId);
+                                          setProjectMembers(prev => prev.filter(m => m.userId !== userId));
+                                          toast.success('Membro removido');
+                                        } catch (e: any) {
+                                          toast.error(e.message);
+                                        } finally {
+                                          setRemovingMemberId(null);
+                                        }
+                                      }}
+                                    >
+                                      {removingMemberId === userId ? '...' : 'Remover'}
+                                    </Button>
+                                  </div>
+                                );
+                              })
+                            ) : (
+                              <p className="text-sm text-gray-500 italic py-2 text-center border border-dashed rounded-md">Nenhum membro adicionado.</p>
+                            )}
+                          </div>
                         </div>
                       </div>
                     </div>

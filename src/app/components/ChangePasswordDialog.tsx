@@ -67,7 +67,7 @@ export function ChangePasswordDialog({
 
     setLoading(true);
     try {
-      await apiService.updateUserPassword(user.id, newPassword);
+      await apiService.updateUserPassword(user.id, newPassword, false);
       toast.success('Senha alterada com sucesso!');
       setNewPassword('');
       setConfirmPassword('');

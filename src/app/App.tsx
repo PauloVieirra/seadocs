@@ -13,9 +13,10 @@ import { DocumentModelManagementPanel } from './components/DocumentModelManageme
 import { CreateDocumentModelPage } from './pages/CreateDocumentModelPage';
 import { DatabaseConfigDialog } from './components/DatabaseConfigDialog';
 import { AdminDashboard } from './components/AdminDashboard';
-import { AuthRedirect } from './components/AuthRedirect'; // Importar AuthRedirect
-import { Wiki } from './components/Wiki'; // Importar Wiki
-import { ChangePasswordDialog } from './components/ChangePasswordDialog'; // Importar ChangePasswordDialog
+import { AuthRedirect } from './components/AuthRedirect';
+import { Wiki } from './components/Wiki';
+import { ChangePasswordDialog } from './components/ChangePasswordDialog';
+import { ProtectedRoute } from './components/ProtectedRoute';
 
 type MainView = 'login' | 'dashboard' | 'editor' | 'projects' | 'users' | 'document-models' | 'groups' | 'settings' | 'admin-dashboard' | 'create-document-model';
 
@@ -61,20 +62,26 @@ function ProjectEditorWrapper() {
 
 export default function App() {
   const [currentUser, setCurrentUser] = useState<User | null>(null);
+  const [authLoaded, setAuthLoaded] = useState(false);
   const [configDialogOpen, setConfigDialogOpen] = useState(false);
   const [changePasswordOpen, setChangePasswordOpen] = useState(false);
   const navigate = useNavigate();
 
   useEffect(() => {
-    const user = apiService.getCurrentUser();
+    apiService.loadCurrentUserFromStorage().then((user) => {
     if (user) {
       setCurrentUser(user);
       if (user.forcePasswordChange) {
         setChangePasswordOpen(true);
+      } else if (user.role === 'admin') {
+        navigate('/admin-dashboard');
+      } else {
+        navigate('/projects');
       }
     }
-    // AuthRedirect vai cuidar da navegação inicial
-  }, [setCurrentUser]); 
+      setAuthLoaded(true);
+    });
+  }, []); 
 
   const handleLoginSuccess = (user: User) => {
     setCurrentUser(user);
@@ -137,51 +144,76 @@ export default function App() {
       )}
 
       <Routes>
-        {/* Rota raiz: usa AuthRedirect para gerenciar o redirecionamento inicial */}
-        <Route path="/" element={<AuthRedirect currentUser={currentUser} />} />
+        <Route path="/" element={<AuthRedirect currentUser={currentUser} authLoaded={authLoaded} />} />
         <Route path="/login" element={<LoginScreen onLoginSuccess={handleLoginSuccess} />} />
-        {currentUser && (
-          <>
-            <Route path="/admin-dashboard" element={
-              <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-                <AdminDashboard currentUser={currentUser} />
-              </main>
-            } />
-            <Route path="/projects" element={
-              <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-                <Dashboard user={currentUser} onProjectSelect={handleProjectSelect} />
-              </main>
-            } />
-            <Route path="/project/:projectId" element={<ProjectViewWrapper />} />
-            <Route path="/project/:projectId/document/:documentId" element={<ProjectEditorWrapper />} />
-            <Route path="/wiki" element={
-              <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-                <Wiki />
-              </main>
-            } />
-            <Route path="/users" element={
-              <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-                <UserManagementPanel currentUser={currentUser} />
-              </main>
-            } />
-            <Route path="/document-models" element={
-              <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-                <DocumentModelManagementPanel currentUser={currentUser} />
-              </main>
-            } />
-            <Route path="/create-document-model" element={
-              <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-                <CreateDocumentModelPage />
-              </main>
-            } />
-            <Route path="/groups" element={
-              <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-                <GroupManagementPanel user={currentUser} />
-              </main>
-            } />
-          </>
-        )}
-        <Route path="*" element={<div>404 - Página Não Encontrada</div>} />
+        <Route path="/admin-dashboard" element={
+          <ProtectedRoute currentUser={currentUser} authLoaded={authLoaded}>
+            <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+              <AdminDashboard currentUser={currentUser!} />
+            </main>
+          </ProtectedRoute>
+        } />
+        <Route path="/projects" element={
+          <ProtectedRoute currentUser={currentUser} authLoaded={authLoaded}>
+            <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+              <Dashboard user={currentUser!} onProjectSelect={handleProjectSelect} />
+            </main>
+          </ProtectedRoute>
+        } />
+        <Route path="/project/:projectId" element={
+          <ProtectedRoute currentUser={currentUser} authLoaded={authLoaded}>
+            <ProjectViewWrapper />
+          </ProtectedRoute>
+        } />
+        <Route path="/project/:projectId/document/:documentId" element={
+          <ProtectedRoute currentUser={currentUser} authLoaded={authLoaded}>
+            <ProjectEditorWrapper />
+          </ProtectedRoute>
+        } />
+        <Route path="/wiki" element={
+          <ProtectedRoute currentUser={currentUser} authLoaded={authLoaded}>
+            <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+              <Wiki />
+            </main>
+          </ProtectedRoute>
+        } />
+        <Route path="/users" element={
+          <ProtectedRoute currentUser={currentUser} authLoaded={authLoaded}>
+            <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+              <UserManagementPanel currentUser={currentUser!} />
+            </main>
+          </ProtectedRoute>
+        } />
+        <Route path="/document-models" element={
+          <ProtectedRoute currentUser={currentUser} authLoaded={authLoaded}>
+            <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+              <DocumentModelManagementPanel currentUser={currentUser!} />
+            </main>
+          </ProtectedRoute>
+        } />
+        <Route path="/create-document-model" element={
+          <ProtectedRoute currentUser={currentUser} authLoaded={authLoaded}>
+            <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+              <CreateDocumentModelPage />
+            </main>
+          </ProtectedRoute>
+        } />
+        <Route path="/groups" element={
+          <ProtectedRoute currentUser={currentUser} authLoaded={authLoaded}>
+            <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+              <GroupManagementPanel user={currentUser!} />
+            </main>
+          </ProtectedRoute>
+        } />
+        <Route path="*" element={
+          authLoaded ? (
+            <div className="flex items-center justify-center min-h-[50vh] text-gray-500">404 - Página Não Encontrada</div>
+          ) : (
+            <div className="flex items-center justify-center min-h-screen">
+              <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-indigo-600" />
+            </div>
+          )
+        } />
       </Routes>
     </>
   );

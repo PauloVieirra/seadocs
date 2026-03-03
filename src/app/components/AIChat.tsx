@@ -1,28 +1,49 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { Button } from './ui/button';
 import { Input } from './ui/input';
-import { Send, Bot, User, Loader2, Minimize2 } from 'lucide-react';
+import { Send, Bot, User, Loader2, Minimize2, Paperclip, FileCheck } from 'lucide-react';
 import { apiService } from '../../services/api';
+import { invalidateRAGSummaryCache } from '../../services/local-db';
+import { getDocumentationSummaryWithCache, getDocumentUnderstandingWithCache, chatWithRAG, type DocumentSectionInput } from '../../services/rag-api';
 import { toast } from 'sonner';
+import type { DocumentSection } from '../../services/api';
 
 interface Message {
   id: string;
   role: 'user' | 'assistant';
   content: string;
   timestamp: Date;
+  /** Botão de ação no final da mensagem (ex: "correto, crie o documento") */
+  action?: { label: string; onClick: () => void };
+}
+
+interface GenerateRequest {
+  documentId: string;
+  projectId: string;
+  sections: DocumentSection[];
 }
 
 interface AIChatProps {
   projectId: string;
   documentId?: string;
+  /** Pedido de geração: IA lê documento, mostra resumo, usuário confirma */
+  generateRequest?: GenerateRequest | null;
+  /** Chamado quando usuário clica em "correto, crie o documento" */
+  onConfirmGenerate?: () => void;
+  /** Chamado quando o fluxo de geração termina (sucesso ou cancelamento) */
+  onGenerateComplete?: () => void;
+  /** Força o chat aberto quando há um pedido de geração */
+  forceOpen?: boolean;
+  /** Chamado quando a IA sugere gerar o documento (ex: usuário pediu "gere o documento") */
+  onSuggestedGenerateDocument?: () => void;
 }
 
-export function AIChat({ projectId, documentId }: AIChatProps) {
+export function AIChat({ projectId, documentId, generateRequest, onConfirmGenerate, onGenerateComplete, forceOpen, onSuggestedGenerateDocument }: AIChatProps) {
   const [messages, setMessages] = useState<Message[]>([
     {
       id: '1',
       role: 'assistant',
-      content: 'Olá! Sou seu assistente de IA. Posso ajudá-lo a editar o documento, adicionar conteúdo, revisar seções e muito mais. Como posso ajudar?',
+      content: 'Olá! Sou seu assistente de IA. Carregando resumo da documentação...',
       timestamp: new Date()
     }
   ]);
@@ -33,53 +54,117 @@ export function AIChat({ projectId, documentId }: AIChatProps) {
   const [minimized, setMinimized] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const hasAnalyzedRef = useRef(false);
+  const [uploadingFile, setUploadingFile] = useState(false);
+  const lastGenerateRequestRef = useRef<string | null>(null);
+
+  const isMinimized = forceOpen ? false : minimized;
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
-  // Iniciar análise ao abrir o chat se for um projeto novo ou recém aberto
+  // Fluxo "Gerar tudo com IA": lê documento, mostra resumo, botão "correto, crie o documento"
   useEffect(() => {
-    if (hasAnalyzedRef.current) return;
-    
-    const startAnalysis = async () => {
+    if (!generateRequest || !documentId) return;
+    const key = `${generateRequest.documentId}-${generateRequest.sections.length}`;
+    if (lastGenerateRequestRef.current === key) return;
+
+    lastGenerateRequestRef.current = key;
+    const sectionsInput: DocumentSectionInput[] = generateRequest.sections.map(s => ({
+      id: s.id,
+      title: s.title,
+      helpText: s.helpText,
+    }));
+
+    const runUnderstanding = async () => {
       try {
-        hasAnalyzedRef.current = true;
         setIsAnalyzing(true);
-        
-        // 1. Tenta carregar o DNA de estilo já existente antes de analisar tudo
-        setAnalysisStatus('Verificando modelos de escrita...');
-        
-        // Pequena pausa para o componente estabilizar
-        await new Promise(resolve => setTimeout(resolve, 500));
+        setAnalysisStatus('Lendo documento e base de conhecimento...');
 
-        // Analisa os modelos de estilo (Gera ou recupera o PADRAO_ESTILO_...txt)
-        await apiService.analyzeProjectModels(projectId);
-
-        // analyzeProjectMaterials já possui a lógica de recuperar do RAG se existir
-        setAnalysisStatus('Buscando inteligência técnica...');
-        const summary = await apiService.analyzeProjectMaterials(projectId, (status) => {
-          setAnalysisStatus(status);
+        const { summary: understanding } = await getDocumentUnderstandingWithCache({
+          projectId: generateRequest.projectId,
+          documentId: generateRequest.documentId,
+          sections: sectionsInput,
         });
-        
-        const analysisMessage: Message = {
-          id: 'analysis-' + Date.now(),
+
+        const summaryMessage: Message = {
+          id: 'understanding-' + Date.now(),
           role: 'assistant',
-          content: summary,
-          timestamp: new Date()
+          content: understanding,
+          timestamp: new Date(),
+          action: onConfirmGenerate ? {
+            label: 'Correto, crie o documento',
+            onClick: () => {
+              onConfirmGenerate();
+              onGenerateComplete?.();
+              lastGenerateRequestRef.current = null;
+            },
+          } : undefined,
         };
-        
-        setMessages(prev => [...prev, analysisMessage]);
+
+        setMessages(prev => [...prev, summaryMessage]);
       } catch (error) {
-        console.error('Erro na análise inicial:', error);
+        console.error('Erro ao gerar entendimento:', error);
+        const errMsg: Message = {
+          id: 'understanding-err-' + Date.now(),
+          role: 'assistant',
+          content: '❌ Não foi possível analisar o documento. Verifique se o serviço RAG está rodando (localhost:8000) e se há documentos na base de conhecimento.',
+          timestamp: new Date(),
+        };
+        setMessages(prev => [...prev, errMsg]);
+        toast.error('Erro ao analisar documento');
+        onGenerateComplete?.();
+        lastGenerateRequestRef.current = null;
       } finally {
         setIsAnalyzing(false);
       }
     };
 
-    startAnalysis();
-  }, [projectId]);
+    runUnderstanding();
+  }, [generateRequest, documentId, projectId, onConfirmGenerate, onGenerateComplete]);
+
+  // Ao abrir o chat (sem generateRequest), exibe resumo do entendimento sobre a documentação da base de dados (RAG)
+  // Usa cache local se já existir análise anterior e não houver documentos novos
+  useEffect(() => {
+    if (hasAnalyzedRef.current || generateRequest) return;
+
+    const loadSummary = async () => {
+      try {
+        hasAnalyzedRef.current = true;
+        setIsAnalyzing(true);
+        setAnalysisStatus('Carregando análise da documentação...');
+
+        const files = await apiService.getProjectFiles(projectId);
+        const dataSourceIds = files.filter(f => f.isDataSource).map(f => f.id);
+
+        const { summary, sources_count } = await getDocumentationSummaryWithCache(projectId, dataSourceIds);
+
+        const summaryMessage: Message = {
+          id: 'summary-' + Date.now(),
+          role: 'assistant',
+          content: summary + (sources_count > 0 ? `\n\n📚 Base de conhecimento: ${sources_count} trecho(s) indexado(s). Como posso ajudar?` : ''),
+          timestamp: new Date()
+        };
+
+        setMessages([summaryMessage]);
+      } catch (error) {
+        console.error('Erro ao carregar resumo:', error);
+        const fallbackMessage: Message = {
+          id: 'summary-' + Date.now(),
+          role: 'assistant',
+          content: 'Olá! Sou seu assistente de IA. Não foi possível carregar o resumo da documentação. Verifique se o serviço RAG está rodando (localhost:8000) e se há documentos na base de conhecimento. Como posso ajudar?',
+          timestamp: new Date()
+        };
+        setMessages([fallbackMessage]);
+      } finally {
+        setIsAnalyzing(false);
+      }
+    };
+
+    loadSummary();
+  }, [projectId, generateRequest]);
 
   const handleSend = async () => {
     if (!input.trim() || loading) return;
@@ -96,15 +181,22 @@ export function AIChat({ projectId, documentId }: AIChatProps) {
     setLoading(true);
 
     try {
-      console.log('Enviando mensagem para IA:', { projectId, documentId, message: input });
-      const response = await apiService.chatWithAI(projectId, input, { documentId });
-      console.log('Resposta recebida da IA:', response);
+      const userInput = input;
+      const { response, suggested_action } = await chatWithRAG({
+        projectId,
+        message: userInput,
+        documentId,
+      });
       
       const assistantMessage: Message = {
         id: (Date.now() + 1).toString(),
         role: 'assistant',
         content: response,
-        timestamp: new Date()
+        timestamp: new Date(),
+        action: suggested_action === 'generate_document' && onSuggestedGenerateDocument ? {
+          label: 'Gerar documento agora',
+          onClick: onSuggestedGenerateDocument,
+        } : undefined,
       };
 
       setMessages(prev => [...prev, assistantMessage]);
@@ -162,7 +254,61 @@ export function AIChat({ projectId, documentId }: AIChatProps) {
     }
   };
 
-  if (minimized) {
+  const handleAttachFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (!files || files.length === 0 || uploadingFile || loading) return;
+
+    const allowedExtensions = ['.pdf', '.doc', '.docx', '.txt'];
+    const maxSize = 10 * 1024 * 1024; // 10MB
+
+    for (let i = 0; i < files.length; i++) {
+      const file = files[i];
+      const ext = '.' + (file.name.split('.').pop() || '').toLowerCase();
+      if (!allowedExtensions.includes(ext)) {
+        toast.error(`${file.name}: formato não suportado. Use PDF, DOC, DOCX ou TXT.`);
+        continue;
+      }
+      if (file.size > maxSize) {
+        toast.error(`${file.name}: tamanho máximo 10MB.`);
+        continue;
+      }
+
+      setUploadingFile(true);
+      try {
+        const uploaded = await apiService.uploadFile(projectId, file, true);
+        const userMsg: Message = {
+          id: 'attach-' + Date.now(),
+          role: 'user',
+          content: `📎 Anexei o documento: ${uploaded.name}`,
+          timestamp: new Date()
+        };
+        setMessages(prev => [...prev, userMsg]);
+        const botMsg: Message = {
+          id: 'attach-ack-' + Date.now(),
+          role: 'assistant',
+          content: `✅ Documento "${uploaded.name}" enviado ao bucket e indexado na base de conhecimento (RAG). O conteúdo já está disponível para consultas.`,
+          timestamp: new Date()
+        };
+        setMessages(prev => [...prev, botMsg]);
+        invalidateRAGSummaryCache(projectId).catch(() => {});
+        toast.success(`"${uploaded.name}" adicionado e indexado!`);
+      } catch (err: any) {
+        toast.error(err.message || 'Erro ao enviar documento');
+        const errMsg: Message = {
+          id: 'attach-err-' + Date.now(),
+          role: 'assistant',
+          content: `❌ Não foi possível processar "${file.name}": ${err.message || 'Erro desconhecido'}`,
+          timestamp: new Date()
+        };
+        setMessages(prev => [...prev, errMsg]);
+      } finally {
+        setUploadingFile(false);
+        if (fileInputRef.current) fileInputRef.current.value = '';
+      }
+    }
+  };
+
+  if (isMinimized) {
     return (
       <div className="fixed bottom-6 right-6 z-50">
         <Button
@@ -223,6 +369,18 @@ export function AIChat({ projectId, documentId }: AIChatProps) {
                     : 'bg-gray-100 text-gray-900'
                 }`}>
                   <p className="text-sm whitespace-pre-wrap">{message.content}</p>
+                  {message.action && (
+                    <div className="mt-3">
+                      <Button
+                        size="sm"
+                        onClick={message.action.onClick}
+                        className="bg-indigo-600 hover:bg-indigo-700 text-white"
+                      >
+                        <FileCheck className="w-4 h-4 mr-2" />
+                        {message.action.label}
+                      </Button>
+                    </div>
+                  )}
                 </div>
                 <p className="text-xs text-gray-500 mt-1">
                   {message.timestamp.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}
@@ -231,18 +389,16 @@ export function AIChat({ projectId, documentId }: AIChatProps) {
             </div>
           ))}
           
-          {(loading || isAnalyzing) && (
+          {(loading || isAnalyzing || uploadingFile) && (
             <div className="flex gap-3">
               <div className="w-8 h-8 rounded-full bg-gray-200 flex items-center justify-center">
                 <Bot className="w-4 h-4 text-gray-700" />
               </div>
               <div className="bg-gray-100 p-3 rounded-lg flex items-center gap-2">
                 <Loader2 className="w-4 h-4 animate-spin text-gray-600" />
-                {isAnalyzing && (
-                  <span className="text-xs text-gray-600 animate-pulse">
-                    {analysisStatus}
-                  </span>
-                )}
+                <span className="text-xs text-gray-600 animate-pulse">
+                  {uploadingFile ? 'Enviando e indexando documento...' : isAnalyzing ? analysisStatus : 'Processando...'}
+                </span>
               </div>
             </div>
           )}
@@ -253,25 +409,43 @@ export function AIChat({ projectId, documentId }: AIChatProps) {
       {/* Input */}
       <div className="p-4 border-t bg-gray-50 rounded-b-lg">
         <div className="flex gap-2">
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept=".pdf,.doc,.docx,.txt"
+            multiple
+            onChange={handleAttachFile}
+            className="hidden"
+          />
+          <Button
+            variant="ghost"
+            size="icon"
+            onClick={() => fileInputRef.current?.click()}
+            disabled={loading || uploadingFile}
+            title="Anexar documento (PDF, DOC, DOCX, TXT)"
+            className="flex-shrink-0"
+          >
+            <Paperclip className="w-4 h-4" />
+          </Button>
           <Input
             ref={inputRef}
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyPress={handleKeyPress}
             placeholder="Digite sua mensagem..."
-            disabled={loading}
+            disabled={loading || uploadingFile}
             className="flex-1"
           />
           <Button
             onClick={handleSend}
-            disabled={loading || !input.trim()}
+            disabled={loading || uploadingFile || !input.trim()}
             size="icon"
           >
             <Send className="w-4 h-4" />
           </Button>
         </div>
         <p className="text-xs text-gray-500 mt-2">
-          💡 Peça para adicionar, editar ou revisar qualquer parte do documento
+          💡 Anexe documentos ou peça para adicionar, editar ou revisar
         </p>
       </div>
     </div>

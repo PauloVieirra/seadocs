@@ -10,12 +10,16 @@ export function CreateDocumentModelPage() {
   const [isSaving, setIsSaving] = useState(false);
   const [isDraft, setIsDraft] = useState(true);
   const [draftSaved, setDraftSaved] = useState(false);
+  const [initialDraft, setInitialDraft] = useState<{ name: string; type: string; templateContent: string } | null>(null);
 
   useEffect(() => {
-    // Ao montar a página de criação, garantimos que não estamos carregando um rascunho anterior acidentalmente
-    // se o usuário clicou explicitamente em "Criar Novo Modelo"
-    setIsDraft(true);
-    setDraftSaved(false);
+    apiService.getLocalModelDrafts().then((drafts) => {
+      const draft = drafts.find(d => d.id === 'model_draft_new');
+      if (draft) {
+        setInitialDraft({ name: draft.name, type: draft.type, templateContent: draft.templateContent });
+        setDraftSaved(true);
+      }
+    });
   }, []);
 
   const handleSaveModel = async (name: string, type: string, templateContent: string, isDraft: boolean, aiGuidance: string) => {
@@ -69,6 +73,7 @@ export function CreateDocumentModelPage() {
           onCancel={handleCancel}
           isLoading={isSaving}
           onDraftStatusChange={handleDraftStatusChange}
+          initialData={initialDraft ? { ...initialDraft, id: 'model_draft_new', isGlobal: false, createdAt: '', updatedAt: '', isLocalDraft: true } : undefined}
         />
       </div>
     </div>

@@ -1,12 +1,15 @@
 import { useEffect, useState } from 'react';
 import { apiService, type User } from '../../services/api';
+import { usePermissions } from '../../hooks/usePermissions';
+import { permissionsService, type UserPermissions } from '../../services/permissions';
 import { Button } from './ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from './ui/card';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from './ui/dialog';
 import { Input } from './ui/input';
 import { Label } from './ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select';
-import { Plus } from 'lucide-react';
+import { Checkbox } from './ui/checkbox';
+import { Plus, Shield } from 'lucide-react';
 import { Badge } from './ui/badge';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from './ui/alert-dialog';
 
@@ -15,6 +18,7 @@ interface UserManagementPanelProps {
 }
 
 export function UserManagementPanel({ currentUser }: UserManagementPanelProps) {
+  const perms = usePermissions(currentUser);
   const [users, setUsers] = useState<User[]>([]);
   const [loading, setLoading] = useState(true);
   const [dialogOpen, setDialogOpen] = useState(false);
@@ -32,11 +36,41 @@ export function UserManagementPanel({ currentUser }: UserManagementPanelProps) {
   const [editingUser, setEditingUser] = useState<User | null>(null);
   const [editDialogOpen, setEditDialogOpen] = useState(false);
   const [editedUserName, setEditedUserName] = useState('');
-  const [editedUserEmail, setEditedUserEmail] = useState('');
   const [editedUserRole, setEditedUserRole] = useState<User['role']>('operational');
   const [isSaving, setIsSaving] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
   const [isTogglingStatus, setIsTogglingStatus] = useState(false);
+
+  // Estados para modal de permissões
+  const [permissionsUser, setPermissionsUser] = useState<User | null>(null);
+  const [permissionsDialogOpen, setPermissionsDialogOpen] = useState(false);
+  const [localPerms, setLocalPerms] = useState<Partial<UserPermissions>>({});
+  const [loadingPerms, setLoadingPerms] = useState(false);
+  const [savingPerms, setSavingPerms] = useState(false);
+
+  /** Labels das permissões para exibição */
+  const PERMISSION_LABELS: Record<keyof Omit<UserPermissions, 'userId'>, string> = {
+    gerenciar_usuarios: 'Gerenciar usuários',
+    gerenciar_grupos: 'Gerenciar grupos',
+    criar_projetos: 'Criar projetos',
+    editar_projetos: 'Editar projetos',
+    excluir_projetos: 'Excluir projetos',
+    visualizar_todos_projetos: 'Visualizar todos os projetos',
+    visualizar_documentos: 'Visualizar documentos',
+    criar_documentos: 'Criar documento',
+    editar_documentos: 'Editar documentos',
+    excluir_documentos: 'Excluir documentos',
+    download_documentos: 'Download de documentos',
+    compartilhar_documentos: 'Compartilhar documentos',
+    criar_templates: 'Criar modelos de documento',
+    editar_templates: 'Editar modelos de documento',
+    excluir_templates: 'Excluir modelos de documento',
+    assinar_documentos: 'Assinar documentos',
+    solicitar_assinatura: 'Solicitar assinatura',
+    alimentar_ia: 'Alimentar IA',
+    gerenciar_ia: 'Gerenciar IA',
+    acesso_total: 'Acesso total',
+  };
 
   useEffect(() => {
     loadUsers();
@@ -70,15 +104,15 @@ export function UserManagementPanel({ currentUser }: UserManagementPanelProps) {
       setDialogOpen(false);
       loadUsers();
       alert('Usuário criado com sucesso! Ele terá que alterar a senha no primeiro login.');
-    } catch (error: any) {
-      alert(error.message);
+    } catch (error: unknown) {
+      const msg = error instanceof Error ? error.message : String(error);
+      alert(msg || 'Erro ao criar usuário');
     }
   };
 
   const handleEditUserClick = (user: User) => {
     setEditingUser(user);
     setEditedUserName(user.name);
-    setEditedUserEmail(user.email);
     setEditedUserRole(user.role);
     setEditDialogOpen(true);
   };
@@ -91,7 +125,7 @@ export function UserManagementPanel({ currentUser }: UserManagementPanelProps) {
       const updatedUser: User = {
         ...editingUser,
         name: editedUserName,
-        email: editedUserEmail,
+        email: editingUser.email, // E-mail não pode ser alterado
         role: editedUserRole,
       };
       const result = await apiService.updateUser(updatedUser);
@@ -182,23 +216,75 @@ export function UserManagementPanel({ currentUser }: UserManagementPanelProps) {
     }
   };
 
+  const handlePermissionsClick = async (user: User) => {
+    setPermissionsUser(user);
+    setPermissionsDialogOpen(true);
+    setLoadingPerms(true);
+    try {
+      const perms = await permissionsService.getUserPermissions(user);
+      setLocalPerms({
+        gerenciar_usuarios: perms.gerenciar_usuarios,
+        gerenciar_grupos: perms.gerenciar_grupos,
+        criar_projetos: perms.criar_projetos,
+        editar_projetos: perms.editar_projetos,
+        excluir_projetos: perms.excluir_projetos,
+        visualizar_todos_projetos: perms.visualizar_todos_projetos,
+        visualizar_documentos: perms.visualizar_documentos,
+        criar_documentos: perms.criar_documentos,
+        editar_documentos: perms.editar_documentos,
+        excluir_documentos: perms.excluir_documentos,
+        download_documentos: perms.download_documentos,
+        compartilhar_documentos: perms.compartilhar_documentos,
+        criar_templates: perms.criar_templates,
+        editar_templates: perms.editar_templates,
+        excluir_templates: perms.excluir_templates,
+        assinar_documentos: perms.assinar_documentos,
+        solicitar_assinatura: perms.solicitar_assinatura,
+        alimentar_ia: perms.alimentar_ia,
+        gerenciar_ia: perms.gerenciar_ia,
+        acesso_total: perms.acesso_total,
+      });
+    } catch (e) {
+      alert((e as Error).message);
+    } finally {
+      setLoadingPerms(false);
+    }
+  };
+
+  const handleSavePermissions = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!permissionsUser) return;
+    setSavingPerms(true);
+    try {
+      await apiService.updateUserPermissions(permissionsUser.id, localPerms);
+      setPermissionsDialogOpen(false);
+      setPermissionsUser(null);
+      alert('Permissões salvas com sucesso! O usuário pode recarregar a página para que as alterações tenham efeito.');
+    } catch (e) {
+      alert((e as Error).message);
+    } finally {
+      setSavingPerms(false);
+    }
+  };
+
   const getRoleLabel = (role: User['role']) => {
-    const labels: Record<User['role'], string> = {
+    const labels: Record<string, string> = {
       'admin': 'Administrador',
       'director': 'Diretor',
       'manager': 'Gerente',
       'technical_responsible': 'Responsável Técnico',
       'operational': 'Operacional',
-      'user': 'Usuário' // Embora 'user' não seja um papel dos requisitos, mantemos aqui para consistência
+      'external': 'Usuário Externo',
+      'user': 'Usuário'
     };
-    return labels[role];
+    return labels[role] || role;
   };
 
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <h3 className="text-lg font-medium">Gerenciamento de Usuários</h3>
-        {(currentUser.role === 'admin' || currentUser.role === 'manager' || currentUser.role === 'technical_responsible') && (
+        {perms.canManageUsers() && (
           <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
             <DialogTrigger asChild>
               <Button>
@@ -260,6 +346,7 @@ export function UserManagementPanel({ currentUser }: UserManagementPanelProps) {
                       <SelectItem value="manager">Gerente</SelectItem>
                       <SelectItem value="technical_responsible">Responsável Técnico</SelectItem>
                       <SelectItem value="operational">Operacional</SelectItem>
+                      <SelectItem value="external">Usuário Externo</SelectItem>
                     </SelectContent>
                   </Select>
                 </div>
@@ -296,12 +383,12 @@ export function UserManagementPanel({ currentUser }: UserManagementPanelProps) {
         <Card className="text-center py-12">
           <CardContent>
             <h3 className="text-lg mb-2">Nenhum usuário encontrado</h3>
-            {currentUser.role === 'admin' && (
+            {perms.canManageUsers() && (
               <p className="text-sm text-gray-600 mb-4">
                 Comece adicionando seu primeiro usuário.
               </p>
             )}
-            {currentUser.role === 'admin' && (
+            {perms.canManageUsers() && (
               <Button onClick={() => setDialogOpen(true)}>
                 <Plus className="mr-2 h-4 w-4" /> Adicionar primeiro usuário
               </Button>
@@ -319,6 +406,17 @@ export function UserManagementPanel({ currentUser }: UserManagementPanelProps) {
                 </div>
                 <div className="flex items-center gap-3">
                   <Badge variant="secondary">{getRoleLabel(userItem.role)}</Badge>
+                  {perms.canManageUsers() && (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => handlePermissionsClick(userItem)}
+                      title="Gerenciar permissões"
+                    >
+                      <Shield className="h-4 w-4 mr-1" />
+                      Permissões
+                    </Button>
+                  )}
                   <Button
                     size="sm"
                     variant="outline"
@@ -386,6 +484,58 @@ export function UserManagementPanel({ currentUser }: UserManagementPanelProps) {
         </Dialog>
       )}
 
+      {/* Dialog de Gerenciamento de Permissões */}
+      {permissionsUser && (
+        <Dialog open={permissionsDialogOpen} onOpenChange={setPermissionsDialogOpen}>
+          <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
+            <DialogHeader>
+              <DialogTitle>Gerenciar Permissões</DialogTitle>
+              <DialogDescription>
+                <span className="font-medium text-foreground">{permissionsUser.name}</span>
+                <br />
+                <span className="text-muted-foreground">{permissionsUser.email}</span>
+              </DialogDescription>
+            </DialogHeader>
+            <form onSubmit={handleSavePermissions} className="space-y-4 py-4">
+              {loadingPerms ? (
+                <div className="py-8 text-center text-muted-foreground">Carregando permissões...</div>
+              ) : (
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  {(Object.keys(PERMISSION_LABELS) as (keyof Omit<UserPermissions, 'userId'>)[]).map(key => (
+                    <div key={key} className="flex items-center space-x-2">
+                      <Checkbox
+                        id={`perm-${key}`}
+                        checked={localPerms[key] ?? false}
+                        onCheckedChange={(checked) =>
+                          setLocalPerms(prev => ({ ...prev, [key]: checked === true }))
+                        }
+                      />
+                      <Label
+                        htmlFor={`perm-${key}`}
+                        className="text-sm font-normal cursor-pointer leading-tight"
+                      >
+                        {PERMISSION_LABELS[key]}
+                      </Label>
+                    </div>
+                  ))}
+                </div>
+              )}
+              <p className="text-xs text-muted-foreground">
+                O usuário precisará sair e entrar novamente no sistema para que as alterações tenham efeito.
+              </p>
+              <div className="flex justify-end gap-2 pt-2">
+                <Button type="button" variant="outline" onClick={() => setPermissionsDialogOpen(false)}>
+                  Cancelar
+                </Button>
+                <Button type="submit" disabled={savingPerms || loadingPerms}>
+                  {savingPerms ? 'Salvando...' : 'Salvar Permissões'}
+                </Button>
+              </div>
+            </form>
+          </DialogContent>
+        </Dialog>
+      )}
+
       {/* Dialog para Editar/Excluir Usuário */}
       {editingUser && (
         <Dialog open={editDialogOpen} onOpenChange={setEditDialogOpen}>
@@ -407,29 +557,37 @@ export function UserManagementPanel({ currentUser }: UserManagementPanelProps) {
                 />
               </div>
               <div className="space-y-2">
-                <Label htmlFor="edit-user-email">E-mail *</Label>
+                <Label htmlFor="edit-user-email">E-mail</Label>
                 <Input
                   id="edit-user-email"
                   type="email"
-                  value={editedUserEmail}
-                  onChange={(e) => setEditedUserEmail(e.target.value)}
-                  required
+                  value={editingUser.email}
+                  disabled
+                  className="bg-muted cursor-not-allowed"
                 />
               </div>
               <div className="space-y-2">
                 <Label htmlFor="edit-user-role">Papel *</Label>
-                <Select value={editedUserRole} onValueChange={(value: User['role']) => setEditedUserRole(value)}>
-                  <SelectTrigger>
-                    <SelectValue placeholder="Selecione um papel" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="admin">Administrador</SelectItem>
-                    <SelectItem value="director">Diretor</SelectItem>
-                    <SelectItem value="manager">Gerente</SelectItem>
-                    <SelectItem value="technical_responsible">Responsável Técnico</SelectItem>
-                    <SelectItem value="operational">Operacional</SelectItem>
-                  </SelectContent>
-                </Select>
+                {editingUser.role === 'external' ? (
+                  <p className="text-sm text-muted-foreground py-2 px-3 bg-muted rounded-md">
+                    {getRoleLabel(editingUser.role)} — o papel não pode ser modificado
+                  </p>
+                ) : (
+                  <Select key={editingUser.id} value={editedUserRole} onValueChange={(value: User['role']) => setEditedUserRole(value)}>
+                    <SelectTrigger>
+                      <SelectValue placeholder="Selecione um papel">
+                        {getRoleLabel(editedUserRole)}
+                      </SelectValue>
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="admin">Administrador</SelectItem>
+                      <SelectItem value="director">Diretor</SelectItem>
+                      <SelectItem value="manager">Gerente</SelectItem>
+                      <SelectItem value="technical_responsible">Responsável Técnico</SelectItem>
+                      <SelectItem value="operational">Operacional</SelectItem>
+                    </SelectContent>
+                  </Select>
+                )}
               </div>
               <div className="flex justify-end gap-2">
                 <Button type="button" variant="outline" onClick={() => setEditDialogOpen(false)}>

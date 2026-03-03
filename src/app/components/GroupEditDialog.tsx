@@ -6,8 +6,9 @@ import { Input } from './ui/input';
 import { Label } from './ui/label';
 import { Textarea } from './ui/textarea';
 import { MultiSelect } from './ui/multi-select';
-import { UserSearchSelect } from './UserSearchSelect'; // Importar novo componente
-import { ProjectSearchSelect } from './ProjectSearchSelect'; // Importar componente de busca de projetos
+import { UserSearchSelect } from './UserSearchSelect';
+import { ProjectSearchSelect } from './ProjectSearchSelect';
+import { Avatar, AvatarFallback } from './ui/avatar';
 import { Group, User, Project, apiService } from '../../services/api';
 import { toast } from 'sonner';
 
@@ -144,20 +145,52 @@ export function GroupEditDialog({
             <Label htmlFor="edit-group-members">Membros</Label>
             <UserSearchSelect
               users={allUsers}
-              selectedIds={editedMemberIds}
-              onSelectedChange={setEditedMemberIds}
+              selectedUsers={editedMemberIds}
+              onSelectionChange={setEditedMemberIds}
               placeholder="Busque por nome ou email..."
-              maxResults={8}
             />
+          </div>
+          <div className="space-y-3 pt-2">
+            <Label className="text-xs text-gray-500 uppercase font-semibold">Lista de Membros</Label>
+            <div className="grid grid-cols-1 gap-2">
+              {editedMemberIds.length > 0 ? (
+                editedMemberIds.map(id => {
+                  const user = allUsers.find(u => u.id === id);
+                  if (!user) return null;
+                  return (
+                    <div key={id} className="flex items-center justify-between p-2 border rounded-md bg-gray-50">
+                      <div className="flex items-center gap-3">
+                        <Avatar className="h-8 w-8">
+                          <AvatarFallback className="text-[10px] bg-slate-200">{user.name.charAt(0).toUpperCase()}</AvatarFallback>
+                        </Avatar>
+                        <div>
+                          <p className="text-sm font-medium">{user.name}</p>
+                          <p className="text-[10px] text-gray-500">{user.email}</p>
+                        </div>
+                      </div>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="text-red-500 hover:text-red-700 hover:bg-red-50 h-8 px-2"
+                        onClick={() => setEditedMemberIds(prev => prev.filter(uid => uid !== id))}
+                      >
+                        Remover
+                      </Button>
+                    </div>
+                  );
+                })
+              ) : (
+                <p className="text-sm text-gray-500 italic py-2 text-center border border-dashed rounded-md">Nenhum membro no grupo.</p>
+              )}
+            </div>
           </div>
           <div className="space-y-2">
             <Label htmlFor="edit-group-responsible">Responsável pelo Grupo (opcional)</Label>
             <UserSearchSelect
               users={allUsers}
-              selectedIds={editedResponsibleId ? [editedResponsibleId] : []}
-              onSelectedChange={(ids) => setEditedResponsibleId(ids[0])}
+              selectedUsers={editedResponsibleId ? [editedResponsibleId] : []}
+              onSelectionChange={(ids) => setEditedResponsibleId(ids[0])}
               placeholder="Busque por nome ou email..."
-              maxResults={8}
             />
           </div>
           <div className="space-y-2">

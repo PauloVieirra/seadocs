@@ -43,16 +43,14 @@ export function DocumentModelManagementPanel({ currentUser }: DocumentModelManag
   const loadDocumentModels = async () => {
     setLoading(true);
     try {
-      const models = await apiService.getDocumentModels();
-      const localDrafts = apiService.getLocalModelDrafts();
-      
-      // Combinar modelos salvos no banco com rascunhos locais
-      // Evitar duplicidade se um rascunho local for de um modelo que já existe no banco
+      const [models, localDrafts] = await Promise.all([
+        apiService.getDocumentModels(),
+        apiService.getLocalModelDrafts()
+      ]);
       const filteredLocalDrafts = localDrafts.filter(ld => {
         const idFromKey = ld.id.replace('model_draft_', '');
         return !models.some(m => m.id === idFromKey);
       });
-
       setDocumentModels([...filteredLocalDrafts, ...models]);
     } catch (error) {
       console.error('Erro ao carregar modelos:', error);
@@ -72,10 +70,8 @@ export function DocumentModelManagementPanel({ currentUser }: DocumentModelManag
       }
 
       if (selectedModelForEdit.isLocalDraft) {
-        // Se era um rascunho local, agora vamos criar ele oficialmente no banco (como rascunho ou publicado)
         await apiService.createDocumentModel(name, type, templateContent, false, undefined, isDraft, aiGuidance);
-        // Limpar o rascunho local após salvar no banco
-        localStorage.removeItem(selectedModelForEdit.id);
+        await apiService.deleteLocalModelDraft(selectedModelForEdit.id);
       } else {
         // Modelo já existente no banco
         const updatedModel: DocumentModel = { ...selectedModelForEdit, name, type, templateContent, isDraft, aiGuidance };
@@ -113,16 +109,12 @@ export function DocumentModelManagementPanel({ currentUser }: DocumentModelManag
     setDeletingModelId(model.id);
     try {
       if (model.isLocalDraft) {
-        // Se for um rascunho local, removemos diretamente do localStorage
-        localStorage.removeItem(model.id);
+        await apiService.deleteLocalModelDraft(model.id);
         toast.success('Rascunho local excluído com sucesso!');
       } else {
-        // Se for um modelo do banco, chamamos a API
         const success = await apiService.deleteDocumentModel(model.id);
-        
         if (success) {
-          // Também tenta limpar qualquer rascunho local que possa existir para este ID
-          localStorage.removeItem(`model_draft_${model.id}`);
+          await apiService.deleteLocalModelDraft(`model_draft_${model.id}`);
           toast.success('Modelo excluído com sucesso!');
         } else {
           toast.error('Não foi possível encontrar o modelo para excluir.');
@@ -143,8 +135,8 @@ export function DocumentModelManagementPanel({ currentUser }: DocumentModelManag
       <div className="flex items-center justify-between">
         <h3 className="text-lg font-medium">Gerenciamento de Modelos de Documento</h3>
         {(currentUser.role === 'admin' || currentUser.role === 'manager' || currentUser.role === 'technical_responsible') ? (
-          <Button onClick={() => {
-            localStorage.removeItem('model_draft_new'); // Sempre limpa rascunho 'novo' ao clicar em criar novo
+          <Button onClick={async () => {
+            await apiService.deleteLocalModelDraft('model_draft_new');
             navigate('/create-document-model');
           }}>
             <Plus className="mr-2 h-4 w-4" /> Criar Novo Modelo
@@ -189,7 +181,7 @@ export function DocumentModelManagementPanel({ currentUser }: DocumentModelManag
           {documentModels.map(model => (
             <Card
               key={model.id}
-              className="hover:shadow-lg transition-shadow cursor-pointer" // Adiciona cursor-pointer de volta e torna o card clicável
+              className="hover:shadow-lg transition-shadow cursor-pointer overflow-hidden"
               onClick={(e) => {
                 // Só abre o editor se não clicou em um botão
                 if (!(e.target as HTMLElement).closest('button')) {
@@ -197,10 +189,10 @@ export function DocumentModelManagementPanel({ currentUser }: DocumentModelManag
                 }
               }} // Adiciona o handler de clique ao card
             >
-              <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-                <div>
-                  <div className="flex items-center gap-2">
-                    <CardTitle className="text-lg">{model.name}</CardTitle>
+              <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2 overflow-hidden">
+                <div className="flex-1 min-w-0">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <CardTitle className="text-lg break-words">{model.name}</CardTitle>
                     {model.isLocalDraft && (
                       <Badge variant="outline" className="bg-blue-50 text-blue-700 border-blue-200">
                         Rascunho Local (Não Salvo)
@@ -215,7 +207,7 @@ export function DocumentModelManagementPanel({ currentUser }: DocumentModelManag
                   <CardDescription>{model.type}</CardDescription>
                 </div>
                 {(currentUser.role === 'admin' || currentUser.role === 'manager' || currentUser.role === 'technical_responsible') && (
-                  <div className="flex gap-1">
+                  <div className="flex gap-1 flex-shrink-0">
                     <Button
                       variant="ghost"
                       size="icon"

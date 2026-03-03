@@ -3,12 +3,12 @@ import { Button } from './ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from './ui/card';
 import { Badge } from './ui/badge';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from './ui/dialog';
-import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from './ui/alert-dialog';
 import { Input } from './ui/input';
 import { Label } from './ui/label';
 import { Textarea } from './ui/textarea';
-import { Plus, FileText, Search, Trash2, Settings, Rocket, Trash } from 'lucide-react'; // Adicionado Trash2, Settings
+import { Plus, FileText, Search, Trash2, Settings, Rocket, Trash, Archive } from 'lucide-react';
 import { apiService, type Project, type User, type Group } from '../../services/api';
+import { usePermissions } from '../../hooks/usePermissions';
 import { DatabaseConfigDialog } from './DatabaseConfigDialog';
 import { MultiSelect } from './ui/multi-select'; // Importar MultiSelect
 import { UserSearchSelect } from './UserSearchSelect'; // Importar novo componente
@@ -24,6 +24,7 @@ interface DashboardProps {
 }
 
 export function Dashboard({ user, onProjectSelect }: DashboardProps) { // Removido onLogout
+  const perms = usePermissions(user);
   const [projects, setProjects] = useState<Project[]>([]);
   const [filteredProjects, setFilteredProjects] = useState<Project[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
@@ -38,8 +39,8 @@ export function Dashboard({ user, onProjectSelect }: DashboardProps) { // Removi
   const [selectedGroupIds, setSelectedGroupIds] = useState<string[]>([]); // Novo estado para IDs de grupos selecionados
   const [deletingProjectId, setDeletingProjectId] = useState<string | null>(null);
   const [passwordDialogOpen, setPasswordDialogOpen] = useState(false);
-  const [projectToPublish, setProjectToPublish] = useState<string | null>(null);
-  const [projectToRemove, setProjectToRemove] = useState<string | null>(null);
+  const [passwordDialogMode, setPasswordDialogMode] = useState<'archive' | 'delete'>('delete');
+  const [projectForPasswordAction, setProjectForPasswordAction] = useState<string | null>(null);
   const [settingsProjectId, setSettingsProjectId] = useState<string | null>(null);
   const [settingsDialogOpen, setSettingsDialogOpen] = useState(false);
 
@@ -61,6 +62,11 @@ export function Dashboard({ user, onProjectSelect }: DashboardProps) { // Removi
     try {
       setLoading(true);
       await apiService.publishProject(projectId);
+      const updated = await apiService.getProject(projectId);
+      if (updated) {
+        setProjects(prev => prev.map(p => p.id === projectId ? updated : p));
+        setFilteredProjects(prev => prev.map(p => p.id === projectId ? updated : p));
+      }
       toast.success('Projeto publicado com sucesso!');
       await loadProjects();
     } catch (error: any) {
@@ -70,16 +76,45 @@ export function Dashboard({ user, onProjectSelect }: DashboardProps) { // Removi
     }
   };
 
-  const handleRemoveProjectWithPassword = async (password: string) => {
-    if (!projectToRemove) return;
-    
-    try {
-      await apiService.deleteProjectWithPassword(projectToRemove, password);
-      toast.success('Projeto removido com sucesso!');
-      await loadProjects();
-      setProjectToRemove(null);
-    } catch (error: any) {
-      throw error; // Re-throw para o diálogo lidar com o erro
+  const handlePasswordConfirm = async (password: string) => {
+    if (!projectForPasswordAction) return;
+    const projectId = projectForPasswordAction;
+
+    if (passwordDialogMode === 'archive') {
+      try {
+        setLoading(true);
+        await apiService.archiveProjectWithPassword(projectId, password);
+        const updated = await apiService.getProject(projectId);
+        if (updated) {
+          setProjects(prev => prev.map(p => p.id === projectId ? updated : p));
+          setFilteredProjects(prev => prev.map(p => p.id === projectId ? updated : p));
+        }
+        setPasswordDialogOpen(false);
+        setProjectForPasswordAction(null);
+        toast.success('Projeto arquivado com sucesso!');
+        await loadProjects();
+      } catch (error: any) {
+        toast.error(error?.message || 'Erro ao arquivar projeto');
+        throw error;
+      } finally {
+        setLoading(false);
+      }
+    } else {
+      try {
+        setDeletingProjectId(projectId);
+        await apiService.deleteProjectWithPassword(projectId, password);
+        setProjects(prev => prev.filter(p => p.id !== projectId));
+        setFilteredProjects(prev => prev.filter(p => p.id !== projectId));
+        setPasswordDialogOpen(false);
+        setProjectForPasswordAction(null);
+        toast.success('Projeto removido com sucesso!');
+        await loadProjects();
+      } catch (error: any) {
+        toast.error(error?.message || 'Erro ao remover projeto');
+        throw error;
+      } finally {
+        setDeletingProjectId(null);
+      }
     }
   };
 
@@ -114,47 +149,33 @@ export function Dashboard({ user, onProjectSelect }: DashboardProps) { // Removi
     
     try {
       const project = await apiService.createProject(newProjectName, newProjectDescription, selectedResponsibleIds, selectedGroupIds);
-      
-      // Feedback visual se o projeto foi criado apenas localmente
-      if (!apiService.isUUID(project.id) && user.role === 'admin') {
-        toast.info('Projeto criado localmente. Para salvar no Supabase, use uma conta real.');
-      } else {
-        toast.success('Projeto criado com sucesso!');
-      }
-      
+      setProjects(prev => [...prev, project]);
+      setFilteredProjects(prev => [...prev, project]);
+      toast.success('Projeto criado com sucesso!');
       setNewProjectName('');
       setNewProjectDescription('');
-      setSelectedResponsibleIds([]); // Limpar seleção após criar projeto
-      setSelectedGroupIds([]); // Limpar seleção de grupos após criar projeto
+      setSelectedResponsibleIds([]);
+      setSelectedGroupIds([]);
       setDialogOpen(false);
-      loadProjects();
+      await loadProjects();
     } catch (error: any) {
       console.error('Erro ao criar projeto:', error);
       toast.error('Erro ao criar projeto: ' + error.message);
     }
   };
 
-  const handleDeleteProject = async (projectId: string) => {
-    setDeletingProjectId(projectId);
-    try {
-      await apiService.deleteProject(projectId);
-      loadProjects();
-    } catch (error: any) {
-      console.error('Erro ao deletar projeto:', error);
-    } finally {
-      setDeletingProjectId(null);
-    }
-  };
 
-  const getStatusBadge = (status: Project['status']) => {
+  const getStatusBadge = (project: Project) => {
+    if (project.estado === false) return <Badge variant="outline">Arquivado</Badge>;
     const variants: Record<Project['status'], { label: string; variant: 'default' | 'secondary' | 'destructive' | 'outline' }> = {
-      'draft': { label: 'Rascunho', variant: 'secondary' },
+      'draft': { label: 'Não publicado', variant: 'secondary' },
+      'published': { label: 'Publicado', variant: 'default' },
+      'archived': { label: 'Arquivado', variant: 'outline' },
       'in-progress': { label: 'Em andamento', variant: 'default' },
       'review': { label: 'Em revisão', variant: 'outline' },
       'approved': { label: 'Aprovado', variant: 'default' }
     };
-
-    const { label, variant } = variants[status];
+    const { label, variant } = variants[project.status] ?? variants['draft'];
     return <Badge variant={variant}>{label}</Badge>;
   };
 
@@ -183,7 +204,7 @@ export function Dashboard({ user, onProjectSelect }: DashboardProps) { // Removi
               </p>
             </div>
             <div className="flex items-center gap-2">
-             {user.role === 'admin' && ( /* Apenas admin tem permissão para configurar API/Banco de Dados */
+             {perms.canConfigureSystem() && (
               <Button variant="outline" size="sm" onClick={() => setConfigDialogOpen(true)}>
                 {/* <Settings className="w-4 h-4 mr-2" /> */}
                 Configurar API
@@ -204,7 +225,7 @@ export function Dashboard({ user, onProjectSelect }: DashboardProps) { // Removi
         <div className="mb-6">
           <div className="flex items-center justify-between mb-4">
             <h2 className="text-xl font-semibold">Meus Projetos</h2>
-            {user.role === 'admin' && (
+            {perms.canCreateProjects() && (
               <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
                 <DialogTrigger asChild>
                   <Button>
@@ -244,10 +265,9 @@ export function Dashboard({ user, onProjectSelect }: DashboardProps) { // Removi
                       <Label htmlFor="project-responsibles">Responsáveis (opcional)</Label>
                       <UserSearchSelect
                         users={allUsers}
-                        selectedIds={selectedResponsibleIds}
-                        onSelectedChange={setSelectedResponsibleIds}
+                        selectedUsers={selectedResponsibleIds}
+                        onSelectionChange={setSelectedResponsibleIds}
                         placeholder="Busque por nome ou email..."
-                        maxResults={8}
                       />
                     </div>
                     <div className="space-y-2">
@@ -305,11 +325,11 @@ export function Dashboard({ user, onProjectSelect }: DashboardProps) { // Removi
               <FileText className="w-12 h-12 mx-auto text-gray-400 mb-4" />
               <h3 className="text-lg mb-2">Nenhum projeto encontrado</h3>
               <p className="text-sm text-gray-600 mb-4">
-                {user.role === 'admin' 
+                {perms.canCreateProjects() 
                   ? 'Comece criando seu primeiro projeto de especificação' 
                   : 'Você ainda não foi incluído em nenhum projeto.'}
               </p>
-              {user.role === 'admin' && (
+              {perms.canCreateProjects() && (
                 <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
                   <DialogTrigger asChild>
                     <Button>
@@ -336,108 +356,104 @@ export function Dashboard({ user, onProjectSelect }: DashboardProps) { // Removi
             {filteredProjects.map(project => (
               <Card 
                 key={project.id} 
-                className="hover:shadow-lg transition-shadow cursor-pointer group relative"
+                className="hover:shadow-lg transition-shadow cursor-pointer group relative overflow-hidden"
                 onClick={() => onProjectSelect(project.id)}
               >
-                <CardHeader>
-                  <div className="flex items-start justify-between gap-2">
-                    <div className="flex-1">
-                      <CardTitle className="text-lg">{project.name}</CardTitle>
-                      {project.groupIds && project.groupIds.length > 0 && (
-                        <div className="flex flex-wrap gap-1 mt-1">
-                          {project.groupIds
-                            .map(id => allGroups.find(g => g.id === id)?.name || '')
-                            .filter(name => name !== '')
-                            .map(name => (
-                              <Badge key={name} variant="outline" className="text-[10px] py-0 px-1 font-normal bg-blue-50 text-blue-700 border-blue-200">
-                                {name}
-                              </Badge>
-                            ))
-                          }
-                        </div>
-                      )}
-                    </div>
-                    <div className="flex items-center gap-2">
-                      {getStatusBadge(project.status)}
-                      {user.role === 'admin' && (
-                        <div className="flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            className="text-gray-500 hover:text-blue-600 hover:bg-blue-50"
-                            onClick={() => {
-                              setSettingsProjectId(project.id);
-                              setSettingsDialogOpen(true);
-                            }}
-                          >
-                            <Settings className="w-4 h-4" />
-                          </Button>
-                          
-                          {/* Novo Botão Publicar / Remover conforme regras */}
-                          {!apiService.isUUID(project.id) ? (
-                            <Button
-                              variant="outline"
-                              size="sm"
-                              className="bg-green-50 text-green-700 border-green-200 hover:bg-green-100 h-8 text-[11px] px-2"
-                              onClick={() => handlePublishProject(project.id)}
-                            >
-                              <Rocket className="w-3 h-3 mr-1" />
-                              Publicar
-                            </Button>
-                          ) : (
-                            <Button
-                              variant="outline"
-                              size="sm"
-                              className="bg-red-50 text-red-700 border-red-200 hover:bg-red-100 h-8 text-[11px] px-2"
-                              onClick={() => {
-                                setProjectToRemove(project.id);
-                                setPasswordDialogOpen(true);
-                              }}
-                            >
-                              <Trash className="w-3 h-3 mr-1" />
-                              Remover Projeto
-                            </Button>
-                          )}
-
-                          <AlertDialog>
-                            <AlertDialogTrigger asChild>
-                              <Button
-                                variant="ghost"
-                                size="sm"
-                                className="text-red-600 hover:text-red-700 hover:bg-red-50"
-                                disabled={deletingProjectId === project.id}
-                              >
-                                <Trash2 className="w-4 h-4" />
-                              </Button>
-                            </AlertDialogTrigger>
-                            <AlertDialogContent>
-                              <AlertDialogHeader>
-                                <AlertDialogTitle>Você tem certeza?</AlertDialogTitle>
-                                <AlertDialogDescription>
-                                  Esta ação não pode ser desfeita. Isso excluirá permanentemente o projeto "{project.name}" e todos os seus documentos.
-                                </AlertDialogDescription>
-                              </AlertDialogHeader>
-                              <AlertDialogFooter>
-                                <AlertDialogCancel>Cancelar</AlertDialogCancel>
-                                <AlertDialogAction
-                                  onClick={() => handleDeleteProject(project.id)}
-                                  disabled={deletingProjectId === project.id}
-                                  className="bg-red-600 hover:bg-red-700"
-                                >
-                                  {deletingProjectId === project.id ? 'Deletando...' : 'Deletar'}
-                                </AlertDialogAction>
-                              </AlertDialogFooter>
-                            </AlertDialogContent>
-                          </AlertDialog>
-                        </div>
-                      )}
-                    </div>
-                  </div>
+                <CardHeader className="!flex flex-col space-y-3">
+                  {/* Título em linha única, truncado */}
+                  <CardTitle className="text-lg truncate pr-1" title={project.name}>
+                    {project.name}
+                  </CardTitle>
                   {project.description && (
                     <CardDescription className="line-clamp-2">
                       {project.description}
                     </CardDescription>
                   )}
+                  {project.groupIds && project.groupIds.length > 0 && (
+                    <div className="flex flex-wrap gap-1">
+                      {project.groupIds
+                        .map(id => allGroups.find(g => g.id === id)?.name || '')
+                        .filter(name => name !== '')
+                        .map(name => (
+                          <Badge key={name} variant="outline" className="text-[10px] py-0 px-1 font-normal bg-blue-50 text-blue-700 border-blue-200">
+                            {name}
+                          </Badge>
+                        ))
+                      }
+                    </div>
+                  )}
+                  {/* Status e ações em linha que pode quebrar */}
+                  <div className="flex flex-wrap items-center gap-2 pt-1" onClick={(e) => e.stopPropagation()}>
+                    {getStatusBadge(project)}
+                    {(perms.canEditProjects() || perms.canDeleteProjects()) && (
+                      <>
+                        {perms.canEditProjects() && (
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-8 w-8 text-gray-500 hover:text-blue-600 hover:bg-blue-50 shrink-0"
+                          onClick={() => {
+                            setSettingsProjectId(project.id);
+                            setSettingsDialogOpen(true);
+                          }}
+                        >
+                          <Settings className="w-4 h-4" />
+                        </Button>
+                        )}
+                        {perms.canEditProjects() && project.status === 'draft' ? (
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            className="bg-green-50 text-green-700 border-green-200 hover:bg-green-100 h-8 text-xs shrink-0"
+                            onClick={() => handlePublishProject(project.id)}
+                          >
+                            <Rocket className="w-3 h-3 mr-1" />
+                            Publicar
+                          </Button>
+                        ) : perms.isAdmin() && project.estado === true ? (
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            className="bg-amber-50 text-amber-700 border-amber-200 hover:bg-amber-100 h-8 text-xs shrink-0"
+                            onClick={() => {
+                              setProjectForPasswordAction(project.id);
+                              setPasswordDialogMode('archive');
+                              setPasswordDialogOpen(true);
+                            }}
+                          >
+                            <Archive className="w-3 h-3 mr-1" />
+                            Arquivar
+                          </Button>
+                        ) : perms.isAdmin() && project.estado === false ? (
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            className="bg-green-50 text-green-700 border-green-200 hover:bg-green-100 h-8 text-xs shrink-0"
+                            onClick={() => handlePublishProject(project.id)}
+                          >
+                            <Rocket className="w-3 h-3 mr-1" />
+                            Publicar
+                          </Button>
+                        ) : null}
+                        {perms.canDeleteProjects() && (
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-8 w-8 text-red-600 hover:text-red-700 hover:bg-red-50 shrink-0"
+                            disabled={deletingProjectId === project.id}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setProjectForPasswordAction(project.id);
+                              setPasswordDialogMode('delete');
+                              setPasswordDialogOpen(true);
+                            }}
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </Button>
+                        )}
+                      </>
+                    )}
+                  </div>
                 </CardHeader>
                 <CardContent>
                   <div className="space-y-2 text-sm text-gray-600">
@@ -487,11 +503,16 @@ export function Dashboard({ user, onProjectSelect }: DashboardProps) { // Removi
       
       <PasswordConfirmationDialog
         open={passwordDialogOpen}
-        onOpenChange={setPasswordDialogOpen}
-        onConfirm={handleRemoveProjectWithPassword}
-        title="Remover Projeto"
-        description="Esta ação requer sua senha para confirmar a remoção permanente do projeto do Supabase."
-        confirmLabel="Remover do Banco de Dados"
+        onOpenChange={(open) => {
+          setPasswordDialogOpen(open);
+          if (!open) setProjectForPasswordAction(null);
+        }}
+        onConfirm={handlePasswordConfirm}
+        title={passwordDialogMode === 'archive' ? 'Arquivar Projeto' : 'Remover Projeto'}
+        description={passwordDialogMode === 'archive'
+          ? 'Digite sua senha para confirmar o arquivamento do projeto. O projeto ficará visível apenas para administradores.'
+          : 'Esta ação requer sua senha para confirmar a remoção permanente do projeto e todos os seus documentos.'}
+        confirmLabel={passwordDialogMode === 'archive' ? 'Arquivar' : 'Remover do Banco de Dados'}
       />
       
       {settingsProjectId && (

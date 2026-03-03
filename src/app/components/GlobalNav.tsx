@@ -13,6 +13,7 @@ import {
   Library
 } from 'lucide-react';
 import { type User } from '../../services/api';
+import { usePermissions } from '../../hooks/usePermissions';
 import { useNavigate, useLocation } from 'react-router-dom';
 import {
   Sheet,
@@ -35,6 +36,7 @@ export function GlobalNav({
   onLogout,
   onConfigApi,
 }: GlobalNavProps) {
+  const perms = usePermissions(user);
   const navigate = useNavigate();
   const location = useLocation();
 
@@ -61,15 +63,15 @@ export function GlobalNav({
             SEAGID
           </h1>
           <nav className="hidden md:flex items-center space-x-2">
-            {/* Admin Dashboard para o perfil admin */}
-            {user.role === 'admin' && (
+            {/* Dashboard: admin vê overview, gerente vê projetos (Dashboard.tsx) */}
+            {(perms.isAdmin() || perms.isManager()) && (
               <Button
                 variant="ghost"
                 size="sm"
-                onClick={() => navigate('/admin-dashboard')}
-                className={isActive('/admin-dashboard') ? 'bg-gray-100' : ''}
+                onClick={() => navigate(perms.isAdmin() ? '/admin-dashboard' : '/projects')}
+                className={isActive(perms.isAdmin() ? '/admin-dashboard' : '/projects') ? 'bg-gray-100' : ''}
               >
-                <LayoutDashboard className="w-4 h-4 mr-2" /> Admin Dashboard
+                <LayoutDashboard className="w-4 h-4 mr-2" /> Dashboard
               </Button>
             )}
 
@@ -94,7 +96,7 @@ export function GlobalNav({
             </Button>
 
             {/* Admin pode gerenciar usuários */}
-            {user.role === 'admin' && (
+            {perms.canManageUsers() && (
               <Button
                 variant="ghost"
                 size="sm"
@@ -106,7 +108,7 @@ export function GlobalNav({
             )}
 
             {/* Admin, Gerente ou Técnico Responsável podem gerenciar modelos de documento e grupos */}
-            {(user.role === 'admin' || user.role === 'manager' || user.role === 'technical_responsible') && (
+            {(perms.canManageTemplates() || perms.canManageGroups()) && (
               <>
                 <Button
                   variant="ghost"
@@ -167,7 +169,7 @@ export function GlobalNav({
               </SheetHeader>
 
               <div className="flex flex-col gap-2 flex-1">
-                {user.role === 'admin' && (
+                {perms.canConfigureSystem() && (
                   <Button 
                     variant="ghost" 
                     className="w-full justify-start h-12 text-gray-700 hover:bg-indigo-50 hover:text-indigo-600" 
