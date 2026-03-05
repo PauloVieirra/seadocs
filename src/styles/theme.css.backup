@@ -263,121 +263,6 @@
   letter-spacing: 0.02em;
 }
 
-/* --- Tabela no modelo de documento --- */
-.ql-editor .sgid-table {
-  margin: 24px 0;
-  width: 100%;
-  overflow-x: auto;
-  border: 1px solid var(--sgid-border-color, #e2e8f0);
-  border-radius: 8px;
-}
-
-.ql-editor .sgid-table .sgid-table-grid {
-  width: 100%;
-  border-collapse: collapse;
-  border: 1px solid var(--sgid-border-color, #e2e8f0);
-  border-radius: 7px;
-  overflow: hidden;
-}
-
-.ql-editor .sgid-table .sgid-table-cell {
-  min-width: var(--sgid-col-width, 80px);
-  min-height: var(--sgid-row-height, 40px);
-  padding: 10px 14px;
-  border: 1px solid var(--sgid-border-color, #e2e8f0);
-  font-size: 13px;
-  background: #fff;
-  vertical-align: top;
-}
-
-.ql-editor .sgid-table .sgid-table-cell:focus {
-  outline: 2px solid rgba(99, 102, 241, 0.5);
-  outline-offset: -1px;
-  background: #fafafa;
-}
-
-.ql-editor .sgid-table .sgid-table-cell:empty::before {
-  content: attr(data-placeholder);
-  color: #94a3b8;
-  font-style: italic;
-}
-
-/* Botão Editar na tabela */
-.sgid-table-edit-btn {
-  position: absolute !important;
-  top: 12px !important;
-  right: 12px !important;
-  width: 32px !important;
-  height: 32px !important;
-  display: flex !important;
-  align-items: center !important;
-  justify-content: center !important;
-  border-radius: 8px !important;
-  background: white !important;
-  border: 1px solid rgba(0, 0, 0, 0.1) !important;
-  color: #3b82f6 !important;
-  cursor: pointer !important;
-  z-index: 50 !important;
-  transition: all 0.2s ease !important;
-  opacity: 0;
-  box-shadow: 0 2px 8px rgba(0,0,0,0.05) !important;
-}
-
-.sgid-table {
-  position: relative;
-}
-
-.sgid-table:hover .sgid-table-edit-btn {
-  opacity: 1;
-}
-
-.sgid-table-edit-btn:hover {
-  background: #eff6ff !important;
-  border-color: #93c5fd !important;
-  transform: scale(1.05);
-  color: #2563eb !important;
-}
-
-.sgid-table-edit-btn svg {
-  pointer-events: none;
-}
-
-/* Botão Excluir na tabela */
-.sgid-table-delete-btn {
-  position: absolute !important;
-  top: 12px !important;
-  right: 48px !important;
-  width: 32px !important;
-  height: 32px !important;
-  display: flex !important;
-  align-items: center !important;
-  justify-content: center !important;
-  border-radius: 8px !important;
-  background: white !important;
-  border: 1px solid rgba(0, 0, 0, 0.1) !important;
-  color: #ef4444 !important;
-  cursor: pointer !important;
-  z-index: 50 !important;
-  transition: all 0.2s ease !important;
-  opacity: 0;
-  box-shadow: 0 2px 8px rgba(0,0,0,0.05) !important;
-}
-
-.sgid-table:hover .sgid-table-delete-btn {
-  opacity: 1;
-}
-
-.sgid-table-delete-btn:hover {
-  background: #fef2f2 !important;
-  border-color: #fecaca !important;
-  transform: scale(1.05);
-  color: #dc2626 !important;
-}
-
-.sgid-table-delete-btn svg {
-  pointer-events: none;
-}
-
 /* --- Floating Toolbar Bottom Refinado --- */
 .sgid-floating-toolbar {
   position: fixed;
@@ -387,50 +272,41 @@
   z-index: 50;
   background: white;
   border-radius: 999px;
-  padding: 0 16px; /* Padding lateral para evitar vazamento */
+  padding: 0 12px; /* Reduzido padding lateral do pai */
   box-shadow: 0 10px 40px rgba(0, 0, 0, 0.2);
   border: 1px solid rgba(0, 0, 0, 0.1);
-  display: inline-flex !important;
+  display: inline-flex !important; /* Muda para inline-flex para abraçar o conteúdo */
   flex-direction: row !important;
   align-items: center !important;
   justify-content: flex-start !important;
   gap: 0;
   transition: all 0.2s ease;
-  width: max-content !important;
+  width: max-content !important; /* Força largura do conteúdo */
   max-width: 98vw;
   white-space: nowrap;
-  overflow: visible; /* Permite dropdowns (ex: alinhamento) abrirem para cima */
+  overflow: visible;
 }
 
 .sgid-floating-toolbar .ql-toolbar.ql-snow {
   border: none !important;
   background: transparent !important;
-  padding: 8px 0 !important;
+  padding: 8px 0 !important; /* Padding vertical no interno */
   display: flex !important;
   flex-direction: row !important;
   align-items: center !important;
   flex-wrap: nowrap !important;
-  width: auto !important;
-  overflow: visible;
+  width: auto !important; /* Impede width 100% */
 }
 
-/* Botões customizados: sem sobreposição, alinhados horizontalmente */
-.sgid-toolbar-custom-buttons {
-  flex-shrink: 0 !important;
-  gap: 8px !important;
-}
-
-/* Forçar ferramentas em linha - sem vazamento */
+/* Forçar ferramentas em linha */
 .sgid-floating-toolbar .ql-formats {
   display: flex !important;
   flex-direction: row !important;
   align-items: center !important;
   margin-right: 12px !important;
-  margin-left: 0 !important;
   margin-bottom: 0 !important;
   padding: 0 !important;
-  float: none !important;
-  flex-shrink: 0 !important;
+  float: none !important; /* Quill usa float às vezes */
 }
 
 .sgid-floating-toolbar .ql-snow.ql-toolbar button,
@@ -451,6 +327,14 @@
   border-radius: 4px;
 }
 
+.sgid-floating-toolbar .ql-snow .ql-picker.ql-header {
+  width: 90px !important;
+}
+
+.sgid-floating-toolbar .ql-snow .ql-picker.ql-size {
+  width: 70px !important;
+}
+
 .sgid-floating-toolbar .ql-snow .ql-picker {
   display: flex !important;
   align-items: center !important;
@@ -458,45 +342,14 @@
   height: 28px !important;
 }
 
-.sgid-floating-toolbar .ql-picker.ql-size {
-  width: 80px !important;
-  min-width: 80px !important;
-  position: relative !important;
-}
-
-/* Garantir que os dropdowns (tamanho, alinhamento) apareçam ao clicar */
-.sgid-floating-toolbar .ql-picker.ql-expanded .ql-picker-options {
-  display: block !important;
-  visibility: visible !important;
-  z-index: 9999 !important;
-  max-height: 280px !important;
-  overflow-y: auto !important;
-}
-
-/* Picker de alinhamento - posição e visibilidade */
-.sgid-floating-toolbar .ql-picker.ql-align.ql-expanded .ql-picker-options {
-  display: block !important;
-  visibility: visible !important;
-  z-index: 9999 !important;
-}
-
-/* Ocultar o outro controle "Normal" (header) - manter apenas o ql-size (linhas 368-375) */
-.sgid-floating-toolbar .ql-picker.ql-header {
-  display: none !important;
-}
-/* Ocultar toolbar padrão do tema snow que o Quill pode criar (duplicata) */
-.quill > .ql-toolbar.ql-snow {
-  display: none !important;
-}
-
 .sgid-toolbar-custom-btn {
-  display: inline-flex !important;
+  display: flex !important;
   flex-direction: row !important;
   align-items: center !important;
-  gap: 6px;
-  padding: 6px 12px;
+  gap: 8px;
+  padding: 8px 16px;
   border-radius: 999px;
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 600;
   color: #374151;
   transition: all 0.2s;
@@ -504,7 +357,6 @@
   border: 1px solid transparent;
   white-space: nowrap;
   flex-shrink: 0 !important; /* Essencial para evitar sobreposição */
-  min-width: fit-content;
 }
 
 .sgid-toolbar-custom-btn:hover {
@@ -527,80 +379,14 @@
   background: #1a1a2e;
 }
 
-/* Forçar os dropdowns do Quill (incl. alinhamento) a abrirem para cima */
-.sgid-floating-toolbar .ql-snow .ql-picker-options,
-.sgid-floating-toolbar .ql-snow .ql-align-group .ql-picker-options {
+/* Forçar os dropdowns do Quill a abrirem para cima */
+.sgid-floating-toolbar .ql-snow .ql-picker-options {
   top: auto !important;
   bottom: 100% !important;
   margin-bottom: 12px !important;
-  margin-top: 0 !important;
   border-radius: 12px !important;
   box-shadow: 0 -4px 12px rgba(0,0,0,0.1) !important;
   padding: 8px !important;
-}
-
-/* Tamanhos de fonte customizados (12px a 80px) para o Quill */
-.ql-editor .ql-size-12px { font-size: 12px !important; }
-.ql-editor .ql-size-14px { font-size: 14px !important; }
-.ql-editor .ql-size-16px { font-size: 16px !important; }
-.ql-editor .ql-size-18px { font-size: 18px !important; }
-.ql-editor .ql-size-20px { font-size: 20px !important; }
-.ql-editor .ql-size-24px { font-size: 24px !important; }
-.ql-editor .ql-size-28px { font-size: 28px !important; }
-.ql-editor .ql-size-32px { font-size: 32px !important; }
-.ql-editor .ql-size-36px { font-size: 36px !important; }
-.ql-editor .ql-size-40px { font-size: 40px !important; }
-.ql-editor .ql-size-48px { font-size: 48px !important; }
-.ql-editor .ql-size-56px { font-size: 56px !important; }
-.ql-editor .ql-size-64px { font-size: 64px !important; }
-.ql-editor .ql-size-72px { font-size: 72px !important; }
-.ql-editor .ql-size-80px { font-size: 80px !important; }
-
-/* Labels do picker de tamanho na toolbar */
-.sgid-floating-toolbar .ql-picker.ql-size .ql-picker-label[data-value=""]::before,
-.sgid-floating-toolbar .ql-picker.ql-size .ql-picker-item[data-value=""]::before { content: 'Normal'; }
-.sgid-floating-toolbar .ql-picker.ql-size .ql-picker-label[data-value="12px"]::before,
-.sgid-floating-toolbar .ql-picker.ql-size .ql-picker-item[data-value="12px"]::before { content: '12px'; }
-.sgid-floating-toolbar .ql-picker.ql-size .ql-picker-label[data-value="14px"]::before,
-.sgid-floating-toolbar .ql-picker.ql-size .ql-picker-item[data-value="14px"]::before { content: '14px'; }
-.sgid-floating-toolbar .ql-picker.ql-size .ql-picker-label[data-value="16px"]::before,
-.sgid-floating-toolbar .ql-picker.ql-size .ql-picker-item[data-value="16px"]::before { content: '16px'; }
-.sgid-floating-toolbar .ql-picker.ql-size .ql-picker-label[data-value="18px"]::before,
-.sgid-floating-toolbar .ql-picker.ql-size .ql-picker-item[data-value="18px"]::before { content: '18px'; }
-.sgid-floating-toolbar .ql-picker.ql-size .ql-picker-label[data-value="20px"]::before,
-.sgid-floating-toolbar .ql-picker.ql-size .ql-picker-item[data-value="20px"]::before { content: '20px'; }
-.sgid-floating-toolbar .ql-picker.ql-size .ql-picker-label[data-value="24px"]::before,
-.sgid-floating-toolbar .ql-picker.ql-size .ql-picker-item[data-value="24px"]::before { content: '24px'; }
-.sgid-floating-toolbar .ql-picker.ql-size .ql-picker-label[data-value="28px"]::before,
-.sgid-floating-toolbar .ql-picker.ql-size .ql-picker-item[data-value="28px"]::before { content: '28px'; }
-.sgid-floating-toolbar .ql-picker.ql-size .ql-picker-label[data-value="32px"]::before,
-.sgid-floating-toolbar .ql-picker.ql-size .ql-picker-item[data-value="32px"]::before { content: '32px'; }
-.sgid-floating-toolbar .ql-picker.ql-size .ql-picker-label[data-value="36px"]::before,
-.sgid-floating-toolbar .ql-picker.ql-size .ql-picker-item[data-value="36px"]::before { content: '36px'; }
-.sgid-floating-toolbar .ql-picker.ql-size .ql-picker-label[data-value="40px"]::before,
-.sgid-floating-toolbar .ql-picker.ql-size .ql-picker-item[data-value="40px"]::before { content: '40px'; }
-.sgid-floating-toolbar .ql-picker.ql-size .ql-picker-label[data-value="48px"]::before,
-.sgid-floating-toolbar .ql-picker.ql-size .ql-picker-item[data-value="48px"]::before { content: '48px'; }
-.sgid-floating-toolbar .ql-picker.ql-size .ql-picker-label[data-value="56px"]::before,
-.sgid-floating-toolbar .ql-picker.ql-size .ql-picker-item[data-value="56px"]::before { content: '56px'; }
-.sgid-floating-toolbar .ql-picker.ql-size .ql-picker-label[data-value="64px"]::before,
-.sgid-floating-toolbar .ql-picker.ql-size .ql-picker-item[data-value="64px"]::before { content: '64px'; }
-.sgid-floating-toolbar .ql-picker.ql-size .ql-picker-label[data-value="72px"]::before,
-.sgid-floating-toolbar .ql-picker.ql-size .ql-picker-item[data-value="72px"]::before { content: '72px'; }
-.sgid-floating-toolbar .ql-picker.ql-size .ql-picker-label[data-value="80px"]::before,
-.sgid-floating-toolbar .ql-picker.ql-size .ql-picker-item[data-value="80px"]::before { content: '80px'; }
-
-/* Garantir que o editor seja clicável e editável */
-.sgid-quill-wrapper .ql-container,
-.sgid-quill-wrapper .ql-editor {
-  pointer-events: auto !important;
-  cursor: text !important;
-}
-
-/* Remover borda cinza da área do documento (modelo) */
-.sgid-quill-wrapper .ql-container.ql-snow,
-.sgid-quill-wrapper .ql-editor {
-  border: none !important;
 }
 
 .ql-editor {
@@ -668,102 +454,6 @@
 .sgid-topic:hover > .sgid-delete-btn,
 .sgid-metadata-field:hover > .sgid-delete-btn {
   opacity: 1;
-}
-
-/* Botões Editar/Excluir em Tópico */
-.sgid-topic-edit-btn,
-.sgid-topic-delete-btn {
-  position: absolute !important;
-  top: 12px !important;
-  width: 32px !important;
-  height: 32px !important;
-  display: flex !important;
-  align-items: center !important;
-  justify-content: center !important;
-  border-radius: 8px !important;
-  background: white !important;
-  border: 1px solid rgba(0, 0, 0, 0.1) !important;
-  cursor: pointer !important;
-  z-index: 50 !important;
-  pointer-events: auto !important;
-  transition: all 0.2s ease !important;
-  opacity: 0;
-  box-shadow: 0 2px 8px rgba(0,0,0,0.05) !important;
-}
-
-.sgid-topic-edit-btn {
-  right: 48px !important;
-  color: #3b82f6 !important;
-}
-
-.sgid-topic-delete-btn {
-  right: 12px !important;
-  color: #ef4444 !important;
-}
-
-.sgid-topic:hover .sgid-topic-edit-btn,
-.sgid-topic:hover .sgid-topic-delete-btn {
-  opacity: 1;
-}
-
-.sgid-topic-edit-btn:hover {
-  background: #eff6ff !important;
-  border-color: #93c5fd !important;
-  color: #2563eb !important;
-}
-
-.sgid-topic-delete-btn:hover {
-  background: #fef2f2 !important;
-  border-color: #fecaca !important;
-  color: #dc2626 !important;
-}
-
-/* Botões Editar/Excluir em Metadado */
-.sgid-metadata-edit-btn,
-.sgid-metadata-delete-btn {
-  position: absolute !important;
-  top: 12px !important;
-  width: 32px !important;
-  height: 32px !important;
-  display: flex !important;
-  align-items: center !important;
-  justify-content: center !important;
-  border-radius: 8px !important;
-  background: white !important;
-  border: 1px solid rgba(0, 0, 0, 0.1) !important;
-  cursor: pointer !important;
-  z-index: 50 !important;
-  pointer-events: auto !important;
-  transition: all 0.2s ease !important;
-  opacity: 0;
-  box-shadow: 0 2px 8px rgba(0,0,0,0.05) !important;
-}
-
-.sgid-metadata-edit-btn {
-  right: 48px !important;
-  color: #3b82f6 !important;
-}
-
-.sgid-metadata-delete-btn {
-  right: 12px !important;
-  color: #ef4444 !important;
-}
-
-.sgid-metadata-field:hover .sgid-metadata-edit-btn,
-.sgid-metadata-field:hover .sgid-metadata-delete-btn {
-  opacity: 1;
-}
-
-.sgid-metadata-edit-btn:hover {
-  background: #eff6ff !important;
-  border-color: #93c5fd !important;
-  color: #2563eb !important;
-}
-
-.sgid-metadata-delete-btn:hover {
-  background: #fef2f2 !important;
-  border-color: #fecaca !important;
-  color: #dc2626 !important;
 }
 
 .sgid-delete-btn:hover {
