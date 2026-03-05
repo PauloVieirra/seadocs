@@ -1,6 +1,6 @@
 import React, { useMemo, useRef, useState, useEffect } from 'react';
-import ReactQuill, { Quill } from 'react-quill'; // ES6
-import 'react-quill/dist/quill.snow.css'; // ES6
+import ReactQuill, { Quill } from 'react-quill-new';
+import 'react-quill-new/dist/quill.snow.css';
 import { Button } from './ui/button';
 import { Input } from './ui/input';
 import { Label } from './ui/label';
@@ -9,13 +9,24 @@ import { toast } from 'sonner';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from './ui/dialog';
 import { Textarea } from './ui/textarea';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select';
-import { Layout, Type, Save, X, PlusCircle, Database, Table2 } from 'lucide-react';
+import { Layout, Type, Save, X, PlusCircle, Database, Palette } from 'lucide-react';
+import { Popover, PopoverContent, PopoverTrigger } from './ui/popover';
+import { HexColorPicker } from 'react-colorful';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from './ui/alert-dialog';
 
 let customBlotsRegistered = false;
 
 /** Tamanhos de fonte em pixels (12 a 80) */
 const FONT_SIZES_PX = ['12px', '14px', '16px', '18px', '20px', '24px', '28px', '32px', '36px', '40px', '48px', '56px', '64px', '72px', '80px'];
+
+function rgbToHex(rgb: string): string {
+  const m = rgb.match(/rgb\((\d+),\s*(\d+),\s*(\d+)\)/);
+  if (!m) return '#000000';
+  const r = parseInt(m[1], 10).toString(16).padStart(2, '0');
+  const g = parseInt(m[2], 10).toString(16).padStart(2, '0');
+  const b = parseInt(m[3], 10).toString(16).padStart(2, '0');
+  return `#${r}${g}${b}`;
+}
 
 function ensureCustomBlotsRegistered() {
   if (customBlotsRegistered) return;
@@ -126,93 +137,8 @@ function ensureCustomBlotsRegistered() {
     }
   }
 
-  // Blot para Tabela (células e colunas identificáveis)
-  class TableBlot extends BlockEmbed {
-    static blotName = 'tableBlock';
-    static tagName = 'div';
-    static className = 'sgid-table';
-
-    static create(value: { rows?: number; cols?: number; tableId?: string; borderColor?: string; rowHeight?: number; colWidth?: number }) {
-      const node: HTMLElement = super.create();
-      const rows = Math.max(1, Math.min(20, value?.rows ?? 3));
-      const cols = Math.max(1, Math.min(10, value?.cols ?? 4));
-      const tableId = value?.tableId || `table-${Date.now()}`;
-      const borderColor = value?.borderColor || '#e2e8f0';
-      const rowHeight = Math.max(20, Math.min(200, value?.rowHeight ?? 40));
-      const colWidth = Math.max(40, Math.min(500, value?.colWidth ?? 120));
-
-      node.setAttribute('contenteditable', 'false');
-      node.setAttribute('data-table-id', tableId);
-      node.setAttribute('data-rows', String(rows));
-      node.setAttribute('data-cols', String(cols));
-      node.setAttribute('data-border-color', borderColor);
-      node.setAttribute('data-row-height', String(rowHeight));
-      node.setAttribute('data-col-width', String(colWidth));
-
-      node.style.setProperty('--sgid-border-color', borderColor);
-      node.style.setProperty('--sgid-row-height', `${rowHeight}px`);
-      node.style.setProperty('--sgid-col-width', `${colWidth}px`);
-
-      const table = document.createElement('table');
-      table.className = 'sgid-table-grid';
-      const tbody = document.createElement('tbody');
-
-      const colLetters = 'ABCDEFGHIJ'.slice(0, cols);
-      for (let r = 0; r < rows; r++) {
-        const tr = document.createElement('tr');
-        for (let c = 0; c < cols; c++) {
-          const td = document.createElement('td');
-          const cellId = `${colLetters[c]}${r + 1}`;
-          td.className = 'sgid-table-cell';
-          td.setAttribute('data-cell-id', cellId);
-          td.setAttribute('data-row', String(r));
-          td.setAttribute('data-col', String(c));
-          td.setAttribute('contenteditable', 'true');
-          td.style.height = `${rowHeight}px`;
-          td.style.minWidth = `${colWidth}px`;
-          td.style.borderColor = borderColor;
-          td.innerHTML = '';
-          td.setAttribute('data-placeholder', 'Digite aqui...');
-          tr.appendChild(td);
-        }
-        tbody.appendChild(tr);
-      }
-      table.appendChild(tbody);
-      node.appendChild(table);
-
-      const editBtn = document.createElement('button');
-      editBtn.type = 'button';
-      editBtn.className = 'sgid-table-edit-btn';
-      editBtn.setAttribute('data-table-id', tableId);
-      editBtn.setAttribute('title', 'Editar tabela');
-      editBtn.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/></svg>';
-      node.appendChild(editBtn);
-
-      const deleteBtn = document.createElement('button');
-      deleteBtn.type = 'button';
-      deleteBtn.className = 'sgid-table-delete-btn';
-      deleteBtn.setAttribute('data-table-id', tableId);
-      deleteBtn.setAttribute('title', 'Excluir tabela');
-      deleteBtn.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/></svg>';
-      node.appendChild(deleteBtn);
-
-      return node;
-    }
-
-    static value(node: HTMLElement) {
-      const rows = parseInt(node.getAttribute('data-rows') || '3', 10);
-      const cols = parseInt(node.getAttribute('data-cols') || '4', 10);
-      const tableId = node.getAttribute('data-table-id') || '';
-      const borderColor = node.getAttribute('data-border-color') || '#e2e8f0';
-      const rowHeight = parseInt(node.getAttribute('data-row-height') || '40', 10);
-      const colWidth = parseInt(node.getAttribute('data-col-width') || '120', 10);
-      return { rows, cols, tableId, borderColor, rowHeight, colWidth };
-    }
-  }
-
   QuillAny.register(MetadataFieldBlot);
   QuillAny.register(TopicBlot);
-  QuillAny.register(TableBlot);
   customBlotsRegistered = true;
 }
 
@@ -244,7 +170,7 @@ export function RichTextDocumentModelEditor({
   onDraftStatusChange,
 }: RichTextDocumentModelEditorProps) {
   const quillRef = useRef<ReactQuill | null>(null);
-  const pendingDeleteRef = useRef<{ type: 'topic' | 'metadata' | 'table'; topicId?: string; fieldId?: string; tableId?: string } | null>(null);
+  const pendingDeleteRef = useRef<{ type: 'topic' | 'metadata'; topicId?: string; fieldId?: string } | null>(null);
   const [name, setName] = useState(initialData?.name || '');
   const [type, setType] = useState(initialData?.type || '');
   const [editorData, setEditorData] = useState(initialData?.templateContent || '');
@@ -265,23 +191,16 @@ export function RichTextDocumentModelEditor({
 
   // Tamanho de fonte atual (para o controle customizado): px ou '__normal__'
   const [fontSize, setFontSize] = useState<string>('__normal__');
+  const [fontColor, setFontColor] = useState<string>('#000000');
+  const [colorPickerOpen, setColorPickerOpen] = useState(false);
 
   // Tabela
-  const [tableDialogOpen, setTableDialogOpen] = useState(false);
-  const [editingTableId, setEditingTableId] = useState<string | null>(null);
-  const [tableRows, setTableRows] = useState(3);
-  const [tableCols, setTableCols] = useState(4);
-  const [tableBorderColor, setTableBorderColor] = useState('#e2e8f0');
-  const [tableRowHeight, setTableRowHeight] = useState(40);
-  const [tableColWidth, setTableColWidth] = useState(120);
-
   // Confirmação de exclusão de elementos
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
   const [pendingDelete, setPendingDelete] = useState<{
-    type: 'topic' | 'metadata' | 'table';
+    type: 'topic' | 'metadata';
     topicId?: string;
     fieldId?: string;
-    tableId?: string;
   } | null>(null);
 
   useEffect(() => {
@@ -366,36 +285,6 @@ export function RichTextDocumentModelEditor({
         return;
       }
 
-      // Tabela - editar e excluir
-      const tableEditBtn = target.closest('.sgid-table-edit-btn');
-      const tableDeleteBtn = target.closest('.sgid-table-delete-btn');
-      const tableBtn = tableEditBtn || tableDeleteBtn;
-      if (tableBtn) {
-        e.preventDefault();
-        e.stopPropagation();
-        const tableEl = tableBtn.closest('.sgid-table') as HTMLElement;
-        if (!tableEl) return;
-
-        if (tableDeleteBtn) {
-          const tableId = tableEl.getAttribute('data-table-id') || '';
-          pendingDeleteRef.current = { type: 'table', tableId };
-          setPendingDelete({ type: 'table', tableId });
-          setDeleteConfirmOpen(true);
-          return;
-        }
-
-        if (tableEditBtn) {
-          const tableId = tableBtn.getAttribute('data-table-id');
-          if (!tableId) return;
-          setTableRows(parseInt(tableEl.getAttribute('data-rows') || '3', 10));
-          setTableCols(parseInt(tableEl.getAttribute('data-cols') || '4', 10));
-          setTableBorderColor(tableEl.getAttribute('data-border-color') || '#e2e8f0');
-          setTableRowHeight(parseInt(tableEl.getAttribute('data-row-height') || '40', 10));
-          setTableColWidth(parseInt(tableEl.getAttribute('data-col-width') || '120', 10));
-          setEditingTableId(tableId);
-          setTableDialogOpen(true);
-        }
-      }
     };
     const root = editor.root;
     root.addEventListener('click', handleElementButtonClick, true);
@@ -447,47 +336,6 @@ export function RichTextDocumentModelEditor({
 
     editor.root.querySelectorAll('.sgid-topic').forEach((el) => addTopicButtons(el as HTMLElement));
     editor.root.querySelectorAll('.sgid-metadata-field').forEach((el) => addMetadataButtons(el as HTMLElement));
-  }, [editorData]);
-
-  // Aplicar estilos e botão editar em tabelas ao carregar conteúdo (ex: após reload)
-  useEffect(() => {
-    if (!editorData.includes('sgid-table')) return;
-    const editor = quillRef.current?.getEditor?.();
-    if (!editor?.root) return;
-    editor.root.querySelectorAll('.sgid-table').forEach((el) => {
-      const node = el as HTMLElement;
-      const borderColor = node.getAttribute('data-border-color') || '#e2e8f0';
-      const rowHeight = node.getAttribute('data-row-height') || '40';
-      const colWidth = node.getAttribute('data-col-width') || '120';
-      const tableId = node.getAttribute('data-table-id') || '';
-      node.style.setProperty('--sgid-border-color', borderColor);
-      node.style.setProperty('--sgid-row-height', `${rowHeight}px`);
-      node.style.setProperty('--sgid-col-width', `${colWidth}px`);
-      node.querySelectorAll('.sgid-table-cell').forEach((td) => {
-        const cell = td as HTMLElement;
-        cell.style.borderColor = borderColor;
-        cell.style.height = `${rowHeight}px`;
-        cell.style.minWidth = `${colWidth}px`;
-      });
-      if (!node.querySelector('.sgid-table-edit-btn') && tableId) {
-        const editBtn = document.createElement('button');
-        editBtn.type = 'button';
-        editBtn.className = 'sgid-table-edit-btn';
-        editBtn.setAttribute('data-table-id', tableId);
-        editBtn.setAttribute('title', 'Editar tabela');
-        editBtn.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/></svg>';
-        node.appendChild(editBtn);
-      }
-      if (!node.querySelector('.sgid-table-delete-btn') && tableId) {
-        const deleteBtn = document.createElement('button');
-        deleteBtn.type = 'button';
-        deleteBtn.className = 'sgid-table-delete-btn';
-        deleteBtn.setAttribute('data-table-id', tableId);
-        deleteBtn.setAttribute('title', 'Excluir tabela');
-        deleteBtn.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/></svg>';
-        node.appendChild(deleteBtn);
-      }
-    });
   }, [editorData]);
 
   // Sincronizar tamanho de fonte com a seleção do editor
@@ -542,20 +390,6 @@ export function RichTextDocumentModelEditor({
       }
     });
 
-    // Células de tabela (cada célula é um tópico)
-    doc.querySelectorAll('.sgid-table .sgid-table-cell').forEach((node: Element) => {
-      const cellId = node.getAttribute('data-cell-id');
-      const table = node.closest('.sgid-table');
-      const tableId = table?.getAttribute('data-table-id');
-      if (cellId && tableId) {
-        const topicId = `cell:${tableId}:${cellId}`;
-        topics.push({
-          id: topicId,
-          name: `Célula ${cellId}`,
-        });
-      }
-    });
-
     setExistingTopics(topics);
   }, [editorData]);
 
@@ -563,11 +397,13 @@ export function RichTextDocumentModelEditor({
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!name.trim() || !type.trim() || !editorData.trim()) {
+    const editor = quillRef.current?.getEditor?.();
+    const contentToSave = editor?.root ? editor.root.innerHTML : editorData;
+    if (!name.trim() || !type.trim() || !contentToSave.trim()) {
       toast.error('Por favor, preencha todos os campos obrigatórios e o conteúdo do template.');
       return;
     }
-    await onSave(name, type, editorData, initialData?.isDraft ?? true, initialData?.aiGuidance ?? '');
+    await onSave(name, type, contentToSave, initialData?.isDraft ?? true, initialData?.aiGuidance ?? '');
   };
 
   const openFieldDialog = () => {
@@ -676,101 +512,11 @@ export function RichTextDocumentModelEditor({
         metaEl.remove();
         toast.success('Metadado excluído.');
       }
-    } else if (pending.type === 'table' && pending.tableId) {
-      const tableEl = editor.root.querySelector(`.sgid-table[data-table-id="${pending.tableId}"]`) as HTMLElement;
-      if (tableEl) {
-        tableEl.remove();
-        toast.success('Tabela excluída.');
-      }
     }
     setEditorData(editor.root.innerHTML);
     pendingDeleteRef.current = null;
     setPendingDelete(null);
     setDeleteConfirmOpen(false);
-  };
-
-  const saveTable = () => {
-    if (isLoading) return;
-    const editor = quillRef.current?.getEditor?.();
-    if (!editor?.root) return;
-
-    if (editingTableId) {
-      const tableEl = editor.root.querySelector(`.sgid-table[data-table-id="${editingTableId}"]`) as HTMLElement;
-      if (!tableEl) {
-        toast.error('Tabela não encontrada.');
-        setTableDialogOpen(false);
-        setEditingTableId(null);
-        return;
-      }
-      const cellContent: Record<string, string> = {};
-      tableEl.querySelectorAll('.sgid-table-cell').forEach((td) => {
-        const cellId = td.getAttribute('data-cell-id');
-        if (cellId) cellContent[cellId] = (td as HTMLElement).innerHTML;
-      });
-
-      const colLetters = 'ABCDEFGHIJ'.slice(0, tableCols);
-      let tbodyHtml = '';
-      for (let r = 0; r < tableRows; r++) {
-        let rowHtml = '<tr>';
-        for (let c = 0; c < tableCols; c++) {
-          const cellId = `${colLetters[c]}${r + 1}`;
-          const content = cellContent[cellId] || '';
-          rowHtml += `<td class="sgid-table-cell" data-cell-id="${cellId}" data-row="${r}" data-col="${c}" contenteditable="true" data-placeholder="Digite aqui..." style="height:${tableRowHeight}px;min-width:${tableColWidth}px;border-color:${tableBorderColor}">${content}</td>`;
-        }
-        rowHtml += '</tr>';
-        tbodyHtml += rowHtml;
-      }
-
-      tableEl.setAttribute('data-rows', String(tableRows));
-      tableEl.setAttribute('data-cols', String(tableCols));
-      tableEl.setAttribute('data-border-color', tableBorderColor);
-      tableEl.setAttribute('data-row-height', String(tableRowHeight));
-      tableEl.setAttribute('data-col-width', String(tableColWidth));
-      tableEl.style.setProperty('--sgid-border-color', tableBorderColor);
-      tableEl.style.setProperty('--sgid-row-height', `${tableRowHeight}px`);
-      tableEl.style.setProperty('--sgid-col-width', `${tableColWidth}px`);
-
-      const grid = tableEl.querySelector('.sgid-table-grid');
-      if (grid) {
-        const tbody = grid.querySelector('tbody');
-        if (tbody) {
-          tbody.innerHTML = tbodyHtml;
-          tbody.querySelectorAll('.sgid-table-cell').forEach((td) => {
-            const cell = td as HTMLElement;
-            cell.style.borderColor = tableBorderColor;
-            cell.style.height = `${tableRowHeight}px`;
-            cell.style.minWidth = `${tableColWidth}px`;
-          });
-        }
-      }
-
-      setEditorData(editor.root.innerHTML);
-      setTableDialogOpen(false);
-      setEditingTableId(null);
-      toast.success('Tabela atualizada.');
-    } else {
-      const range = editor.getSelection(true);
-      let insertAt = range ? range.index : editor.getLength();
-      if (insertAt > 0) {
-        const prevChar = editor.getText(insertAt - 1, 1);
-        if (prevChar && prevChar !== '\n') {
-          editor.insertText(insertAt, '\n', 'user');
-          insertAt += 1;
-        }
-      }
-      editor.insertEmbed(insertAt, 'tableBlock', {
-        rows: tableRows,
-        cols: tableCols,
-        tableId: `table-${Date.now()}`,
-        borderColor: tableBorderColor,
-        rowHeight: tableRowHeight,
-        colWidth: tableColWidth,
-      }, 'user');
-      editor.insertText(insertAt + 1, '\n', 'user');
-      editor.setSelection(insertAt + 2, 0, 'user');
-      setTableDialogOpen(false);
-      toast.success(`Tabela ${tableRows}x${tableCols} inserida.`);
-    }
   };
 
   const saveMetadataField = () => {
@@ -906,14 +652,12 @@ export function RichTextDocumentModelEditor({
                 onChange={setEditorData}
                 readOnly={isLoading}
                 modules={{
-                  toolbar: {
-                    container: `#${toolbarId}`,
-                  },
+                  toolbar: { container: `#${toolbarId}` },
                 }}
               formats={[
                 'size', 'bold', 'italic', 'underline', 'strike', 'blockquote',
                 'list', 'bullet', 'indent', 'link', 'image', 'video',
-                'color', 'background', 'align', 'metadataField', 'topic', 'tableBlock'
+                'color', 'background', 'align', 'metadataField', 'topic'
               ]}
                 placeholder="Comece a criar seu modelo de documento..."
                 className="h-full min-h-[600px] border-none"
@@ -965,6 +709,75 @@ export function RichTextDocumentModelEditor({
               <button type="button" className="ql-underline" />
               <button type="button" className="ql-strike" />
             </span>
+            <span className="ql-formats flex items-center">
+              <Popover open={colorPickerOpen} onOpenChange={(open) => {
+                setColorPickerOpen(open);
+                if (open) {
+                  const editor = quillRef.current?.getEditor?.();
+                  const range = editor?.getSelection?.(true);
+                  if (editor && range) {
+                    const format = editor.getFormat?.(range.index, range.length) || editor.getFormat?.();
+                    const currentColor = typeof format?.color === 'string' ? format.color : null;
+                    if (currentColor && /^#[0-9A-Fa-f]{6}$/.test(currentColor)) {
+                      setFontColor(currentColor);
+                    } else if (currentColor && /^#[0-9A-Fa-f]{3}$/.test(currentColor)) {
+                      setFontColor(`#${currentColor[1]}${currentColor[1]}${currentColor[2]}${currentColor[2]}${currentColor[3]}${currentColor[3]}`);
+                    } else if (currentColor && currentColor.startsWith('rgb')) {
+                      setFontColor(rgbToHex(currentColor));
+                    }
+                  }
+                }
+              }}>
+                <PopoverTrigger asChild>
+                  <button
+                    type="button"
+                    className="ql-color flex items-center justify-center w-8 h-8 rounded hover:bg-gray-100"
+                    title="Cor da fonte"
+                    disabled={isLoading}
+                  >
+                    <Palette className="w-4 h-4 text-gray-600" />
+                    <span className="sr-only">Cor da fonte</span>
+                  </button>
+                </PopoverTrigger>
+                <PopoverContent side="top" align="start" className="w-auto p-3">
+                  <HexColorPicker
+                    color={fontColor}
+                    onChange={(hex) => {
+                      setFontColor(hex);
+                      const editor = quillRef.current?.getEditor?.();
+                      const range = editor?.getSelection();
+                      if (editor && range) {
+                        editor.format('color', hex, 'user');
+                      }
+                    }}
+                    style={{ width: 220, height: 180 }}
+                  />
+                  <div className="mt-2 flex items-center gap-2">
+                    <Input
+                      type="text"
+                      value={fontColor}
+                      onChange={(e) => setFontColor(e.target.value)}
+                      onBlur={() => {
+                        if (/^#[0-9A-Fa-f]{6}$/.test(fontColor)) {
+                          const editor = quillRef.current?.getEditor?.();
+                          const range = editor?.getSelection();
+                          if (editor && range) editor.format('color', fontColor, 'user');
+                        }
+                      }}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' && /^#[0-9A-Fa-f]{6}$/.test(fontColor)) {
+                          const editor = quillRef.current?.getEditor?.();
+                          const range = editor?.getSelection();
+                          if (editor && range) editor.format('color', fontColor, 'user');
+                          setColorPickerOpen(false);
+                        }
+                      }}
+                      className="flex-1 h-8 text-xs font-mono"
+                    />
+                  </div>
+                </PopoverContent>
+              </Popover>
+            </span>
             <span className="ql-formats ql-align-group">
               <select className="ql-align" title="Alinhamento" defaultValue="">
                 <option value="">Esquerda</option>
@@ -981,16 +794,6 @@ export function RichTextDocumentModelEditor({
 
             {/* Custom Buttons - flex-shrink-0 evita sobreposição */}
             <div className="sgid-toolbar-custom-buttons flex flex-row items-center gap-2 ml-4 border-l pl-4 border-gray-200 flex-shrink-0">
-              <button
-                type="button"
-                className="sgid-toolbar-custom-btn hover:bg-blue-50 hover:text-blue-600"
-                onClick={() => { setEditingTableId(null); setTableDialogOpen(true); }}
-                disabled={isLoading}
-                title="Inserir Tabela (células identificadas por coluna e linha)"
-              >
-                <Table2 className="w-4 h-4" />
-                Tabela
-              </button>
               <button
                 type="button"
                 className="sgid-toolbar-custom-btn hover:bg-blue-50 hover:text-blue-600"
@@ -1040,7 +843,6 @@ export function RichTextDocumentModelEditor({
             <AlertDialogDescription>
               {pendingDelete?.type === 'topic' && 'Tem certeza que deseja excluir este tópico? Esta ação não pode ser desfeita.'}
               {pendingDelete?.type === 'metadata' && 'Tem certeza que deseja excluir este metadado? Esta ação não pode ser desfeita.'}
-              {pendingDelete?.type === 'table' && 'Tem certeza que deseja excluir esta tabela? Esta ação não pode ser desfeita.'}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
@@ -1157,103 +959,6 @@ export function RichTextDocumentModelEditor({
       </Dialog>
 
       {/* Dialog Tabela */}
-      <Dialog open={tableDialogOpen} onOpenChange={(open) => {
-        setTableDialogOpen(open);
-        if (!open) setEditingTableId(null);
-      }}>
-        <DialogContent className="max-w-md rounded-2xl">
-          <DialogHeader>
-            <DialogTitle className="flex items-center gap-2">
-              <Table2 className="w-5 h-5 text-blue-600" />
-              {editingTableId ? 'Editar Tabela' : 'Inserir Tabela'}
-            </DialogTitle>
-            <DialogDescription>
-              Células identificadas por coluna (A, B, C...) e linha (1, 2, 3...).
-            </DialogDescription>
-          </DialogHeader>
-          <div className="space-y-4 py-4">
-            <div className="grid grid-cols-2 gap-4">
-              <div className="space-y-2">
-                <Label htmlFor="table-rows">Linhas</Label>
-                <Input
-                  id="table-rows"
-                  type="number"
-                  min={1}
-                  max={20}
-                  value={tableRows}
-                  onChange={(e) => setTableRows(Math.max(1, Math.min(20, parseInt(e.target.value, 10) || 1)))}
-                  className="rounded-lg"
-                />
-              </div>
-              <div className="space-y-2">
-                <Label htmlFor="table-cols">Colunas</Label>
-                <Input
-                  id="table-cols"
-                  type="number"
-                  min={1}
-                  max={10}
-                  value={tableCols}
-                  onChange={(e) => setTableCols(Math.max(1, Math.min(10, parseInt(e.target.value, 10) || 1)))}
-                  className="rounded-lg"
-                />
-              </div>
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="table-border-color">Cor das bordas</Label>
-              <div className="flex gap-2 items-center">
-                <Input
-                  id="table-border-color"
-                  type="color"
-                  value={tableBorderColor}
-                  onChange={(e) => setTableBorderColor(e.target.value)}
-                  className="w-14 h-10 p-1 cursor-pointer rounded-lg"
-                />
-                <Input
-                  type="text"
-                  value={tableBorderColor}
-                  onChange={(e) => setTableBorderColor(e.target.value)}
-                  className="flex-1 rounded-lg font-mono text-sm"
-                  placeholder="#e2e8f0"
-                />
-              </div>
-            </div>
-            <div className="grid grid-cols-2 gap-4">
-              <div className="space-y-2">
-                <Label htmlFor="table-row-height">Altura da linha (px)</Label>
-                <Input
-                  id="table-row-height"
-                  type="number"
-                  min={20}
-                  max={200}
-                  value={tableRowHeight}
-                  onChange={(e) => setTableRowHeight(Math.max(20, Math.min(200, parseInt(e.target.value, 10) || 40)))}
-                  className="rounded-lg"
-                />
-              </div>
-              <div className="space-y-2">
-                <Label htmlFor="table-col-width">Largura da coluna (px)</Label>
-                <Input
-                  id="table-col-width"
-                  type="number"
-                  min={40}
-                  max={500}
-                  value={tableColWidth}
-                  onChange={(e) => setTableColWidth(Math.max(40, Math.min(500, parseInt(e.target.value, 10) || 120)))}
-                  className="rounded-lg"
-                />
-              </div>
-            </div>
-            <div className="pt-4 flex justify-end gap-3">
-              <Button variant="outline" onClick={() => { setTableDialogOpen(false); setEditingTableId(null); }} className="rounded-lg px-6">
-                Cancelar
-              </Button>
-              <Button onClick={saveTable} className="rounded-lg px-6 bg-blue-600 hover:bg-blue-700">
-                {editingTableId ? 'Salvar Alterações' : 'Inserir Tabela'}
-              </Button>
-            </div>
-          </div>
-        </DialogContent>
-      </Dialog>
     </div>
   );
 }

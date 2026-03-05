@@ -263,7 +263,7 @@
   letter-spacing: 0.02em;
 }
 
-/* --- Tabela no modelo de documento --- */
+/* --- Tabela sgid (legado) --- */
 .ql-editor .sgid-table {
   margin: 24px 0;
   width: 100%;
@@ -274,6 +274,7 @@
 
 .ql-editor .sgid-table .sgid-table-grid {
   width: 100%;
+  table-layout: fixed;
   border-collapse: collapse;
   border: 1px solid var(--sgid-border-color, #e2e8f0);
   border-radius: 7px;
@@ -281,8 +282,6 @@
 }
 
 .ql-editor .sgid-table .sgid-table-cell {
-  min-width: var(--sgid-col-width, 80px);
-  min-height: var(--sgid-row-height, 40px);
   padding: 10px 14px;
   border: 1px solid var(--sgid-border-color, #e2e8f0);
   font-size: 13px;
@@ -376,6 +375,72 @@
 
 .sgid-table-delete-btn svg {
   pointer-events: none;
+}
+
+/* Trackers de redimensionamento da tabela */
+.sgid-table-resize-handles {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 10;
+}
+
+.sgid-table-resize-handles > * {
+  pointer-events: auto;
+}
+
+.sgid-col-resize {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 8px;
+  margin-left: -4px;
+  cursor: col-resize;
+  z-index: 11;
+}
+
+.sgid-col-resize::after {
+  content: '';
+  position: absolute;
+  left: 50%;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  margin-left: -1px;
+  background: transparent;
+  transition: background 0.15s;
+}
+
+.sgid-col-resize:hover::after,
+.sgid-col-resize:active::after {
+  background: #3b82f6;
+}
+
+.sgid-row-resize {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 8px;
+  margin-top: -4px;
+  cursor: row-resize;
+  z-index: 11;
+}
+
+.sgid-row-resize::after {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 0;
+  right: 0;
+  height: 2px;
+  margin-top: -1px;
+  background: transparent;
+  transition: background 0.15s;
+}
+
+.sgid-row-resize:hover::after,
+.sgid-row-resize:active::after {
+  background: #3b82f6;
 }
 
 /* --- Floating Toolbar Bottom Refinado --- */

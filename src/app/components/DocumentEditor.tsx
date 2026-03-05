@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { Button } from './ui/button';
 import { Textarea } from './ui/textarea';
 import { Sparkles, RotateCw, Plus, Save, FileDown, Edit3, Lock, RefreshCw } from 'lucide-react'; // Adicionado RefreshCw
-import 'react-quill/dist/quill.snow.css'; // ES6
+import 'react-quill-new/dist/quill.snow.css';
 import { apiService, type Document, type DocumentContent, type DocumentSection } from '../../services/api';
 import { toast } from 'sonner';
 import { Badge } from './ui/badge';

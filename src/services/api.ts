@@ -885,7 +885,9 @@ class APIService {
         nome: name,
         project_id: projectId,
         template_id: templateId || null,
-        conteudo
+        conteudo,
+        creator_id: this.currentUser.id,
+        security_level: securityLevel
       })
       .select()
       .single();
@@ -930,8 +932,13 @@ class APIService {
     if (error) throw new Error(error.message);
   }
 
-  async shareDocument(_documentId: string, _userId: string, _permissions: ('view' | 'edit' | 'comment')[]): Promise<void> {
-    // Implementar quando a tabela documents tiver suporte a shared_with
+  async shareDocument(documentId: string, userId: string, permissions: ('view' | 'edit' | 'comment')[]): Promise<void> {
+    if (!supabase || !this.isUUID(documentId) || !this.isUUID(userId)) return;
+    const perms = permissions.map(p => p as string);
+    await supabase.from('document_shares').upsert(
+      { document_id: documentId, user_id: userId, permissions: perms },
+      { onConflict: 'document_id,user_id' }
+    );
   }
 
   async getDocumentVersions(_documentId: string): Promise<DocumentVersion[]> {
@@ -1381,7 +1388,75 @@ class APIService {
   }
   async analyzeProjectModels(projectId: string) { return "Modelos analisados."; }
   async hasExistingSummary(projectId: string) { return true; }
-  async listWikiDocuments(page: number, pageSize: number) { return { data: [], total: 0 }; }
+
+  /** Lista documentos para a Wiki. Admin vê todos; outros veem conforme projeto + nível de sigilo. */
+  async listWikiDocuments(page: number, pageSize: number): Promise<{ data: Document[]; total: number }> {
+    if (!supabase) return { data: [], total: 0 };
+    const current = this.currentUser ?? (await this.loadCurrentUserFromStorage());
+    if (!current) return { data: [], total: 0 };
+
+    const mapRow = (d: Record<string, unknown>) => ({
+      id: d.id,
+      projectId: d.project_id,
+      name: d.nome,
+      currentVersionId: d.current_version_id,
+      updatedAt: d.updated_at,
+      content: d.conteudo as DocumentContent,
+      creatorId: d.creator_id ?? '',
+      creatorName: '',
+      securityLevel: (d.security_level as Document['securityLevel']) || 'public',
+      version: 1
+    } as Document);
+
+    const isAdmin = await permissionsService.can(current, 'acesso_total');
+
+    if (isAdmin) {
+      const from = (page - 1) * pageSize;
+      const { data, error, count } = await supabase
+        .from('documents')
+        .select('*', { count: 'exact' })
+        .order('id', { ascending: false })
+        .range(from, from + pageSize - 1);
+      if (error) {
+        console.error('[listWikiDocuments] Erro admin:', error);
+        return { data: [], total: 0 };
+      }
+      return { data: (data || []).map(mapRow), total: count ?? (data?.length ?? 0) };
+    }
+
+    const projects = await this.getProjects();
+    const projectIds = projects.map(p => p.id);
+    if (projectIds.length === 0) return { data: [], total: 0 };
+
+    const { data: docsData, error } = await supabase
+      .from('documents')
+      .select('*')
+      .in('project_id', projectIds)
+      .order('id', { ascending: false });
+    if (error) {
+      console.error('[listWikiDocuments] Erro não-admin:', error);
+      return { data: [], total: 0 };
+    }
+    const docs = docsData || [];
+
+    const sharedMap = new Map<string, boolean>();
+    const { data: shares } = await supabase.from('document_shares').select('document_id').eq('user_id', current.id);
+    if (shares) for (const s of shares) sharedMap.set((s as { document_id: string }).document_id, true);
+
+    const filtered = docs.filter((d: Record<string, unknown>) => {
+      const level = (d.security_level as string) || 'public';
+      if (level === 'public') return true;
+      const creatorId = d.creator_id as string | null;
+      if (level === 'confidential' || level === 'secret') return creatorId === current.id;
+      if (level === 'restricted') return creatorId === current.id || sharedMap.has(d.id as string);
+      return true;
+    });
+
+    const total = filtered.length;
+    const from = (page - 1) * pageSize;
+    const pageData = filtered.slice(from, from + pageSize);
+    return { data: pageData.map(mapRow), total };
+  }
 
   // Outros
   getActiveUsers = (projectId: string) => [];

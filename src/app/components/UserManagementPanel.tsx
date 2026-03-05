@@ -3,14 +3,21 @@ import { apiService, type User } from '../../services/api';
 import { usePermissions } from '../../hooks/usePermissions';
 import { permissionsService, type UserPermissions } from '../../services/permissions';
 import { Button } from './ui/button';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from './ui/card';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from './ui/dialog';
 import { Input } from './ui/input';
 import { Label } from './ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select';
 import { Checkbox } from './ui/checkbox';
-import { Plus, Shield } from 'lucide-react';
+import { Plus, Settings, KeyRound, Pencil } from 'lucide-react';
 import { Badge } from './ui/badge';
+import {
+  Pagination,
+  PaginationContent,
+  PaginationItem,
+  PaginationLink,
+  PaginationNext,
+  PaginationPrevious,
+} from './ui/pagination';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from './ui/alert-dialog';
 
 interface UserManagementPanelProps {
@@ -47,6 +54,12 @@ export function UserManagementPanel({ currentUser }: UserManagementPanelProps) {
   const [localPerms, setLocalPerms] = useState<Partial<UserPermissions>>({});
   const [loadingPerms, setLoadingPerms] = useState(false);
   const [savingPerms, setSavingPerms] = useState(false);
+
+  // Paginação
+  const pageSize = 10;
+  const [currentPage, setCurrentPage] = useState(1);
+  const totalPages = Math.ceil(users.length / pageSize);
+  const paginatedUsers = users.slice((currentPage - 1) * pageSize, currentPage * pageSize);
 
   /** Labels das permissões para exibição */
   const PERMISSION_LABELS: Record<keyof Omit<UserPermissions, 'userId'>, string> = {
@@ -267,6 +280,13 @@ export function UserManagementPanel({ currentUser }: UserManagementPanelProps) {
     }
   };
 
+  const handlePageChange = (page: number) => {
+    if (page >= 1 && page <= totalPages) {
+      setCurrentPage(page);
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    }
+  };
+
   const getRoleLabel = (role: User['role']) => {
     const labels: Record<string, string> = {
       'admin': 'Administrador',
@@ -280,14 +300,20 @@ export function UserManagementPanel({ currentUser }: UserManagementPanelProps) {
     return labels[role] || role;
   };
 
+  const getInitials = (name: string) => {
+    const parts = name.trim().split(/\s+/);
+    if (parts.length >= 2) return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
+    return (name[0] || '?').toUpperCase();
+  };
+
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
-        <h3 className="text-lg font-medium">Gerenciamento de Usuários</h3>
+        <h2 className="text-xl font-bold text-gray-800">Gerenciamento de Usuários</h2>
         {perms.canManageUsers() && (
           <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
             <DialogTrigger asChild>
-              <Button>
+              <Button className="bg-[#1e3a5f] hover:bg-[#2d4a73] text-white shadow-sm rounded-xl px-6">
                 <Plus className="mr-2 h-4 w-4" /> Criar Novo Usuário
               </Button>
             </DialogTrigger>
@@ -365,76 +391,133 @@ export function UserManagementPanel({ currentUser }: UserManagementPanelProps) {
       </div>
 
       {loading ? (
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-          {[1, 2, 3].map(i => (
-            <Card key={i} className="animate-pulse">
-              <CardHeader>
-                <div className="h-6 bg-gray-200 rounded w-3/4 mb-2"></div>
-                <div className="h-4 bg-gray-200 rounded w-1/2"></div>
-              </CardHeader>
-              <CardContent>
-                <div className="h-4 bg-gray-200 rounded w-full mb-2"></div>
-                <div className="h-4 bg-gray-200 rounded w-2/3"></div>
-              </CardContent>
-            </Card>
-          ))}
+        <div className="bg-white rounded-2xl shadow-sm border border-gray-100/80 p-8 animate-pulse">
+          <div className="space-y-4">
+            {[1, 2, 3, 4, 5].map(i => (
+              <div key={i} className="flex items-center gap-4 h-14">
+                <div className="w-10 h-10 rounded-full bg-gray-200" />
+                <div className="flex-1 space-y-2">
+                  <div className="h-4 bg-gray-200 rounded w-1/4" />
+                  <div className="h-3 bg-gray-200 rounded w-1/3" />
+                </div>
+                <div className="h-6 bg-gray-200 rounded-full w-24" />
+              </div>
+            ))}
+          </div>
         </div>
       ) : users.length === 0 ? (
-        <Card className="text-center py-12">
-          <CardContent>
-            <h3 className="text-lg mb-2">Nenhum usuário encontrado</h3>
-            {perms.canManageUsers() && (
-              <p className="text-sm text-gray-600 mb-4">
-                Comece adicionando seu primeiro usuário.
-              </p>
-            )}
-            {perms.canManageUsers() && (
-              <Button onClick={() => setDialogOpen(true)}>
+        <div className="bg-white rounded-2xl shadow-sm border border-gray-100/80 p-12 text-center">
+          <h3 className="text-lg font-medium text-gray-800 mb-2">Nenhum usuário encontrado</h3>
+          {perms.canManageUsers() && (
+            <>
+              <p className="text-sm text-gray-500 mb-4">Comece adicionando seu primeiro usuário.</p>
+              <Button onClick={() => setDialogOpen(true)} className="bg-[#1e3a5f] hover:bg-[#2d4a73] text-white rounded-xl">
                 <Plus className="mr-2 h-4 w-4" /> Adicionar primeiro usuário
               </Button>
-            )}
-          </CardContent>
-        </Card>
+            </>
+          )}
+        </div>
       ) : (
-        <div className="grid grid-cols-1 gap-4">
-          {users.map(userItem => (
-            <Card key={userItem.id}>
-              <CardContent className="flex items-center justify-between p-4">
-                <div className="flex-1">
-                  <CardTitle className="text-md">{userItem.name}</CardTitle>
-                  <CardDescription>{userItem.email}</CardDescription>
-                </div>
-                <div className="flex items-center gap-3">
-                  <Badge variant="secondary">{getRoleLabel(userItem.role)}</Badge>
-                  {perms.canManageUsers() && (
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      onClick={() => handlePermissionsClick(userItem)}
-                      title="Gerenciar permissões"
-                    >
-                      <Shield className="h-4 w-4 mr-1" />
-                      Permissões
-                    </Button>
-                  )}
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    onClick={() => handleResetPasswordClick(userItem)}
-                  >
-                    Resetar Senha
-                  </Button>
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    onClick={() => handleEditUserClick(userItem)}
-                  >
-                    Editar
-                  </Button>
-                </div>
-              </CardContent>
-            </Card>
-          ))}
+        <div className="bg-white rounded-2xl shadow-sm border border-gray-100/80 overflow-hidden">
+          <table className="w-full">
+            <thead>
+              <tr className="border-b border-gray-100">
+                <th className="text-left py-4 px-6 text-xs font-semibold text-gray-500 uppercase tracking-wider">Usuário</th>
+                <th className="text-left py-4 px-6 text-xs font-semibold text-gray-500 uppercase tracking-wider">Perfil</th>
+                <th className="text-right py-4 px-6 text-xs font-semibold text-gray-500 uppercase tracking-wider">Ações</th>
+              </tr>
+            </thead>
+            <tbody>
+              {paginatedUsers.map((userItem) => (
+                <tr key={userItem.id} className="border-b border-gray-50 last:border-0 hover:bg-gray-50/50 transition-colors">
+                  <td className="py-4 px-6">
+                    <div className="flex items-center gap-3">
+                      <div className="w-10 h-10 rounded-full bg-gray-200 flex items-center justify-center text-sm font-semibold text-gray-600 shrink-0">
+                        {getInitials(userItem.name)}
+                      </div>
+                      <div>
+                        <p className="font-medium text-gray-800">{userItem.name}</p>
+                        <p className="text-sm text-gray-500">{userItem.email}</p>
+                      </div>
+                    </div>
+                  </td>
+                  <td className="py-4 px-6">
+                    <Badge variant="secondary" className="rounded-full px-3 py-0.5 text-xs font-medium bg-gray-100 text-gray-700 border-0">
+                      {getRoleLabel(userItem.role).toUpperCase()}
+                    </Badge>
+                  </td>
+                  <td className="py-4 px-6 text-right">
+                    <div className="flex items-center justify-end gap-2">
+                      {perms.canManageUsers() && (
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => handlePermissionsClick(userItem)}
+                          title="Gerenciar permissões"
+                          className="rounded-lg bg-gray-50 border-gray-200 hover:bg-gray-100 text-gray-700"
+                        >
+                          <Settings className="h-4 w-4 mr-1.5" />
+                          Permissões
+                        </Button>
+                      )}
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => handleResetPasswordClick(userItem)}
+                        className="rounded-lg bg-gray-50 border-gray-200 hover:bg-gray-100 text-gray-700"
+                      >
+                        <KeyRound className="h-4 w-4 mr-1.5" />
+                        Resetar Senha
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => handleEditUserClick(userItem)}
+                        className="rounded-lg bg-gray-50 border-gray-200 hover:bg-gray-100 text-gray-700"
+                      >
+                        <Pencil className="h-4 w-4 mr-1.5" />
+                        Editar
+                      </Button>
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+
+          {totalPages > 1 && (
+            <div className="border-t border-gray-100 px-6 py-4 flex justify-center">
+              <Pagination>
+                <PaginationContent>
+                  <PaginationItem>
+                    <PaginationPrevious
+                      href="#"
+                      onClick={(e) => { e.preventDefault(); handlePageChange(Math.max(1, currentPage - 1)); }}
+                      className={currentPage <= 1 ? 'pointer-events-none opacity-50' : ''}
+                    />
+                  </PaginationItem>
+                  {Array.from({ length: totalPages }, (_, i) => i + 1).map((page) => (
+                    <PaginationItem key={page}>
+                      <PaginationLink
+                        href="#"
+                        onClick={(e) => { e.preventDefault(); handlePageChange(page); }}
+                        isActive={page === currentPage}
+                      >
+                        {page}
+                      </PaginationLink>
+                    </PaginationItem>
+                  ))}
+                  <PaginationItem>
+                    <PaginationNext
+                      href="#"
+                      onClick={(e) => { e.preventDefault(); handlePageChange(Math.min(totalPages, currentPage + 1)); }}
+                      className={currentPage >= totalPages ? 'pointer-events-none opacity-50' : ''}
+                    />
+                  </PaginationItem>
+                </PaginationContent>
+              </Pagination>
+            </div>
+          )}
         </div>
       )}
 

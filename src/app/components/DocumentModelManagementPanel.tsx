@@ -10,7 +10,7 @@ import { Input } from './ui/input';
 import { Label } from './ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select';
 import { Checkbox } from './ui/checkbox'; // Removed Textarea as it's not needed for new model creation
-import { Plus, FileText, Edit, Trash2 } from 'lucide-react'; // Added Edit and Trash2 icons
+import { Plus, FileText, Edit, Trash2, Copy } from 'lucide-react';
 import { RichTextDocumentModelEditor } from './RichTextDocumentModelEditor'; // Import RichTextDocumentModelEditor
 import { toast } from 'sonner';
 
@@ -25,7 +25,8 @@ export function DocumentModelManagementPanel({ currentUser }: DocumentModelManag
   const [editDialogOpen, setEditDialogOpen] = useState(false); // For edit dialog
   const [selectedModelForEdit, setSelectedModelForEdit] = useState<DocumentModel | null>(null); // For editing existing model
   const [isSavingModel, setIsSavingModel] = useState(false); // For saving state in editor
-  const [deletingModelId, setDeletingModelId] = useState<string | null>(null); // For delete confirmation
+  const [deletingModelId, setDeletingModelId] = useState<string | null>(null);
+  const [duplicatingModelId, setDuplicatingModelId] = useState<string | null>(null);
 
   useEffect(() => {
     loadDocumentModels();
@@ -97,6 +98,32 @@ export function DocumentModelManagementPanel({ currentUser }: DocumentModelManag
     // Se for um rascunho local, preparamos o editor com os dados dele
     setSelectedModelForEdit(model);
     setEditDialogOpen(true);
+  };
+
+  const handleDuplicateModel = async (model: DocumentModel) => {
+    if (currentUser.role !== 'admin' && currentUser.role !== 'manager' && currentUser.role !== 'technical_responsible') {
+      toast.error('Permissão negada: Somente administradores, gerentes ou técnicos responsáveis podem duplicar modelos.');
+      return;
+    }
+    setDuplicatingModelId(model.id);
+    try {
+      const newName = `${model.name} (cópia)`;
+      await apiService.createDocumentModel(
+        newName,
+        model.type,
+        model.templateContent,
+        false,
+        undefined,
+        model.isDraft ?? false,
+        model.aiGuidance ?? ''
+      );
+      toast.success('Modelo duplicado com sucesso!');
+      await loadDocumentModels();
+    } catch (error: any) {
+      toast.error(`Erro ao duplicar modelo: ${error.message}`);
+    } finally {
+      setDuplicatingModelId(null);
+    }
   };
 
   const handleDeleteModel = async (model: DocumentModel) => {
@@ -208,6 +235,22 @@ export function DocumentModelManagementPanel({ currentUser }: DocumentModelManag
                 </div>
                 {(currentUser.role === 'admin' || currentUser.role === 'manager' || currentUser.role === 'technical_responsible') && (
                   <div className="flex gap-1 flex-shrink-0">
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleDuplicateModel(model);
+                      }}
+                      title="Duplicar modelo"
+                      disabled={duplicatingModelId === model.id}
+                    >
+                      {duplicatingModelId === model.id ? (
+                        <div className="h-4 w-4 animate-spin rounded-full border-2 border-current border-t-transparent" />
+                      ) : (
+                        <Copy className="h-4 w-4" />
+                      )}
+                    </Button>
                     <Button
                       variant="ghost"
                       size="icon"
