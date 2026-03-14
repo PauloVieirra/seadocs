@@ -4,8 +4,9 @@
   "version": "0.0.1",
   "type": "module",
   "scripts": {
-    "build": "vite build",
-    "dev": "concurrently -n vite,rag -c blue,green \"vite\" \"cd rag_service && python3 -m uvicorn api:app --reload --host 0.0.0.0 --port 8000\"",
+    "build": "npm run copy-spec && vite build",
+    "copy-spec": "mkdir -p public && node scripts/generate-spec-files.js",
+    "dev": "npm run copy-spec && concurrently -n vite,rag -c blue,green \"vite\" \"cd rag_service && python3 -m uvicorn api:app --reload --host 0.0.0.0 --port 8000\"",
     "dev:frontend": "vite",
     "rag": "cd rag_service && python3 -m uvicorn api:app --reload --host 0.0.0.0 --port 8000"
   },

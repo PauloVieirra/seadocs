@@ -61,7 +61,7 @@ export function DocumentModelManagementPanel({ currentUser }: DocumentModelManag
   };
 
 
-  const handleEditDocumentModel = async (name: string, type: string, templateContent: string, isDraft: boolean, aiGuidance: string) => {
+  const handleEditDocumentModel = async (name: string, type: string, templateContent: string, isDraft: boolean, aiGuidance: string, specPath?: string) => {
     setIsSavingModel(true);
     try {
       if (!selectedModelForEdit) return;
@@ -71,11 +71,10 @@ export function DocumentModelManagementPanel({ currentUser }: DocumentModelManag
       }
 
       if (selectedModelForEdit.isLocalDraft) {
-        await apiService.createDocumentModel(name, type, templateContent, false, undefined, isDraft, aiGuidance);
+        await apiService.createDocumentModel(name, type, templateContent, false, undefined, isDraft, aiGuidance, specPath);
         await apiService.deleteLocalModelDraft(selectedModelForEdit.id);
       } else {
-        // Modelo já existente no banco
-        const updatedModel: DocumentModel = { ...selectedModelForEdit, name, type, templateContent, isDraft, aiGuidance };
+        const updatedModel: DocumentModel = { ...selectedModelForEdit, name, type, templateContent, isDraft, aiGuidance, specPath };
         await apiService.updateDocumentModel(updatedModel);
       }
 
@@ -115,7 +114,8 @@ export function DocumentModelManagementPanel({ currentUser }: DocumentModelManag
         false,
         undefined,
         model.isDraft ?? false,
-        model.aiGuidance ?? ''
+        model.aiGuidance ?? '',
+        model.specPath
       );
       toast.success('Modelo duplicado com sucesso!');
       await loadDocumentModels();
@@ -126,9 +126,14 @@ export function DocumentModelManagementPanel({ currentUser }: DocumentModelManag
     }
   };
 
+  const canDeleteModel = (model: DocumentModel) =>
+    model.isLocalDraft ||
+    model.creatorId === currentUser.id ||
+    (model.creatorId == null && currentUser.role === 'admin');
+
   const handleDeleteModel = async (model: DocumentModel) => {
-    if (currentUser.role !== 'admin' && currentUser.role !== 'manager' && currentUser.role !== 'technical_responsible') {
-      toast.error('Permissão negada: Somente administradores, gerentes ou técnicos responsáveis podem excluir modelos.');
+    if (!canDeleteModel(model)) {
+      toast.error('Apenas o usuário que criou o modelo pode excluí-lo.');
       return;
     }
 
@@ -262,6 +267,7 @@ export function DocumentModelManagementPanel({ currentUser }: DocumentModelManag
                     >
                       <Edit className="h-4 w-4" />
                     </Button>
+                    {canDeleteModel(model) && (
                     <AlertDialog>
                       <AlertDialogTrigger asChild onClick={(e) => e.stopPropagation()}>
                         <Button
@@ -298,6 +304,7 @@ export function DocumentModelManagementPanel({ currentUser }: DocumentModelManag
                         </AlertDialogFooter>
                       </AlertDialogContent>
                     </AlertDialog>
+                    )}
                   </div>
                 )}
               </CardHeader>

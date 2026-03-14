@@ -133,6 +133,10 @@ export function Wiki() {
           projectId={selectedDocument.projectId}
           viewMode={true}
           onExitViewMode={() => setSelectedDocument(null)}
+          onDocumentUpdated={async () => {
+            const updated = await apiService.getDocumentById(selectedDocument.id);
+            if (updated) setSelectedDocument(updated);
+          }}
         />
       </div>
     );

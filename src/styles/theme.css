@@ -196,7 +196,8 @@
 }
 
 /* Quando o tópico NÃO é seguido por um metadado, fecha a caixa */
-.ql-editor .sgid-topic:not(:has(+ .sgid-metadata-field)) {
+/* Adjacente (+ .sgid-metadata-field) ou com 1 bloco entre (+ * + .sgid-metadata-field) */
+.ql-editor .sgid-topic:not(:has(+ .sgid-metadata-field)):not(:has(+ * + .sgid-metadata-field)) {
   margin-bottom: 24px;
   border-bottom: 2px solid rgba(135, 206, 250, 0.3);
   border-radius: 12px;
@@ -239,9 +240,26 @@
   cursor: default;
 }
 
-/* Estilo para quando o metadado NÃO tem tópico antes (fallback) */
-.ql-editor *:not(.sgid-topic) + .sgid-metadata-field,
-.ql-editor .sgid-metadata-field:first-child {
+/* Metadado que segue tópico (adjacente ou com 1 bloco entre) - união visual */
+.ql-editor .sgid-topic + .sgid-metadata-field,
+.ql-editor .sgid-topic + * + .sgid-metadata-field {
+  margin-top: 0;
+  border-top: 1px dashed rgba(135, 206, 250, 0.2);
+}
+
+/* Colapsar o bloco vazio entre tópico e metadado para união visual */
+.ql-editor .sgid-topic + *:has(+ .sgid-metadata-field) {
+  margin: 0 !important;
+  padding: 0 !important;
+  min-height: 0 !important;
+  line-height: 0 !important;
+  overflow: hidden;
+  border: none !important;
+}
+
+/* Estilo para quando o metadado NÃO tem tópico antes (standalone) */
+.ql-editor .sgid-metadata-field:first-child,
+.ql-editor .sgid-metadata-field:not(.sgid-topic + .sgid-metadata-field):not(.sgid-topic + * + .sgid-metadata-field) {
   margin-top: 24px;
   border-radius: 12px;
   border-top: 2px solid rgba(135, 206, 250, 0.3);
@@ -672,6 +690,12 @@
   padding: 40px 60px 120px !important; /* Padding lateral interno da folha e espaço para a barra */
   position: relative;
   z-index: 10;
+}
+
+@media (max-width: 767px) {
+  .ql-editor {
+    padding: 16px 16px 120px !important; /* Mobile: 16px entre borda e texto */
+  }
 }
 
 .ql-editor .sgid-metadata-field__header {

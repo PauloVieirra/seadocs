@@ -1,4 +1,5 @@
 import { useEffect, useState, useCallback } from 'react';
+import { useLocation } from 'react-router-dom';
 import { Button } from './ui/button';
 import { Badge } from './ui/badge';
 import { ArrowLeft, Settings, Share, Eye, Edit3 } from 'lucide-react';
@@ -8,7 +9,7 @@ import { AIChat } from './AIChat';
 import { Avatar, AvatarFallback } from './ui/avatar';
 import { ShareDocumentDialog } from './ShareDocumentDialog';
 import { ProjectSettingsDialog } from './ProjectSettingsDialog';
-import { generateSectionContent } from '../../services/rag-api';
+import { useDocumentGeneration } from '../../contexts/DocumentGenerationContext';
 import { toast } from 'sonner';
 
 interface ProjectEditorProps {
@@ -18,6 +19,12 @@ interface ProjectEditorProps {
 }
 
 export function ProjectEditor({ projectId, documentId, onBack }: ProjectEditorProps) {
+  const location = useLocation();
+  const scrollToActiveSection = (location.state as { scrollToActiveSection?: boolean })?.scrollToActiveSection ?? false;
+  const currentUser = apiService.getCurrentUser();
+  const isExternalUser = currentUser?.role === 'external';
+  const { startGeneration, isGenerating, getJob } = useDocumentGeneration();
+
   const [project, setProject] = useState<Project | null>(null);
   const [document, setDocument] = useState<Document | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -30,29 +37,22 @@ export function ProjectEditor({ projectId, documentId, onBack }: ProjectEditorPr
     projectId: string;
     sections: DocumentSection[];
   } | null>(null);
-  const [isGeneratingDocument, setIsGeneratingDocument] = useState(false);
+
+  const isGeneratingDocument = isGenerating(documentId);
+  const sectionsBeingGeneratedByAI = getJob(documentId)?.sectionsBeingGenerated ?? new Set<string>();
+
+  useEffect(() => {
+    if (isExternalUser) setViewMode(true);
+  }, [isExternalUser]);
 
   useEffect(() => {
     loadProject();
     loadDocument();
     loadActiveUsers();
 
-    // Inscreve para atualizações em tempo real do documento
-    const subscription = apiService.subscribeToDocument(documentId, (updatedDoc) => {
-      // Atualiza o documento se:
-      // 1. Não houver um documento carregado ainda
-      // 2. A data de atualização do banco for maior que a data do estado local
-      setDocument(prev => {
-        if (!prev) return updatedDoc;
-        
-        const currentTs = new Date(prev.updatedAt).getTime();
-        const incomingTs = new Date(updatedDoc.updatedAt).getTime();
-        
-        if (incomingTs > currentTs) {
-          return updatedDoc;
-        }
-        return prev;
-      });
+    // Inscreve para atualizações em tempo real do documento (refetch para garantir formato correto)
+    const subscription = apiService.subscribeToDocument(documentId, () => {
+      loadDocument();
     });
 
     return () => {
@@ -103,41 +103,32 @@ export function ProjectEditor({ projectId, documentId, onBack }: ProjectEditorPr
     setGenerateRequest({ documentId, projectId, sections });
   }, [document, documentId, projectId]);
 
-  const handleConfirmGenerate = useCallback(async () => {
+  const triggerGeneration = useCallback((sections: DocumentSection[]) => {
+    if (!document) return;
+    startGeneration({
+      documentId,
+      projectId,
+      documentTitle: document.title,
+      sections,
+      templateId: document.templateId ?? undefined,
+    });
+    setGenerateRequest(null);
+  }, [document, documentId, projectId, startGeneration]);
+
+  const handleConfirmGenerate = useCallback(() => {
     if (!generateRequest || !document) return;
-    setIsGeneratingDocument(true);
-    toast.info(`Gerando ${generateRequest.sections.length} seção(ões)...`);
+    triggerGeneration(generateRequest.sections);
+  }, [generateRequest, document, triggerGeneration]);
 
-    try {
-      let documentContext = '';
-      for (let i = 0; i < generateRequest.sections.length; i++) {
-        const section = generateRequest.sections[i];
-        toast.loading(`Gerando: ${section.title}...`, { id: 'gen-doc' });
-
-        const { content: aiContent } = await generateSectionContent({
-          projectId: generateRequest.projectId,
-          sectionTitle: section.title,
-          helpText: section.helpText,
-          documentContext: documentContext || undefined,
-        });
-
-        if (apiService.isUUID(document.id)) {
-          await apiService.updateDocumentSection(document.id, section.id, aiContent);
-        }
-
-        documentContext += `\n${section.title}: ${aiContent.slice(0, 300)}`;
-      }
-
-      toast.success('Documento gerado com sucesso!', { id: 'gen-doc' });
-      await loadDocument();
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : 'Erro ao gerar documento';
-      toast.error(msg, { id: 'gen-doc' });
-    } finally {
-      setIsGeneratingDocument(false);
-      setGenerateRequest(null);
+  const handleRequestCreateDocument = useCallback(() => {
+    if (!document?.content?.sections) return;
+    const sections = document.content.sections.filter(s => s.isEditable);
+    if (sections.length === 0) {
+      toast.info('Nenhuma seção editável encontrada.');
+      return;
     }
-  }, [generateRequest, document]);
+    triggerGeneration(sections);
+  }, [document, triggerGeneration]);
 
   if (!project || !document) {
     return (
@@ -192,25 +183,34 @@ export function ProjectEditor({ projectId, documentId, onBack }: ProjectEditorPr
                 </Badge>
               )}
 
-              <Button 
-                variant={viewMode ? "default" : "outline"} 
-                size="sm" 
-                onClick={() => setViewMode(!viewMode)}
-              >
-                {viewMode ? (
-                  <>
-                    <Edit3 className="w-4 h-4 mr-2" />
-                    Modo Edição
-                  </>
-                ) : (
-                  <>
-                    <Eye className="w-4 h-4 mr-2" />
-                    Visualizar
-                  </>
-                )}
-              </Button>
+              {isGeneratingDocument && (
+                <Badge variant="secondary" className="animate-pulse bg-blue-50 text-blue-700 border-blue-200 flex items-center gap-1.5">
+                  <span className="w-2 h-2 rounded-full bg-blue-500 animate-ping inline-block" />
+                  IA gerando documento...
+                </Badge>
+              )}
 
-              {!viewMode && (
+              {!isExternalUser && (
+                <Button 
+                  variant={viewMode ? "default" : "outline"} 
+                  size="sm" 
+                  onClick={() => setViewMode(!viewMode)}
+                >
+                  {viewMode ? (
+                    <>
+                      <Edit3 className="w-4 h-4 mr-2" />
+                      Modo Edição
+                    </>
+                  ) : (
+                    <>
+                      <Eye className="w-4 h-4 mr-2" />
+                      Visualizar
+                    </>
+                  )}
+                </Button>
+              )}
+
+              {!viewMode && !isExternalUser && (
                 <>
                   <Button variant="outline" size="sm" onClick={() => setShareDialogOpen(true)}>
                     <Share className="w-4 h-4 mr-2" />
@@ -230,13 +230,16 @@ export function ProjectEditor({ projectId, documentId, onBack }: ProjectEditorPr
 
       {/* Editor */}
       <main className={`flex-1 overflow-auto ${viewMode ? 'bg-gray-200 py-8' : ''}`}>
-        <DocumentEditor 
-          document={document} 
+        <DocumentEditor
+          document={document}
           onSave={handleSave}
           projectId={projectId}
           viewMode={viewMode}
-          onExitViewMode={() => setViewMode(false)}
-          onRequestGenerateAll={handleRequestGenerateAll}
+          onExitViewMode={isExternalUser ? undefined : () => setViewMode(false)}
+          onRequestGenerateAll={isExternalUser ? undefined : handleRequestGenerateAll}
+          onDocumentUpdated={loadDocument}
+          sectionsBeingGeneratedByParent={sectionsBeingGeneratedByAI}
+          scrollToActiveSection={scrollToActiveSection}
         />
       </main>
 
@@ -248,8 +251,8 @@ export function ProjectEditor({ projectId, documentId, onBack }: ProjectEditorPr
         onUpdateSuccess={loadProject}
       />
 
-      {/* AI Chat Assistant - Ocultar no modo de visualização para foco total */}
-      {!viewMode && (
+      {/* AI Chat Assistant - Ocultar no modo de visualização e para usuários externos */}
+      {!viewMode && !isExternalUser && (
         <AIChat
           projectId={projectId}
           documentId={documentId}
@@ -258,6 +261,7 @@ export function ProjectEditor({ projectId, documentId, onBack }: ProjectEditorPr
           onGenerateComplete={() => setGenerateRequest(null)}
           forceOpen={!!generateRequest}
           onSuggestedGenerateDocument={handleSuggestedGenerateDocument}
+          onRequestCreateDocument={handleRequestCreateDocument}
         />
       )}
 

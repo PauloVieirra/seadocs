@@ -5,6 +5,7 @@ import { Send, Bot, User, Loader2, Minimize2, Paperclip, FileCheck } from 'lucid
 import { apiService } from '../../services/api';
 import { invalidateRAGSummaryCache } from '../../services/local-db';
 import { getDocumentationSummaryWithCache, getDocumentUnderstandingWithCache, chatWithRAG, type DocumentSectionInput } from '../../services/rag-api';
+import { useDocumentGeneration } from '../../contexts/DocumentGenerationContext';
 import { toast } from 'sonner';
 import type { DocumentSection } from '../../services/api';
 
@@ -36,14 +37,22 @@ interface AIChatProps {
   forceOpen?: boolean;
   /** Chamado quando a IA sugere gerar o documento (ex: usuário pediu "gere o documento") */
   onSuggestedGenerateDocument?: () => void;
+  /** Chamado quando o usuário confirma "criar documento" no fluxo pós-resumo (gera direto parágrafo a parágrafo) */
+  onRequestCreateDocument?: () => void;
 }
 
-export function AIChat({ projectId, documentId, generateRequest, onConfirmGenerate, onGenerateComplete, forceOpen, onSuggestedGenerateDocument }: AIChatProps) {
-  const [messages, setMessages] = useState<Message[]>([
+export function AIChat({ projectId, documentId, generateRequest, onConfirmGenerate, onGenerateComplete, forceOpen, onSuggestedGenerateDocument, onRequestCreateDocument }: AIChatProps) {
+  const isProjectContext = !documentId;
+  const { getJob } = useDocumentGeneration();
+  const generationJob = documentId ? getJob(documentId) : undefined;
+  const isGeneratingFromChat = generationJob?.status === 'running';
+  const [messages, setMessages] = useState<Message[]>(() => [
     {
       id: '1',
       role: 'assistant',
-      content: 'Olá! Sou seu assistente de IA. Carregando resumo da documentação...',
+      content: isProjectContext
+        ? 'Olá! Sou seu assistente de IA. Posso responder perguntas sobre o projeto com base na documentação disponível. Como posso ajudar?'
+        : 'Olá! Sou seu assistente de IA. Carregando resumo da documentação...',
       timestamp: new Date()
     }
   ]);
@@ -98,8 +107,8 @@ export function AIChat({ projectId, documentId, generateRequest, onConfirmGenera
             label: 'Correto, crie o documento',
             onClick: () => {
               onConfirmGenerate();
-              onGenerateComplete?.();
               lastGenerateRequestRef.current = null;
+              onGenerateComplete?.();
             },
           } : undefined,
         };
@@ -125,10 +134,10 @@ export function AIChat({ projectId, documentId, generateRequest, onConfirmGenera
     runUnderstanding();
   }, [generateRequest, documentId, projectId, onConfirmGenerate, onGenerateComplete]);
 
-  // Ao abrir o chat (sem generateRequest), exibe resumo do entendimento sobre a documentação da base de dados (RAG)
-  // Usa cache local se já existir análise anterior e não houver documentos novos
+  // Ao abrir o chat no nível do documento (com documentId), exibe resumo da documentação
+  // No nível do projeto, não carrega resumo — o chat funciona como assistente para perguntas
   useEffect(() => {
-    if (hasAnalyzedRef.current || generateRequest) return;
+    if (isProjectContext || hasAnalyzedRef.current || generateRequest) return;
 
     const loadSummary = async () => {
       try {
@@ -144,11 +153,22 @@ export function AIChat({ projectId, documentId, generateRequest, onConfirmGenera
         const summaryMessage: Message = {
           id: 'summary-' + Date.now(),
           role: 'assistant',
-          content: summary + (sources_count > 0 ? `\n\n📚 Base de conhecimento: ${sources_count} trecho(s) indexado(s). Como posso ajudar?` : ''),
+          content: summary + (sources_count > 0 ? `\n\n📚 Base de conhecimento: ${sources_count} trecho(s) indexado(s).` : ''),
           timestamp: new Date()
         };
 
-        setMessages([summaryMessage]);
+        const askCreateDocMessage: Message = {
+          id: 'ask-create-doc-' + Date.now(),
+          role: 'assistant',
+          content: 'Deseja criar o documento?',
+          timestamp: new Date(),
+          action: onRequestCreateDocument ? {
+            label: 'Sim, criar documento',
+            onClick: onRequestCreateDocument,
+          } : undefined,
+        };
+
+        setMessages([summaryMessage, askCreateDocMessage]);
       } catch (error) {
         console.error('Erro ao carregar resumo:', error);
         const fallbackMessage: Message = {
@@ -164,7 +184,7 @@ export function AIChat({ projectId, documentId, generateRequest, onConfirmGenera
     };
 
     loadSummary();
-  }, [projectId, generateRequest]);
+  }, [projectId, generateRequest, onRequestCreateDocument, isProjectContext]);
 
   const handleSend = async () => {
     if (!input.trim() || loading) return;
@@ -254,6 +274,50 @@ export function AIChat({ projectId, documentId, generateRequest, onConfirmGenera
     }
   };
 
+  const handleCreateTechnicalSummary = async () => {
+    try {
+      setIsAnalyzing(true);
+      setAnalysisStatus('Gerando resumo técnico...');
+
+      const files = await apiService.getProjectFiles(projectId);
+      const dataSourceIds = files.filter(f => f.isDataSource).map(f => f.id);
+      const { summary, sources_count } = await getDocumentationSummaryWithCache(projectId, dataSourceIds);
+
+      const summaryMsg: Message = {
+        id: 'tech-summary-' + Date.now(),
+        role: 'assistant',
+        content: summary + (sources_count > 0 ? `\n\n📚 Base de conhecimento: ${sources_count} trecho(s) indexado(s).` : ''),
+        timestamp: new Date(),
+      };
+      setMessages(prev => {
+        const next: Message[] = [...prev, summaryMsg];
+        // "Deseja criar o documento?" só no nível do documento
+        if (documentId && onRequestCreateDocument) {
+          next.push({
+            id: 'ask-create-doc-' + Date.now(),
+            role: 'assistant',
+            content: 'Deseja criar o documento?',
+            timestamp: new Date(),
+            action: { label: 'Sim, criar documento', onClick: onRequestCreateDocument },
+          });
+        }
+        return next;
+      });
+    } catch (err) {
+      console.error('Erro ao gerar resumo técnico:', err);
+      toast.error('Erro ao gerar resumo técnico');
+      const errMsg: Message = {
+        id: 'tech-summary-err-' + Date.now(),
+        role: 'assistant',
+        content: '❌ Não foi possível gerar o resumo técnico. Verifique se o serviço RAG está rodando.',
+        timestamp: new Date(),
+      };
+      setMessages(prev => [...prev, errMsg]);
+    } finally {
+      setIsAnalyzing(false);
+    }
+  };
+
   const handleAttachFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
     if (!files || files.length === 0 || uploadingFile || loading) return;
@@ -289,7 +353,23 @@ export function AIChat({ projectId, documentId, generateRequest, onConfirmGenera
           content: `✅ Documento "${uploaded.name}" enviado ao bucket e indexado na base de conhecimento (RAG). O conteúdo já está disponível para consultas.`,
           timestamp: new Date()
         };
-        setMessages(prev => [...prev, botMsg]);
+        setMessages(prev => {
+          const next = [...prev, botMsg];
+          // "Deseja criar o resumo técnico?" só no nível do documento
+          if (!isProjectContext) {
+            next.push({
+              id: 'attach-ask-summary-' + Date.now(),
+              role: 'assistant',
+              content: 'Deseja criar o resumo técnico da documentação?',
+              timestamp: new Date(),
+              action: {
+                label: 'Sim, criar resumo técnico',
+                onClick: () => handleCreateTechnicalSummary(),
+              },
+            });
+          }
+          return next;
+        });
         invalidateRAGSummaryCache(projectId).catch(() => {});
         toast.success(`"${uploaded.name}" adicionado e indexado!`);
       } catch (err: any) {
@@ -330,7 +410,7 @@ export function AIChat({ projectId, documentId, generateRequest, onConfirmGenera
           <Bot className="w-5 h-5" />
           <div>
             <h3 className="text-sm">Assistente de IA</h3>
-            <p className="text-xs opacity-90">Especialista em documentação</p>
+            <p className="text-xs opacity-90">{isProjectContext ? 'Contexto do projeto' : 'Contexto do documento'}</p>
           </div>
         </div>
         <Button
@@ -389,7 +469,7 @@ export function AIChat({ projectId, documentId, generateRequest, onConfirmGenera
             </div>
           ))}
           
-          {(loading || isAnalyzing || uploadingFile) && (
+          {(loading || isAnalyzing || uploadingFile || isGeneratingFromChat) && (
             <div className="flex gap-3">
               <div className="w-8 h-8 rounded-full bg-gray-200 flex items-center justify-center">
                 <Bot className="w-4 h-4 text-gray-700" />
@@ -397,7 +477,13 @@ export function AIChat({ projectId, documentId, generateRequest, onConfirmGenera
               <div className="bg-gray-100 p-3 rounded-lg flex items-center gap-2">
                 <Loader2 className="w-4 h-4 animate-spin text-gray-600" />
                 <span className="text-xs text-gray-600 animate-pulse">
-                  {uploadingFile ? 'Enviando e indexando documento...' : isAnalyzing ? analysisStatus : 'Processando...'}
+                  {uploadingFile
+                    ? 'Enviando e indexando documento...'
+                    : isGeneratingFromChat
+                    ? `Gerando documento: ${generationJob?.completedSections ?? 0}/${generationJob?.totalSections ?? 0} seções${generationJob?.currentSectionTitle ? ` — ${generationJob.currentSectionTitle}` : ''}`
+                    : isAnalyzing
+                    ? analysisStatus
+                    : 'Processando...'}
                 </span>
               </div>
             </div>
@@ -445,7 +531,9 @@ export function AIChat({ projectId, documentId, generateRequest, onConfirmGenera
           </Button>
         </div>
         <p className="text-xs text-gray-500 mt-2">
-          💡 Anexe documentos ou peça para adicionar, editar ou revisar
+          {isProjectContext
+            ? '💡 Pergunte sobre o projeto ou peça para criar um novo documento'
+            : '💡 Anexe documentos ou peça para adicionar, editar ou revisar'}
         </p>
       </div>
     </div>

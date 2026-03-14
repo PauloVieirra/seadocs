@@ -6,11 +6,13 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, Di
 import { Input } from './ui/input';
 import { Label } from './ui/label';
 import { Textarea } from './ui/textarea';
-import { Plus } from 'lucide-react';
+import { Plus, Edit, Copy, Trash2 } from 'lucide-react';
 import { MultiSelect } from './ui/multi-select';
 import { UserSearchSelect } from './UserSearchSelect'; // Importar novo componente
 import { ProjectSearchSelect } from './ProjectSearchSelect'; // Importar componente de busca de projetos
-import { GroupEditDialog } from './GroupEditDialog'; // Importar GroupEditDialog
+import { GroupEditDialog } from './GroupEditDialog';
+import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from './ui/alert-dialog';
+import { toast } from 'sonner';
 
 interface GroupManagementPanelProps {
   user: User;
@@ -35,6 +37,8 @@ export function GroupManagementPanel({ user }: GroupManagementPanelProps) {
   const [selectedResponsibleId, setSelectedResponsibleId] = useState<string | undefined>(undefined);
   const [selectedProjectIds, setSelectedProjectIds] = useState<string[]>([]);
   const [isCreating, setIsCreating] = useState(false);
+  const [duplicatingGroupId, setDuplicatingGroupId] = useState<string | null>(null);
+  const [deletingGroupId, setDeletingGroupId] = useState<string | null>(null);
 
   useEffect(() => {
     loadGroups();
@@ -77,20 +81,85 @@ export function GroupManagementPanel({ user }: GroupManagementPanelProps) {
       setDialogOpen(false);
       loadGroups();
     } catch (error: any) {
-      alert(error.message); // Exibir erro de permissão, por exemplo
+      const msg = error?.message || '';
+      if (msg.includes('Sessão expirada')) {
+        apiService.logout();
+        window.location.href = '/login';
+        return;
+      }
+      toast.error(msg);
     } finally {
       setIsCreating(false);
     }
   };
 
+  const canManageGroup = (group: Group) =>
+    user.role === 'admin' || user.role === 'manager' || user.role === 'technical_responsible' || user.id === group.responsibleId;
+
   const handleEditGroupClick = (group: Group) => {
-    // Permissão para editar grupo: Apenas Admin, Gerente, Técnico Responsável ou responsável pelo grupo
-    if (user.role !== 'admin' && user.role !== 'manager' && user.role !== 'technical_responsible' && user.id !== group.responsibleId) {
-      alert('Permissão negada: Você não tem permissão para editar este grupo.');
+    if (!canManageGroup(group)) {
+      toast.error('Permissão negada: Você não tem permissão para editar este grupo.');
       return;
     }
     setSelectedGroupForEdit(group);
     setEditDialogOpen(true);
+  };
+
+  const handleDuplicateGroup = async (group: Group) => {
+    if (user.role !== 'admin' && user.role !== 'manager' && user.role !== 'technical_responsible') {
+      toast.error('Permissão negada: Somente administradores, gerentes ou técnicos responsáveis podem duplicar grupos.');
+      return;
+    }
+    setDuplicatingGroupId(group.id);
+    try {
+      await apiService.createGroup(
+        `${group.name} (cópia)`,
+        group.description,
+        group.parentId,
+        group.memberIds || [],
+        group.responsibleId,
+        group.projectIds || []
+      );
+      toast.success('Grupo duplicado com sucesso!');
+      loadGroups();
+    } catch (error: any) {
+      const msg = error?.message || '';
+      if (msg.includes('Sessão expirada')) {
+        apiService.logout();
+        window.location.href = '/login';
+        return;
+      }
+      toast.error(`Erro ao duplicar grupo: ${msg}`);
+    } finally {
+      setDuplicatingGroupId(null);
+    }
+  };
+
+  const handleDeleteGroup = async (group: Group) => {
+    if (!canManageGroup(group)) {
+      toast.error('Permissão negada: Você não tem permissão para excluir este grupo.');
+      return;
+    }
+    setDeletingGroupId(group.id);
+    try {
+      const result = await apiService.deleteGroup(group.id);
+      if (result) {
+        toast.success('Grupo excluído com sucesso!');
+        setEditDialogOpen(false);
+        setSelectedGroupForEdit(null);
+        loadGroups();
+      }
+    } catch (error: any) {
+      const msg = error?.message || '';
+      if (msg.includes('Sessão expirada')) {
+        apiService.logout();
+        window.location.href = '/login';
+        return;
+      }
+      toast.error(`Erro ao excluir grupo: ${msg}`);
+    } finally {
+      setDeletingGroupId(null);
+    }
   };
 
   return (
@@ -210,13 +279,86 @@ export function GroupManagementPanel({ user }: GroupManagementPanelProps) {
           {groups.map(group => (
             <Card
               key={group.id}
-              className="hover:shadow-lg transition-shadow cursor-pointer"
-              onClick={() => handleEditGroupClick(group)} // Adicionar onClick para abrir o modal de edição
+              className="hover:shadow-lg transition-shadow cursor-pointer overflow-hidden"
+              onClick={(e) => {
+                if (!(e.target as HTMLElement).closest('button')) {
+                  handleEditGroupClick(group);
+                }
+              }}
             >
-              <CardHeader>
-                <CardTitle>{group.name}</CardTitle>
-                {group.description && (
-                  <CardDescription>{group.description}</CardDescription>
+              <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+                <div className="flex-1 min-w-0">
+                  <CardTitle className="text-lg break-words">{group.name}</CardTitle>
+                  {group.description && (
+                    <CardDescription className="line-clamp-2">{group.description}</CardDescription>
+                  )}
+                </div>
+                {(user.role === 'admin' || user.role === 'manager' || user.role === 'technical_responsible') && (
+                  <div className="flex gap-1 flex-shrink-0">
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleDuplicateGroup(group);
+                      }}
+                      title="Duplicar grupo"
+                      disabled={duplicatingGroupId === group.id}
+                    >
+                      {duplicatingGroupId === group.id ? (
+                        <div className="h-4 w-4 animate-spin rounded-full border-2 border-current border-t-transparent" />
+                      ) : (
+                        <Copy className="h-4 w-4" />
+                      )}
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleEditGroupClick(group);
+                      }}
+                      title="Editar grupo"
+                    >
+                      <Edit className="h-4 w-4" />
+                    </Button>
+                    <AlertDialog>
+                      <AlertDialogTrigger asChild onClick={(e) => e.stopPropagation()}>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          title="Excluir grupo"
+                          className="text-red-600 hover:text-red-700 hover:bg-red-50"
+                          disabled={deletingGroupId === group.id}
+                        >
+                          {deletingGroupId === group.id ? (
+                            <div className="h-4 w-4 animate-spin rounded-full border-2 border-red-600 border-t-transparent" />
+                          ) : (
+                            <Trash2 className="h-4 w-4" />
+                          )}
+                        </Button>
+                      </AlertDialogTrigger>
+                      <AlertDialogContent onClick={(e) => e.stopPropagation()}>
+                        <AlertDialogHeader>
+                          <AlertDialogTitle>Confirmar exclusão</AlertDialogTitle>
+                          <AlertDialogDescription>
+                            Tem certeza que deseja excluir o grupo &quot;{group.name}&quot;?
+                            Esta ação não pode ser desfeita.
+                          </AlertDialogDescription>
+                        </AlertDialogHeader>
+                        <AlertDialogFooter>
+                          <AlertDialogCancel disabled={deletingGroupId === group.id}>Cancelar</AlertDialogCancel>
+                          <AlertDialogAction
+                            onClick={() => handleDeleteGroup(group)}
+                            className="bg-red-600 hover:bg-red-700"
+                            disabled={deletingGroupId === group.id}
+                          >
+                            {deletingGroupId === group.id ? 'Excluindo...' : 'Excluir permanentemente'}
+                          </AlertDialogAction>
+                        </AlertDialogFooter>
+                      </AlertDialogContent>
+                    </AlertDialog>
+                  </div>
                 )}
               </CardHeader>
               <CardContent className="text-sm text-gray-600 space-y-2">

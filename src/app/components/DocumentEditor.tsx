@@ -1,12 +1,17 @@
 import React, { useState, useEffect, useRef } from 'react';
+import { useNavigate, useLocation } from 'react-router-dom';
 import { Button } from './ui/button';
 import { Textarea } from './ui/textarea';
-import { Sparkles, RotateCw, Plus, Save, FileDown, Edit3, Lock, RefreshCw } from 'lucide-react'; // Adicionado RefreshCw
+import { Sparkles, RotateCw, Plus, Save, FileDown, Edit3, Lock, RefreshCw, PenLine, PenTool } from 'lucide-react';
 import 'react-quill-new/dist/quill.snow.css';
 import { apiService, type Document, type DocumentContent, type DocumentSection } from '../../services/api';
+import { generateSectionContent } from '../../services/rag-api';
+import { fetchSpecContent } from '../../services/spec-service';
+import { getSignDocumentUrl, isGovBrConfigured } from '../../services/govbr-api';
 import { toast } from 'sonner';
 import { Badge } from './ui/badge';
-import { NewSectionDialog } from './NewSectionDialog'; // Importar NewSectionDialog
+import { NewSectionDialog } from './NewSectionDialog';
+import { TypingSectionContent } from './TypingSectionContent';
 import {
   AlertDialog,
   AlertDialogAction,
@@ -17,6 +22,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "./ui/alert-dialog";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from './ui/dialog';
 
 interface DocumentEditorProps {
   document: Document;
@@ -26,9 +32,15 @@ interface DocumentEditorProps {
   onExitViewMode?: () => void; // Callback para sair do modo de visualização
   /** Quando fornecido, "Gerar tudo com IA" dispara o fluxo no chat (resumo + confirmação) em vez de gerar direto */
   onRequestGenerateAll?: (sections: DocumentSection[]) => void;
+  /** Callback quando documento é assinado ou revisado (para recarregar dados) */
+  onDocumentUpdated?: () => void;
+  /** IDs das seções que estão sendo geradas pelo pai (ex: chat IA) - bloqueia edição */
+  sectionsBeingGeneratedByParent?: Set<string>;
+  /** Quando true, faz scroll para centralizar a seção sendo gerada (ex.: ao clicar no botão "IA gerando") */
+  scrollToActiveSection?: boolean;
 }
 
-export function DocumentEditor({ document, onSave, projectId, viewMode = false, onExitViewMode, onRequestGenerateAll }: DocumentEditorProps) {
+export function DocumentEditor({ document, onSave, projectId, viewMode = false, onExitViewMode, onRequestGenerateAll, onDocumentUpdated, sectionsBeingGeneratedByParent, scrollToActiveSection }: DocumentEditorProps) {
   const [content, setContent] = useState<DocumentContent>(document.content);
   const [activeLocks, setActiveLocks] = useState<{ section_id: string; user_id: string; user_name?: string }[]>([]); 
   const [updatingSections, setUpdatingSections] = useState<Set<string>>(new Set()); // Seções que estão sendo atualizadas via Realtime
@@ -42,6 +54,38 @@ export function DocumentEditor({ document, onSave, projectId, viewMode = false, 
   const [newSectionDialogOpen, setNewSectionDialogOpen] = useState(false); 
   const [isAddingSection, setIsAddingSection] = useState(false); 
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const sectionRefsMap = useRef<Map<string, HTMLDivElement | null>>(new Map());
+  const hasScrolledToActiveRef = useRef(false);
+
+  // Revisar / Assinar (mobile, viewMode)
+  const [reviewDialogOpen, setReviewDialogOpen] = useState(false);
+  const [reviewJustification, setReviewJustification] = useState(document.reviewJustification || '');
+  const [isSavingReview, setIsSavingReview] = useState(false);
+  const [isSigning, setIsSigning] = useState(false);
+  const [signConfirmOpen, setSignConfirmOpen] = useState(false);
+
+  // Scroll para centralizar a seção sendo gerada (ao clicar no botão "IA gerando")
+  const navigate = useNavigate();
+  const location = useLocation();
+  useEffect(() => {
+    if (!scrollToActiveSection || !sectionsBeingGeneratedByParent?.size) return;
+    const sectionId = Array.from(sectionsBeingGeneratedByParent)[0];
+    if (!sectionId) return;
+    const tryScroll = () => {
+      const el = sectionRefsMap.current.get(sectionId);
+      if (el) {
+        el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        hasScrolledToActiveRef.current = true;
+        navigate(location.pathname, { replace: true, state: {} });
+        return true;
+      }
+      return false;
+    };
+    if (!tryScroll()) {
+      const t = setTimeout(tryScroll, 300);
+      return () => clearTimeout(t);
+    }
+  }, [scrollToActiveSection, sectionsBeingGeneratedByParent, navigate, location.pathname, content.sections.length]);
 
   // Verificar se o resumo da IA está pronto para habilitar o botão de geração
   useEffect(() => {
@@ -188,6 +232,9 @@ export function DocumentEditor({ document, onSave, projectId, viewMode = false, 
     return locksArray.find(l => l.section_id === sectionId && l.user_id !== currentUser?.id);
   };
 
+  const isSectionBeingGenerated = (sectionId: string) =>
+    sectionsBeingGeneratedByAI.has(sectionId) || (sectionsBeingGeneratedByParent?.has(sectionId) ?? false);
+
   const handleSectionChange = (sectionId: string, newContent: string) => {
     if (viewMode || getSectionLock(sectionId)) return; 
     
@@ -221,11 +268,46 @@ export function DocumentEditor({ document, onSave, projectId, viewMode = false, 
     window.print();
   };
 
+  const handleSaveReview = async () => {
+    setIsSavingReview(true);
+    try {
+      await apiService.saveReviewJustification(document.id, reviewJustification);
+      toast.success('Justificativa de revisão salva.');
+      setReviewDialogOpen(false);
+      onDocumentUpdated?.();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Erro ao salvar justificativa.');
+    } finally {
+      setIsSavingReview(false);
+    }
+  };
+
+  const handleSign = async () => {
+    setSignConfirmOpen(false);
+    const govBrUrl = getSignDocumentUrl(document.id);
+    if (govBrUrl && isGovBrConfigured()) {
+      window.location.href = govBrUrl;
+      toast.info('Redirecionando para assinatura Gov.br...');
+      return;
+    }
+    setIsSigning(true);
+    try {
+      await apiService.signDocument(document.id);
+      toast.success('Documento assinado com sucesso.');
+      onDocumentUpdated?.();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Erro ao assinar documento.');
+    } finally {
+      setIsSigning(false);
+    }
+  };
+
   if (viewMode) {
     return (
-      <div className="flex flex-col items-center min-h-full font-sans antialiased">
+      <>
+      <div className="flex flex-col items-center min-h-full font-sans antialiased px-4 md:px-0">
         {/* ... código existente ... */}
-        <div className="w-full max-w-4xl mb-4 flex justify-between items-center print:hidden px-4 md:px-0">
+        <div className="w-full max-w-4xl mb-4 flex justify-between items-center print:hidden">
           <div className="flex items-center gap-2">
             <Badge variant="outline" className="bg-white px-3 py-1 text-blue-600 border-blue-200">
               Modo de Visualização
@@ -236,15 +318,17 @@ export function DocumentEditor({ document, onSave, projectId, viewMode = false, 
               <FileDown className="w-4 h-4 mr-2" />
               Baixar PDF
             </Button>
-            <Button variant="default" size="sm" onClick={onExitViewMode}>
-              <Edit3 className="w-4 h-4 mr-2" />
-              Voltar a Editar
-            </Button>
+            {onExitViewMode && (
+              <Button variant="default" size="sm" onClick={onExitViewMode}>
+                <Edit3 className="w-4 h-4 mr-2" />
+                Voltar a Editar
+              </Button>
+            )}
           </div>
         </div>
 
         {/* Document Page */}
-        <div className="w-full max-w-[21cm] bg-white shadow-2xl p-[2.5cm] min-h-[29.7cm] flex flex-col print:shadow-none print:p-0 print:w-full">
+        <div className="w-full max-w-[21cm] bg-white shadow-2xl p-4 md:p-[2.5cm] min-h-[29.7cm] flex flex-col print:shadow-none print:p-0 print:w-full">
           <div className="space-y-8">
             {content.sections.map((section) => (
               <div key={section.id} className="break-inside-avoid">
@@ -261,7 +345,81 @@ export function DocumentEditor({ document, onSave, projectId, viewMode = false, 
             <p>Página 1 de 1</p>
           </div>
         </div>
+
+        {/* Botões Revisar e Assinar - mobile, fora do texto */}
+        <div className="w-full max-w-4xl mt-6 flex flex-col gap-3 md:hidden print:hidden">
+          <div className="flex gap-3">
+            <Button
+              variant="outline"
+              className="flex-1"
+              onClick={() => {
+                setReviewJustification(document.reviewJustification || '');
+                setReviewDialogOpen(true);
+              }}
+            >
+              <PenLine className="w-4 h-4 mr-2" />
+              Revisar
+            </Button>
+            <Button
+              variant="default"
+              className="flex-1"
+              onClick={() => setSignConfirmOpen(true)}
+              disabled={!!document.signedAt || isSigning}
+            >
+              <PenTool className="w-4 h-4 mr-2" />
+              {document.signedAt ? 'Assinado' : isSigning ? 'Assinando...' : 'Assinar'}
+            </Button>
+          </div>
+          {document.signedAt && (
+            <p className="text-xs text-green-600 text-center">
+              Assinado em {new Date(document.signedAt).toLocaleString('pt-BR')}
+            </p>
+          )}
+        </div>
       </div>
+
+      <Dialog open={reviewDialogOpen} onOpenChange={setReviewDialogOpen}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Justificativa da Revisão</DialogTitle>
+            <DialogDescription>
+              Descreva os motivos ou observações da revisão deste documento.
+            </DialogDescription>
+          </DialogHeader>
+          <Textarea
+            value={reviewJustification}
+            onChange={(e) => setReviewJustification(e.target.value)}
+            placeholder="Ex: Ajustes de redação, correções técnicas..."
+            className="min-h-[120px]"
+          />
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setReviewDialogOpen(false)}>
+              Cancelar
+            </Button>
+            <Button onClick={handleSaveReview} disabled={isSavingReview}>
+              {isSavingReview ? 'Salvando...' : 'Salvar'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <AlertDialog open={signConfirmOpen} onOpenChange={setSignConfirmOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Confirmar assinatura</AlertDialogTitle>
+            <AlertDialogDescription>
+              Deseja assinar o documento &quot;{document.name}&quot;? Essa ação não poderá ser desfeita.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancelar</AlertDialogCancel>
+            <AlertDialogAction onClick={handleSign} className="bg-blue-600 hover:bg-blue-700">
+              Sim, Assinar
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+      </>
     );
   }
 
@@ -304,6 +462,21 @@ export function DocumentEditor({ document, onSave, projectId, viewMode = false, 
     const section = content.sections.find(s => s.id === sectionId);
     if (!section || !section.isEditable) return;
 
+    const sectionIndex = content.sections.findIndex(s => s.id === sectionId);
+    const previousSections = content.sections.slice(0, sectionIndex);
+    const previousSectionsHtml = previousSections
+      .filter(s => s.content?.trim())
+      .map(s => `<section data-title="${s.title}">\n${s.content}\n</section>`)
+      .join('\n\n');
+
+    let specGuidelines: string | undefined;
+    if (document.templateId) {
+      const model = await apiService.getDocumentModel(document.templateId);
+      if (model?.specPath) {
+        specGuidelines = await fetchSpecContent(model.specPath) ?? undefined;
+      }
+    }
+
     try {
       setSectionsBeingGeneratedByAI(prev => {
         const next = new Set(prev);
@@ -317,14 +490,17 @@ export function DocumentEditor({ document, onSave, projectId, viewMode = false, 
 
       toast.loading(`Refazendo conteúdo para: ${section.title}...`, { id: 'regen-section' });
 
-      const aiContent = await apiService.generateWithAI(
-        projectId, 
-        section.id, 
-        section.title, 
-        section.helpText
-      );
+      const { content: aiContent } = await generateSectionContent({
+        projectId,
+        sectionTitle: section.title,
+        helpText: section.helpText,
+        previousSectionsHtml: previousSectionsHtml || undefined,
+        sectionIndex,
+        totalSections: content.sections.length,
+        specGuidelines,
+      });
 
-      const updatedSections = content.sections.map(s => 
+      const updatedSections = content.sections.map(s =>
         s.id === sectionId ? { ...s, content: aiContent } : s
       );
 
@@ -361,11 +537,20 @@ export function DocumentEditor({ document, onSave, projectId, viewMode = false, 
       return;
     }
 
+    let specGuidelines: string | undefined;
+    if (document.templateId) {
+      const model = await apiService.getDocumentModel(document.templateId);
+      if (model?.specPath) {
+        specGuidelines = await fetchSpecContent(model.specPath) ?? undefined;
+      }
+    }
+
     setIsGeneratingAll(true);
     toast.info(`Iniciando recriação completa: ${targetSections.length} seções.`);
 
     try {
       const updatedSections = [...content.sections];
+      let previousSectionsHtml = '';
 
       for (let i = 0; i < updatedSections.length; i++) {
         const section = updatedSections[i];
@@ -384,14 +569,18 @@ export function DocumentEditor({ document, onSave, projectId, viewMode = false, 
 
             toast.loading(`Gerando conteúdo para: ${section.title}...`, { id: 'gen-progress' });
             
-            const aiContent = await apiService.generateWithAI(
-              projectId, 
-              section.id, 
-              section.title, 
-              section.helpText
-            );
+            const { content: aiContent } = await generateSectionContent({
+              projectId,
+              sectionTitle: section.title,
+              helpText: section.helpText,
+              previousSectionsHtml: previousSectionsHtml || undefined,
+              sectionIndex: i,
+              totalSections: updatedSections.length,
+              specGuidelines,
+            });
 
             updatedSections[i] = { ...section, content: aiContent };
+            previousSectionsHtml += (previousSectionsHtml ? '\n\n' : '') + `<section data-title="${section.title}">\n${aiContent}\n</section>`;
             
             if (apiService.isUUID(document.id)) {
               await apiService.updateDocumentSection(document.id, section.id, aiContent);
@@ -441,8 +630,8 @@ export function DocumentEditor({ document, onSave, projectId, viewMode = false, 
   };
 
   return (
-    <div className="flex flex-col items-center min-h-screen bg-gray-100 py-8 font-sans antialiased">
-      <div className="w-full max-w-4xl bg-white rounded-lg shadow-md p-10 space-y-8">
+    <div className="flex flex-col items-center min-h-screen bg-gray-100 py-8 font-sans antialiased px-4 md:px-0">
+      <div className="w-full max-w-4xl bg-white rounded-lg shadow-md p-4 md:p-10 space-y-8">
         {/* Document Header */}
         <div className="mb-8 pb-6 border-b border-gray-200 flex justify-between items-center">
           <div>
@@ -484,7 +673,11 @@ export function DocumentEditor({ document, onSave, projectId, viewMode = false, 
             const lock = getSectionLock(section.id);
             
             return (
-              <div key={section.id} className="group relative">
+              <div
+                key={section.id}
+                ref={(el) => { sectionRefsMap.current.set(section.id, el); }}
+                className="group relative"
+              >
                 <div className="flex gap-2 items-center mb-2 justify-end">
                   {section.helpText && (
                     <Badge variant="outline" className="text-[10px] font-normal opacity-50">
@@ -504,38 +697,57 @@ export function DocumentEditor({ document, onSave, projectId, viewMode = false, 
                           setRegenTarget(section.id);
                           setConfirmRegenOpen(true);
                         }}
-                        disabled={isGeneratingAll || sectionsBeingGeneratedByAI.has(section.id) || !!lock}
+                        disabled={isGeneratingAll || isSectionBeingGenerated(section.id) || !!lock}
                       >
-                        <RefreshCw className={`w-3 h-3 mr-1.5 ${sectionsBeingGeneratedByAI.has(section.id) ? 'animate-spin' : ''}`} />
+                        <RefreshCw className={`w-3 h-3 mr-1.5 ${isSectionBeingGenerated(section.id) ? 'animate-spin' : ''}`} />
                         Refazer
                       </Button>
                     </div>
 
-                    <Textarea
-                      value={section.content || ''}
-                      onChange={(e) => handleSectionChange(section.id, e.target.value)}
-                      onFocus={() => handleSectionFocus(section.id)}
-                      onBlur={() => handleSectionBlur(section.id)}
-                      placeholder={lock ? `Bloqueado por ${lock.user_name}` : `Digite aqui para "${section.title}"...`}
-                      disabled={!!lock || sectionsBeingGeneratedByAI.has(section.id)}
-                      className={`min-h-[140px] transition-all ${
-                        lock ? 'bg-gray-50 border-red-200 cursor-not-allowed opacity-60' : 
-                        sectionsBeingGeneratedByAI.has(section.id) ? 'bg-indigo-50/30 border-indigo-300' :
-                        updatingSections.has(section.id) ? 'border-blue-400 bg-blue-50/30' : ''
-                      }`}
-                    />
+                    {isSectionBeingGenerated(section.id) ? (
+                      <TypingSectionContent
+                        content={section.content || ''}
+                        isGenerating={isSectionBeingGenerated(section.id)}
+                      >
+                        {(displayValue) => (
+                          <Textarea
+                            value={displayValue}
+                            onChange={(e) => handleSectionChange(section.id, e.target.value)}
+                            onFocus={() => handleSectionFocus(section.id)}
+                            onBlur={() => handleSectionBlur(section.id)}
+                            placeholder={lock ? `Bloqueado por ${lock.user_name}` : `Digite aqui para "${section.title}"...`}
+                            disabled
+                            readOnly
+                            className="min-h-[140px] transition-all bg-indigo-50/30 border-indigo-300"
+                          />
+                        )}
+                      </TypingSectionContent>
+                    ) : (
+                      <Textarea
+                        value={section.content || ''}
+                        onChange={(e) => handleSectionChange(section.id, e.target.value)}
+                        onFocus={() => handleSectionFocus(section.id)}
+                        onBlur={() => handleSectionBlur(section.id)}
+                        placeholder={lock ? `Bloqueado por ${lock.user_name}` : `Digite aqui para "${section.title}"...`}
+                        disabled={!!lock}
+                        className={`min-h-[140px] transition-all ${
+                          lock ? 'bg-gray-50 border-red-200 cursor-not-allowed opacity-60' :
+                          updatingSections.has(section.id) ? 'border-blue-400 bg-blue-50/30' : ''
+                        }`}
+                      />
+                    )}
                     
                     {/* Tag de edição interna */}
-                    {(lock || sectionsBeingGeneratedByAI.has(section.id)) && (
+                    {(lock || isSectionBeingGenerated(section.id)) && (
                       <div className="absolute top-3 left-3 flex items-center pointer-events-none">
                         <Badge 
-                          variant={sectionsBeingGeneratedByAI.has(section.id) ? "default" : "destructive"} 
+                          variant={isSectionBeingGenerated(section.id) ? "default" : "destructive"} 
                           className={`flex items-center gap-1.5 text-[11px] font-medium animate-pulse py-1 px-2 ${
-                            sectionsBeingGeneratedByAI.has(section.id) ? 'bg-indigo-600' : ''
+                            isSectionBeingGenerated(section.id) ? 'bg-indigo-600' : ''
                           }`}
                         >
                           <Lock className="w-3 h-3" />
-                          {sectionsBeingGeneratedByAI.has(section.id) 
+                          {isSectionBeingGenerated(section.id) 
                             ? 'Tópico em edição por IA' 
                             : `Tópico em edição por ${lock?.user_name || 'outro usuário'}`
                           }
@@ -543,12 +755,12 @@ export function DocumentEditor({ document, onSave, projectId, viewMode = false, 
                       </div>
                     )}
 
-                    {lock && !sectionsBeingGeneratedByAI.has(section.id) && (
+                    {lock && !isSectionBeingGenerated(section.id) && (
                       <div className="absolute inset-0 z-10 flex items-center justify-center bg-gray-50/20" 
                            onClick={() => toast.warning(`Este campo está sendo editado por ${lock.user_name}`)}>
                       </div>
                     )}
-                    {updatingSections.has(section.id) && !sectionsBeingGeneratedByAI.has(section.id) && (
+                    {updatingSections.has(section.id) && !isSectionBeingGenerated(section.id) && (
                       <div className="absolute right-3 bottom-3 flex items-center gap-1.5 text-[10px] text-blue-600 font-medium animate-pulse">
                         <RotateCw className="w-3 h-3 animate-spin" />
                         Atualizando...

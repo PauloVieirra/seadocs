@@ -205,11 +205,57 @@ export async function chatWithRAG(params: {
   return res.json();
 }
 
+export interface PlannedSection {
+  id: string;
+  title: string;
+  helpText: string;
+  templateSectionId: string;
+}
+
+/**
+ * Fase de planejamento: consulta a base RAG e expande seções repetíveis
+ * (épicos, features, histórias de usuário, etc.) em instâncias concretas.
+ */
+export async function planDocumentStructure(params: {
+  projectId: string;
+  sections: Array<{
+    id: string;
+    title: string;
+    helpText?: string;
+    repeatable?: boolean;
+    planningInstruction?: string;
+  }>;
+}): Promise<PlannedSection[]> {
+  const res = await fetch(`${RAG_SERVICE_URL}/plan-document-structure`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      project_id: params.projectId,
+      sections: params.sections,
+    }),
+  });
+  if (!res.ok) {
+    const err = await res.text();
+    throw new Error(err || `RAG plan-document-structure failed: ${res.status}`);
+  }
+  const data = await res.json();
+  return data.planned_sections as PlannedSection[];
+}
+
 export async function generateSectionContent(params: {
   projectId: string;
   sectionTitle: string;
   helpText?: string;
+  /** Contexto textual (legado) - preferir previousSectionsHtml */
   documentContext?: string;
+  /** HTML completo das seções já geradas - a IA vê como partes do mesmo documento */
+  previousSectionsHtml?: string;
+  /** Índice desta seção (0-based) */
+  sectionIndex?: number;
+  /** Total de seções do documento */
+  totalSections?: number;
+  /** Conteúdo do documento Spec associado ao modelo. Obrigatório para seguir as diretrizes. */
+  specGuidelines?: string;
 }): Promise<{ content: string }> {
   const res = await fetch(`${RAG_SERVICE_URL}/generate-section-content`, {
     method: 'POST',
@@ -219,6 +265,10 @@ export async function generateSectionContent(params: {
       section_title: params.sectionTitle,
       help_text: params.helpText ?? null,
       document_context: params.documentContext ?? null,
+      previous_sections_html: params.previousSectionsHtml ?? null,
+      section_index: params.sectionIndex ?? null,
+      total_sections: params.totalSections ?? null,
+      spec_guidelines: params.specGuidelines ?? null,
     }),
   });
   if (!res.ok) {

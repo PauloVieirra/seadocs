@@ -103,6 +103,12 @@ export interface Document {
   content?: DocumentContent;
   version?: number;
   updatedBy?: string;
+  /** Data/hora da assinatura digital (Gov.br) */
+  signedAt?: string | null;
+  /** Justificativa da revisão */
+  reviewJustification?: string | null;
+  /** ID do usuário que assinou */
+  signedBy?: string | null;
 }
 
 export interface DocumentContent {
@@ -118,6 +124,10 @@ export interface DocumentSection {
   isEditable: boolean;
   /** Texto de ajuda/instrução para a IA (vem do modelo) */
   helpText?: string;
+  /** Se true, a IA decide quantas instâncias desta seção criar com base no RAG */
+  repeatable?: boolean;
+  /** Instrução de planejamento: como identificar as instâncias no RAG */
+  planningInstruction?: string;
 }
 
 export interface UploadedFile {
@@ -173,6 +183,10 @@ export interface DocumentModel {
   isDraft?: boolean;
   aiGuidance?: string;
   isLocalDraft?: boolean;
+  /** Caminho do documento Spec (ex: Spec/Spac_Requisitos_Design.md). Obrigatório para novos modelos. */
+  specPath?: string;
+  /** ID do usuário que criou o modelo. Apenas o dono pode excluir modelos não utilizados. */
+  creatorId?: string | null;
 }
 
 class APIService {
@@ -817,15 +831,7 @@ class APIService {
     if (!supabase || !this.isUUID(documentId)) return null;
     const { data, error } = await supabase.from('documents').select('*').eq('id', documentId).single();
     if (error || !data) return null;
-    return {
-      id: data.id,
-      projectId: data.project_id,
-      name: data.nome,
-      currentVersionId: data.current_version_id,
-      updatedAt: data.updated_at,
-      content: data.conteudo as DocumentContent,
-      version: 1
-    } as Document;
+    return this.mapDocumentFromDb(data);
   }
 
   async updateDocument(documentId: string, content: DocumentContent): Promise<Document> {
@@ -841,15 +847,7 @@ class APIService {
       .select()
       .single();
     if (error) throw new Error(error.message);
-    return {
-      id: data.id,
-      projectId: data.project_id,
-      name: data.nome,
-      currentVersionId: data.current_version_id,
-      updatedAt: data.updated_at,
-      content: data.conteudo as DocumentContent,
-      version: 1
-    } as Document;
+    return this.mapDocumentFromDb(data);
   }
 
   async updateDocumentSection(documentId: string, sectionId: string, sectionContent: string): Promise<Document> {
@@ -863,6 +861,62 @@ class APIService {
       sections.push({ id: sectionId, title: 'Seção', content: sectionContent, isEditable: true });
     }
     return this.updateDocument(documentId, { sections });
+  }
+
+  /** Salva a justificativa de revisão do documento */
+  async saveReviewJustification(documentId: string, justification: string): Promise<Document> {
+    if (!supabase || !this.isUUID(documentId)) throw new Error('Documento inválido');
+    const current = this.currentUser ?? (await this.loadCurrentUserFromStorage());
+    if (!current) throw new Error('Usuário não autenticado');
+    const { data, error } = await supabase
+      .from('documents')
+      .update({ review_justification: justification, updated_at: new Date().toISOString() })
+      .eq('id', documentId)
+      .select()
+      .single();
+    if (error) throw new Error(error.message);
+    return this.mapDocumentFromDb(data);
+  }
+
+  /** Marca o documento como assinado (registra em document_signatures + atualiza documents) */
+  async signDocument(documentId: string): Promise<Document> {
+    if (!supabase || !this.isUUID(documentId)) throw new Error('Documento inválido');
+    const current = this.currentUser ?? (await this.loadCurrentUserFromStorage());
+    if (!current) throw new Error('Usuário não autenticado');
+    const signedAt = new Date().toISOString();
+
+    const { error: sigError } = await supabase.from('document_signatures').insert({
+      document_id: documentId,
+      user_id: current.id,
+      status: 'ASSINADO',
+      signed_at: signedAt,
+    });
+    if (sigError) throw new Error(sigError.message);
+
+    const { data, error } = await supabase
+      .from('documents')
+      .update({ signed_at: signedAt, signed_by: current.id, updated_at: signedAt })
+      .eq('id', documentId)
+      .select()
+      .single();
+    if (error) throw new Error(error.message);
+    return this.mapDocumentFromDb(data);
+  }
+
+  private mapDocumentFromDb(data: Record<string, unknown>): Document {
+    return {
+      id: data.id as string,
+      projectId: data.project_id as string,
+      name: data.nome as string,
+      currentVersionId: data.current_version_id as string,
+      updatedAt: data.updated_at as string,
+      content: data.conteudo as DocumentContent,
+      version: 1,
+      templateId: (data.template_id as string) ?? undefined,
+      signedAt: (data.signed_at as string) ?? null,
+      reviewJustification: (data.review_justification as string) ?? null,
+      signedBy: (data.signed_by as string) ?? null,
+    } as Document;
   }
 
   async createDocument(projectId: string, name: string, groupId: string, templateId: string | undefined, securityLevel: 'public' | 'restricted' | 'confidential' | 'secret'): Promise<Document> {
@@ -1214,6 +1268,8 @@ class APIService {
       updatedAt: data.updated_at,
       isDraft: data.is_draft === true,
       aiGuidance: data.ai_guidance ?? undefined,
+      specPath: data.spec_path ?? undefined,
+      creatorId: data.creator_id ?? undefined,
     };
   }
 
@@ -1234,6 +1290,8 @@ class APIService {
       updatedAt: t.updated_at,
       isDraft: t.is_draft === true,
       aiGuidance: t.ai_guidance ?? undefined,
+      specPath: t.spec_path ?? undefined,
+      creatorId: t.creator_id ?? undefined,
     }));
   }
 
@@ -1244,7 +1302,8 @@ class APIService {
     isGlobal: boolean = false,
     projectId?: string,
     isDraft?: boolean,
-    aiGuidance?: string
+    aiGuidance?: string,
+    specPath?: string
   ): Promise<DocumentModel> {
     if (!supabase) throw new Error('Supabase não configurado');
     const current = this.currentUser ?? (await this.loadCurrentUserFromStorage());
@@ -1258,7 +1317,9 @@ class APIService {
       global: isGlobal,
       project_id: projectId,
       file_url: '', // obrigatório na tabela templates; modelos criados no app não usam arquivo
-      ai_guidance: aiGuidance || null
+      ai_guidance: aiGuidance || null,
+      spec_path: specPath || null,
+      creator_id: current.id
     };
     const { data, error } = await supabase.from('templates').insert(insertData).select().single();
     if (error) throw new Error(error.message);
@@ -1272,7 +1333,9 @@ class APIService {
       createdAt: data.created_at,
       updatedAt: data.updated_at,
       isDraft: data.is_draft === true,
-      aiGuidance: data.ai_guidance ?? aiGuidance
+      aiGuidance: data.ai_guidance ?? aiGuidance,
+      specPath: data.spec_path ?? specPath,
+      creatorId: data.creator_id ?? current.id
     };
   }
 
@@ -1287,7 +1350,8 @@ class APIService {
       tipo_documento: updatedModel.type || '',
       sections: { html: updatedModel.templateContent ?? '' },
       global: updatedModel.isGlobal === true,
-      ai_guidance: updatedModel.aiGuidance ?? null
+      ai_guidance: updatedModel.aiGuidance ?? null,
+      spec_path: updatedModel.specPath ?? null
     };
     if (updatedModel.projectId !== undefined) updateData.project_id = updatedModel.projectId || null;
     const { error } = await supabase.from('templates').update(updateData).eq('id', updatedModel.id);
@@ -1300,6 +1364,29 @@ class APIService {
     const current = this.currentUser ?? (await this.loadCurrentUserFromStorage());
     if (!current || !(await permissionsService.can(current, 'excluir_templates'))) {
       throw new Error('Sem permissão para excluir modelos de documento');
+    }
+    // Verificar se o modelo está em uso por algum documento
+    const { count, error: countError } = await supabase
+      .from('documents')
+      .select('*', { count: 'exact', head: true })
+      .eq('template_id', id);
+    if (countError) throw new Error('Erro ao verificar uso do modelo');
+    if (count != null && count > 0) {
+      throw new Error('Este modelo está em uso por documento(s) e não pode ser excluído.');
+    }
+    // Obter o modelo para verificar o dono
+    const model = await this.getDocumentModel(id);
+    if (!model) throw new Error('Modelo não encontrado');
+    const creatorId = model.creatorId ?? null;
+    // Apenas o dono pode excluir. Modelos sem dono (legado) só podem ser excluídos por admin.
+    if (creatorId != null) {
+      if (creatorId !== current.id) {
+        throw new Error('Apenas o usuário que criou o modelo pode excluí-lo.');
+      }
+    } else {
+      if (current.role !== 'admin') {
+        throw new Error('Apenas administradores podem excluir modelos do sistema.');
+      }
     }
     const { error } = await supabase.from('templates').delete().eq('id', id);
     return !error;
@@ -1317,11 +1404,12 @@ class APIService {
       updatedAt: d.updatedAt,
       isDraft: d.isDraft,
       aiGuidance: d.aiGuidance,
+      specPath: d.specPath,
       isLocalDraft: true
     }));
   }
 
-  async saveLocalModelDraft(draft: { id: string; name: string; type: string; templateContent: string; aiGuidance?: string; isDraft: boolean }): Promise<void> {
+  async saveLocalModelDraft(draft: { id: string; name: string; type: string; templateContent: string; aiGuidance?: string; specPath?: string; isDraft: boolean }): Promise<void> {
     await localDb.saveModelDraft(draft);
   }
 
@@ -1467,7 +1555,7 @@ class APIService {
   private decodeHtmlEntities(input: string): string { try { const doc = new DOMParser().parseFromString(input, 'text/html'); return doc.documentElement.textContent || input; } catch { return input; } }
   private parseTemplateContentToSections(templateContent: string): DocumentSection[] {
     const html = templateContent || ''; const sections: DocumentSection[] = [];
-    try { const doc = new DOMParser().parseFromString(html, 'text/html'); const fields = doc.querySelectorAll('.sgid-metadata-field'); fields.forEach((el, i) => { sections.push({ id: el.getAttribute('data-field-id') || `field-${i}`, title: this.decodeHtmlEntities(el.getAttribute('data-field-title') || 'Campo'), content: '', isEditable: true, helpText: this.decodeHtmlEntities(el.getAttribute('data-field-help') || '') || undefined }); }); } catch {}
+    try { const doc = new DOMParser().parseFromString(html, 'text/html'); const fields = doc.querySelectorAll('.sgid-metadata-field'); fields.forEach((el, i) => { sections.push({ id: el.getAttribute('data-field-id') || `field-${i}`, title: this.decodeHtmlEntities(el.getAttribute('data-field-title') || 'Campo'), content: '', isEditable: true, helpText: this.decodeHtmlEntities(el.getAttribute('data-field-help') || '') || undefined, repeatable: el.getAttribute('data-repeatable') === 'true', planningInstruction: this.decodeHtmlEntities(el.getAttribute('data-planning-instruction') || '') || undefined }); }); } catch {}
     if (sections.length === 0) { const legacyRegex = /<!-- EDITABLE_SECTION_START:([^:]+):([^>]+) -->(.*?)<!-- EDITABLE_SECTION_END -->/gs; let match; while ((match = legacyRegex.exec(html)) !== null) { sections.push({ id: match[1], title: this.decodeHtmlEntities(match[2]), content: '', isEditable: true }); } }
     return sections.length > 0 ? sections : [{ id: 'section1', title: 'Seção 1', content: '', isEditable: true }];
   }

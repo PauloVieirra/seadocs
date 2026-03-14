@@ -17,6 +17,8 @@ import { AuthRedirect } from './components/AuthRedirect';
 import { Wiki } from './components/Wiki';
 import { ChangePasswordDialog } from './components/ChangePasswordDialog';
 import { ProtectedRoute } from './components/ProtectedRoute';
+import { GovBrCallbackPage } from './pages/GovBrCallbackPage';
+import { GenerationStatusBar } from './components/GenerationStatusBar';
 
 type MainView = 'login' | 'dashboard' | 'editor' | 'projects' | 'users' | 'document-models' | 'groups' | 'settings' | 'admin-dashboard' | 'create-document-model';
 
@@ -126,6 +128,7 @@ export default function App() {
   return (
     <>
       <Toaster position="top-right" closeButton />
+      <GenerationStatusBar />
       <DatabaseConfigDialog open={configDialogOpen} onOpenChange={setConfigDialogOpen} />
       <ChangePasswordDialog
         user={currentUser}
@@ -168,6 +171,11 @@ export default function App() {
         <Route path="/project/:projectId/document/:documentId" element={
           <ProtectedRoute currentUser={currentUser} authLoaded={authLoaded}>
             <ProjectEditorWrapper />
+          </ProtectedRoute>
+        } />
+        <Route path="/govbr-callback" element={
+          <ProtectedRoute currentUser={currentUser} authLoaded={authLoaded}>
+            <GovBrCallbackPage />
           </ProtectedRoute>
         } />
         <Route path="/wiki" element={

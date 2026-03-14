@@ -11,6 +11,7 @@ export interface ModelDraft {
   type: string;
   templateContent: string;
   aiGuidance?: string;
+  specPath?: string;
   isDraft: boolean;
   updatedAt: string;
 }

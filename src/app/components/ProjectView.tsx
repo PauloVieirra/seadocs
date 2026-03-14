@@ -9,7 +9,8 @@ import { usePermissions } from '../../hooks/usePermissions';
 import { permissionsService } from '../../services/permissions';
 import { CreateDocumentDialog } from './CreateDocumentDialog';
 import { ProjectSettingsDialog } from './ProjectSettingsDialog';
-import { PasswordConfirmationDialog } from './PasswordConfirmationDialog'; // Importar PasswordConfirmationDialog
+import { PasswordConfirmationDialog } from './PasswordConfirmationDialog';
+import { AIChat } from './AIChat';
 import { toast } from 'sonner';
 
 interface ProjectViewProps {
@@ -438,6 +439,14 @@ export function ProjectView({ projectId, onBack, onSelectDocument }: ProjectView
           : 'Esta ação requer sua senha para confirmar a remoção permanente do projeto.'}
         confirmLabel={passwordDialogMode === 'archive' ? 'Arquivar' : 'Confirmar Remoção'}
       />
+
+      {/* Chat IA - contexto do projeto como um todo (oculto para usuários externos) */}
+      {apiService.getCurrentUser()?.role !== 'external' && (
+        <AIChat
+          projectId={projectId}
+          onRequestCreateDocument={() => setCreateDialogOpen(true)}
+        />
+      )}
     </div>
   );
 }
