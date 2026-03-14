@@ -50,3 +50,4 @@ npm run build
 - **shadcn/ui** - Componentes de UI
 - **Vite** - Build tool
 # seadocs
+# seagid
