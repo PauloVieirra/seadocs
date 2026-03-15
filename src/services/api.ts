@@ -187,6 +187,10 @@ export interface DocumentModel {
   specPath?: string;
   /** ID do usuário que criou o modelo. Apenas o dono pode excluir modelos não utilizados. */
   creatorId?: string | null;
+  /** Se true, o modelo não pode ser excluído. */
+  isProtected?: boolean;
+  /** Cópia do template no momento da criação. Usado para restaurar ao formato original. */
+  originalTemplateContent?: string | null;
 }
 
 class APIService {
@@ -1270,6 +1274,8 @@ class APIService {
       aiGuidance: data.ai_guidance ?? undefined,
       specPath: data.spec_path ?? undefined,
       creatorId: data.creator_id ?? undefined,
+      isProtected: data.is_protected === true,
+      originalTemplateContent: data.original_sections?.html ?? undefined,
     };
   }
 
@@ -1292,6 +1298,8 @@ class APIService {
       aiGuidance: t.ai_guidance ?? undefined,
       specPath: t.spec_path ?? undefined,
       creatorId: t.creator_id ?? undefined,
+      isProtected: t.is_protected === true,
+      originalTemplateContent: t.original_sections?.html ?? undefined,
     }));
   }
 
@@ -1303,23 +1311,27 @@ class APIService {
     projectId?: string,
     isDraft?: boolean,
     aiGuidance?: string,
-    specPath?: string
+    specPath?: string,
+    isProtected?: boolean
   ): Promise<DocumentModel> {
     if (!supabase) throw new Error('Supabase não configurado');
     const current = this.currentUser ?? (await this.loadCurrentUserFromStorage());
     if (!current || !(await permissionsService.can(current, 'criar_templates'))) {
       throw new Error('Sem permissão para criar modelos de documento');
     }
+    const sections = { html: templateContent };
     const insertData: Record<string, unknown> = {
       nome: name,
       tipo_documento: type,
-      sections: { html: templateContent },
+      sections,
       global: isGlobal,
       project_id: projectId,
-      file_url: '', // obrigatório na tabela templates; modelos criados no app não usam arquivo
+      file_url: '',
       ai_guidance: aiGuidance || null,
       spec_path: specPath || null,
-      creator_id: current.id
+      creator_id: current.id,
+      is_protected: isProtected === true,
+      original_sections: isProtected ? sections : null
     };
     const { data, error } = await supabase.from('templates').insert(insertData).select().single();
     if (error) throw new Error(error.message);
@@ -1365,6 +1377,11 @@ class APIService {
     if (!current || !(await permissionsService.can(current, 'excluir_templates'))) {
       throw new Error('Sem permissão para excluir modelos de documento');
     }
+    const model = await this.getDocumentModel(id);
+    if (!model) throw new Error('Modelo não encontrado');
+    if (model.isProtected) {
+      throw new Error('Este modelo está protegido e não pode ser excluído.');
+    }
     // Verificar se o modelo está em uso por algum documento
     const { count, error: countError } = await supabase
       .from('documents')
@@ -1374,9 +1391,7 @@ class APIService {
     if (count != null && count > 0) {
       throw new Error('Este modelo está em uso por documento(s) e não pode ser excluído.');
     }
-    // Obter o modelo para verificar o dono
-    const model = await this.getDocumentModel(id);
-    if (!model) throw new Error('Modelo não encontrado');
+    // Verificar o dono (model já obtido acima)
     const creatorId = model.creatorId ?? null;
     // Apenas o dono pode excluir. Modelos sem dono (legado) só podem ser excluídos por admin.
     if (creatorId != null) {
@@ -1390,6 +1405,29 @@ class APIService {
     }
     const { error } = await supabase.from('templates').delete().eq('id', id);
     return !error;
+  }
+
+  async restoreDocumentModel(id: string): Promise<DocumentModel> {
+    if (!supabase || !this.isUUID(id)) throw new Error('Modelo inválido');
+    const current = this.currentUser ?? (await this.loadCurrentUserFromStorage());
+    if (!current || !(await permissionsService.can(current, 'editar_templates'))) {
+      throw new Error('Sem permissão para editar modelos de documento');
+    }
+    const model = await this.getDocumentModel(id);
+    if (!model) throw new Error('Modelo não encontrado');
+    const original = model.originalTemplateContent;
+    if (!original) {
+      throw new Error('Este modelo não possui backup para restauração.');
+    }
+    const { error } = await supabase
+      .from('templates')
+      .update({
+        sections: { html: original },
+        updated_at: new Date().toISOString()
+      })
+      .eq('id', id);
+    if (error) throw new Error(error.message);
+    return { ...model, templateContent: original };
   }
 
   async getLocalModelDrafts(): Promise<DocumentModel[]> {

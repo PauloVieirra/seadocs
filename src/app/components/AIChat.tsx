@@ -39,13 +39,15 @@ interface AIChatProps {
   onSuggestedGenerateDocument?: () => void;
   /** Chamado quando o usuário confirma "criar documento" no fluxo pós-resumo (gera direto parágrafo a parágrafo) */
   onRequestCreateDocument?: () => void;
+  /** Se true, o botão exibe "Recriar esse documento" em vez de "Sim, criar documento" */
+  documentHasContent?: boolean;
 }
 
-export function AIChat({ projectId, documentId, generateRequest, onConfirmGenerate, onGenerateComplete, forceOpen, onSuggestedGenerateDocument, onRequestCreateDocument }: AIChatProps) {
+export function AIChat({ projectId, documentId, generateRequest, onConfirmGenerate, onGenerateComplete, forceOpen, onSuggestedGenerateDocument, onRequestCreateDocument, documentHasContent = false }: AIChatProps) {
   const isProjectContext = !documentId;
   const { getJob } = useDocumentGeneration();
   const generationJob = documentId ? getJob(documentId) : undefined;
-  const isGeneratingFromChat = generationJob?.status === 'running';
+  const isGeneratingFromChat = generationJob?.status === 'running' || generationJob?.status === 'reviewing';
   const [messages, setMessages] = useState<Message[]>(() => [
     {
       id: '1',
@@ -163,7 +165,7 @@ export function AIChat({ projectId, documentId, generateRequest, onConfirmGenera
           content: 'Deseja criar o documento?',
           timestamp: new Date(),
           action: onRequestCreateDocument ? {
-            label: 'Sim, criar documento',
+            label: documentHasContent ? 'Recriar esse documento' : 'Sim, criar documento',
             onClick: onRequestCreateDocument,
           } : undefined,
         };
@@ -184,7 +186,7 @@ export function AIChat({ projectId, documentId, generateRequest, onConfirmGenera
     };
 
     loadSummary();
-  }, [projectId, generateRequest, onRequestCreateDocument, isProjectContext]);
+  }, [projectId, generateRequest, onRequestCreateDocument, documentHasContent, isProjectContext]);
 
   const handleSend = async () => {
     if (!input.trim() || loading) return;
@@ -298,7 +300,10 @@ export function AIChat({ projectId, documentId, generateRequest, onConfirmGenera
             role: 'assistant',
             content: 'Deseja criar o documento?',
             timestamp: new Date(),
-            action: { label: 'Sim, criar documento', onClick: onRequestCreateDocument },
+            action: {
+              label: documentHasContent ? 'Recriar esse documento' : 'Sim, criar documento',
+              onClick: onRequestCreateDocument,
+            },
           });
         }
         return next;
@@ -480,7 +485,9 @@ export function AIChat({ projectId, documentId, generateRequest, onConfirmGenera
                   {uploadingFile
                     ? 'Enviando e indexando documento...'
                     : isGeneratingFromChat
-                    ? `Gerando documento: ${generationJob?.completedSections ?? 0}/${generationJob?.totalSections ?? 0} seções${generationJob?.currentSectionTitle ? ` — ${generationJob.currentSectionTitle}` : ''}`
+                    ? generationJob?.status === 'reviewing'
+                      ? `Revisando documento, procurando erros, ajustando sessão ${generationJob?.reviewSectionIndex ?? 0}`
+                      : `Gerando documento: ${generationJob?.completedSections ?? 0}/${generationJob?.totalSections ?? 0} seções${generationJob?.currentSectionTitle ? ` — ${generationJob.currentSectionTitle}` : ''}`
                     : isAnalyzing
                     ? analysisStatus
                     : 'Processando...'}

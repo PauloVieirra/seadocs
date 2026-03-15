@@ -29,10 +29,14 @@ export function GenerationStatusBar() {
             <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75" />
             <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-blue-500" />
           </span>
-          <span className="font-medium">IA gerando:</span>
+          <span className="font-medium">
+            {job.status === 'reviewing' ? 'Revisando:' : 'IA gerando:'}
+          </span>
           <span className="truncate max-w-[220px]">{job.documentTitle}</span>
           <span className="text-blue-400 text-xs flex-shrink-0">
-            {job.completedSections}/{job.totalSections} seções
+            {job.status === 'reviewing'
+              ? `ajustando sessão ${job.reviewSectionIndex ?? 0}`
+              : `${job.completedSections}/${job.totalSections} seções`}
           </span>
         </button>
       ))}

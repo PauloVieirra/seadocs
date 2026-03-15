@@ -2,8 +2,17 @@ import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { Button } from './ui/button';
 import { Textarea } from './ui/textarea';
-import { Sparkles, RotateCw, Plus, Save, FileDown, Edit3, Lock, RefreshCw, PenLine, PenTool } from 'lucide-react';
+import { Input } from './ui/input';
+import { RotateCw, Plus, Save, FileDown, Edit3, Lock, RefreshCw, PenLine, PenTool, Code, Type, Palette, AlignLeft, AlignCenter, AlignRight, AlignJustify } from 'lucide-react';
 import 'react-quill-new/dist/quill.snow.css';
+import ReactQuill, { Quill } from 'react-quill-new';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuTrigger,
+} from './ui/dropdown-menu';
+import { HexColorPicker } from 'react-colorful';
 import { apiService, type Document, type DocumentContent, type DocumentSection } from '../../services/api';
 import { generateSectionContent } from '../../services/rag-api';
 import { fetchSpecContent } from '../../services/spec-service';
@@ -23,6 +32,45 @@ import {
   AlertDialogTitle,
 } from "./ui/alert-dialog";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from './ui/dialog';
+import { ensureCustomBlotsRegistered } from '../../lib/quill-blots';
+
+ensureCustomBlotsRegistered();
+
+const FONT_SIZES_PX = ['12px', '14px', '16px', '18px', '20px', '24px', '28px', '32px', '36px', '40px', '48px', '56px', '64px', '72px', '80px'];
+
+/* Paleta de cores para seleção rápida */
+const COLOR_PALETTE = [
+  '#000000', '#374151', '#6b7280', '#9ca3af', '#d1d5db', '#ffffff',
+  '#dc2626', '#ea580c', '#ca8a04', '#16a34a', '#2563eb', '#7c3aed', '#db2777',
+  '#ef4444', '#f97316', '#eab308', '#22c55e', '#3b82f6', '#8b5cf6', '#ec4899',
+  '#f87171', '#fb923c', '#facc15', '#4ade80', '#60a5fa', '#a78bfa', '#f472b6',
+];
+
+/* Ícones Quill para toolbar - visíveis antes do editor focar */
+const QUILL_ICONS = {
+  bold: '<svg viewBox="0 0 18 18"><path class="ql-stroke" d="M5,4H9.5A2.5,2.5,0,0,1,12,6.5v0A2.5,2.5,0,0,1,9.5,9H5A0,0,0,0,1,5,9V4A0,0,0,0,1,5,4Z"/><path class="ql-stroke" d="M5,9h5.5A2.5,2.5,0,0,1,13,11.5v0A2.5,2.5,0,0,1,10.5,14H5a0,0,0,0,1,0,0V9A0,0,0,0,1,5,9Z"/></svg>',
+  italic: '<svg viewBox="0 0 18 18"><line class="ql-stroke" x1="7" x2="13" y1="4" y2="4"/><line class="ql-stroke" x1="5" x2="11" y1="14" y2="14"/><line class="ql-stroke" x1="8" x2="10" y1="14" y2="4"/></svg>',
+  underline: '<svg viewBox="0 0 18 18"><path class="ql-stroke" d="M5,3V9a4.012,4.012,0,0,0,4,4H9a4.012,4.012,0,0,0,4-4V3"/><rect class="ql-fill" height="1" rx="0.5" ry="0.5" width="12" x="3" y="15"/></svg>',
+  strike: '<svg viewBox="0 0 18 18"><line class="ql-stroke ql-thin" x1="15.5" x2="2.5" y1="8.5" y2="9.5"/><path class="ql-fill" d="M9.007,8C6.542,7.791,6,7.519,6,6.5,6,5.792,7.283,5,9,5c1.571,0,2.765.679,2.969,1.309a1,1,0,0,0,1.9-.617C13.356,4.106,11.354,3,9,3,6.2,3,4,4.538,4,6.5a3.2,3.2,0,0,0,.5,1.843Z"/><path class="ql-fill" d="M8.984,10C11.457,10.208,12,10.479,12,11.5c0,0.708-1.283,1.5-3,1.5-1.571,0-2.765-.679-2.969-1.309a1,1,0,1,0-1.9.617C4.644,13.894,6.646,15,9,15c2.8,0,5-1.538,5-3.5a3.2,3.2,0,0,0-.5-1.843Z"/></svg>',
+  link: '<svg viewBox="0 0 18 18"><line class="ql-stroke" x1="7" x2="11" y1="7" y2="11"/><path class="ql-even ql-stroke" d="M8.9,4.577a3.476,3.476,0,0,1,.36,4.679A3.476,3.476,0,0,1,4.577,8.9C3.185,7.5,2.035,6.4,4.217,4.217S7.5,3.185,8.9,4.577Z"/><path class="ql-even ql-stroke" d="M13.423,9.1a3.476,3.476,0,0,0-4.679-.36,3.476,3.476,0,0,0,.36,4.679c1.392,1.392,2.5,2.542,4.679.36S14.815,10.5,13.423,9.1Z"/></svg>',
+  blockquote: '<svg viewBox="0 0 18 18"><rect class="ql-fill ql-stroke" height="3" width="3" x="4" y="5"/><rect class="ql-fill ql-stroke" height="3" width="3" x="11" y="5"/><path class="ql-even ql-fill ql-stroke" d="M7,8c0,4.031-3,5-3,5"/><path class="ql-even ql-fill ql-stroke" d="M14,8c0,4.031-3,5-3,5"/></svg>',
+  clean: '<svg viewBox="0 0 18 18"><line class="ql-stroke" x1="5" x2="13" y1="3" y2="3"/><line class="ql-stroke" x1="6" x2="9.35" y1="12" y2="3"/><line class="ql-stroke" x1="11" x2="15" y1="11" y2="15"/><line class="ql-stroke" x1="15" x2="11" y1="11" y2="15"/><rect class="ql-fill" height="1" rx="0.5" ry="0.5" width="7" x="2" y="14"/></svg>',
+  alignLeft: '<svg viewBox="0 0 18 18"><line class="ql-stroke" x1="3" x2="15" y1="9" y2="9"/><line class="ql-stroke" x1="3" x2="13" y1="14" y2="14"/><line class="ql-stroke" x1="3" x2="9" y1="4" y2="4"/></svg>',
+};
+
+function rgbToHex(rgb: string): string {
+  const m = rgb.match(/rgb\((\d+),\s*(\d+),\s*(\d+)\)/);
+  if (!m) return '#000000';
+  const r = parseInt(m[1], 10).toString(16).padStart(2, '0');
+  const g = parseInt(m[2], 10).toString(16).padStart(2, '0');
+  const b = parseInt(m[3], 10).toString(16).padStart(2, '0');
+  return `#${r}${g}${b}`;
+}
+
+const QUILL_FORMATS = [
+  'size', 'bold', 'italic', 'underline', 'strike',
+  'color', 'list', 'align', 'link', 'blockquote',
+];
 
 interface DocumentEditorProps {
   document: Document;
@@ -30,8 +78,6 @@ interface DocumentEditorProps {
   projectId: string;
   viewMode?: boolean; // Propriedade opcional para modo de visualização
   onExitViewMode?: () => void; // Callback para sair do modo de visualização
-  /** Quando fornecido, "Gerar tudo com IA" dispara o fluxo no chat (resumo + confirmação) em vez de gerar direto */
-  onRequestGenerateAll?: (sections: DocumentSection[]) => void;
   /** Callback quando documento é assinado ou revisado (para recarregar dados) */
   onDocumentUpdated?: () => void;
   /** IDs das seções que estão sendo geradas pelo pai (ex: chat IA) - bloqueia edição */
@@ -40,9 +86,19 @@ interface DocumentEditorProps {
   scrollToActiveSection?: boolean;
 }
 
-export function DocumentEditor({ document, onSave, projectId, viewMode = false, onExitViewMode, onRequestGenerateAll, onDocumentUpdated, sectionsBeingGeneratedByParent, scrollToActiveSection }: DocumentEditorProps) {
+export function DocumentEditor({ document, onSave, projectId, viewMode = false, onExitViewMode, onDocumentUpdated, sectionsBeingGeneratedByParent, scrollToActiveSection }: DocumentEditorProps) {
   const [content, setContent] = useState<DocumentContent>(document.content);
-  const [activeLocks, setActiveLocks] = useState<{ section_id: string; user_id: string; user_name?: string }[]>([]); 
+  const [editorMode, setEditorMode] = useState<'text' | 'html'>('text');
+  const [activeEditSection, setActiveEditSection] = useState<string | null>(null);
+  const [fontSize, setFontSize] = useState<string>('__normal__');
+  const [fontColor, setFontColor] = useState<string>('#000000');
+  const [colorPickerOpen, setColorPickerOpen] = useState(false);
+  const [alignPickerOpen, setAlignPickerOpen] = useState(false);
+  const [currentAlign, setCurrentAlign] = useState<'left' | 'center' | 'right' | 'justify'>('left');
+  const activeQuillRef = useRef<ReactQuill | null>(null);
+  const toolbarId = React.useMemo(() => `doc-editor-toolbar-${Math.random().toString(16).slice(2)}`, []);
+  const quillModules = React.useMemo(() => ({ toolbar: { container: `#${toolbarId}` } }), [toolbarId]);
+  const [activeLocks, setActiveLocks] = useState<{ section_id: string; user_id: string; user_name?: string }[]>([]);
   const [updatingSections, setUpdatingSections] = useState<Set<string>>(new Set()); // Seções que estão sendo atualizadas via Realtime
   const currentUser = apiService.getCurrentUser();
   const [isGeneratingAll, setIsGeneratingAll] = useState(false);
@@ -63,6 +119,27 @@ export function DocumentEditor({ document, onSave, projectId, viewMode = false, 
   const [isSavingReview, setIsSavingReview] = useState(false);
   const [isSigning, setIsSigning] = useState(false);
   const [signConfirmOpen, setSignConfirmOpen] = useState(false);
+
+  // Sincronizar ícone de alinhamento com a seleção atual do editor
+  useEffect(() => {
+    const quill = activeQuillRef.current?.getEditor?.();
+    if (!quill) return;
+    const handler = () => {
+      const range = quill.getSelection();
+      if (!range) return;
+      const format = quill.getFormat(range.index, range.length);
+      const align = format?.align;
+      if (align === 'center') setCurrentAlign('center');
+      else if (align === 'right') setCurrentAlign('right');
+      else if (align === 'justify') setCurrentAlign('justify');
+      else setCurrentAlign('left');
+    };
+    quill.on('selection-change', handler);
+    handler(); // sync inicial
+    return () => {
+      quill.off('selection-change', handler);
+    };
+  }, [activeEditSection]);
 
   // Scroll para centralizar a seção sendo gerada (ao clicar no botão "IA gerando")
   const navigate = useNavigate();
@@ -235,6 +312,11 @@ export function DocumentEditor({ document, onSave, projectId, viewMode = false, 
   const isSectionBeingGenerated = (sectionId: string) =>
     sectionsBeingGeneratedByAI.has(sectionId) || (sectionsBeingGeneratedByParent?.has(sectionId) ?? false);
 
+  const isAnySectionBeingGenerated =
+    isGeneratingAll ||
+    sectionsBeingGeneratedByAI.size > 0 ||
+    (sectionsBeingGeneratedByParent?.size ?? 0) > 0;
+
   const handleSectionChange = (sectionId: string, newContent: string) => {
     if (viewMode || getSectionLock(sectionId)) return; 
     
@@ -328,12 +410,12 @@ export function DocumentEditor({ document, onSave, projectId, viewMode = false, 
         </div>
 
         {/* Document Page */}
-        <div className="w-full max-w-[21cm] bg-white shadow-2xl p-4 md:p-[2.5cm] min-h-[29.7cm] flex flex-col print:shadow-none print:p-0 print:w-full">
-          <div className="space-y-8">
+        <div className="w-full max-w-[21cm] bg-white shadow-2xl p-4 md:p-[2.5cm] min-h-[29.7cm] flex flex-col print:shadow-none print:p-0 print:w-full overflow-hidden">
+          <div className="space-y-8 overflow-hidden min-w-0">
             {content.sections.map((section) => (
-              <div key={section.id} className="break-inside-avoid">
+              <div key={section.id} className="break-inside-avoid min-w-0 overflow-hidden">
                 <div 
-                  className="max-w-none text-gray-700 leading-relaxed text-justify space-y-4"
+                  className="doc-view-mode-content text-gray-700 leading-relaxed space-y-4"
                   dangerouslySetInnerHTML={{ __html: section.content || '<p class="text-gray-400 italic">Conteúdo pendente...</p>' }}
                 />
               </div>
@@ -630,7 +712,7 @@ export function DocumentEditor({ document, onSave, projectId, viewMode = false, 
   };
 
   return (
-    <div className="flex flex-col items-center min-h-screen bg-gray-100 py-8 font-sans antialiased px-4 md:px-0">
+    <div className={`flex flex-col items-center min-h-screen bg-gray-100 py-8 font-sans antialiased px-4 md:px-0 ${editorMode === 'text' ? 'pb-24' : ''}`}>
       <div className="w-full max-w-4xl bg-white rounded-lg shadow-md p-4 md:p-10 space-y-8">
         {/* Document Header */}
         <div className="mb-8 pb-6 border-b border-gray-200 flex justify-between items-center">
@@ -639,32 +721,32 @@ export function DocumentEditor({ document, onSave, projectId, viewMode = false, 
               Projeto: <span className="font-semibold">{document.projectId}</span>
             </p>
           </div>
-          <Button
-            onClick={handleGenerateAllWithAI}
-            disabled={isGeneratingAll || !isSummaryReady}
-            className={`${
-              isSummaryReady 
-                ? 'bg-indigo-600 hover:bg-indigo-700' 
-                : 'bg-gray-400 cursor-not-allowed opacity-70'
-            } text-white transition-all duration-300`}
-          >
-            {isGeneratingAll ? (
-              <>
-                <RotateCw className="w-4 h-4 mr-2 animate-spin" />
-                Gerando Tudo...
-              </>
-            ) : !isSummaryReady ? (
-              <>
-                <Lock className="w-4 h-4 mr-2" />
-                Aguardando IA...
-              </>
-            ) : (
-              <>
-                <Sparkles className="w-4 h-4 mr-2" />
-                Gerar Tudo com IA
-              </>
-            )}
-          </Button>
+          <div className="flex items-center gap-1 bg-gray-100 rounded-lg p-1" title="Alternar modo de edição">
+            <button
+              type="button"
+              onClick={() => setEditorMode('text')}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded text-sm font-medium transition-all ${
+                editorMode === 'text'
+                  ? 'bg-white text-gray-900 shadow-sm'
+                  : 'text-gray-500 hover:text-gray-700'
+              }`}
+            >
+              <Type className="w-3.5 h-3.5" />
+              Editor
+            </button>
+            <button
+              type="button"
+              onClick={() => setEditorMode('html')}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded text-sm font-medium transition-all ${
+                editorMode === 'html'
+                  ? 'bg-white text-gray-900 shadow-sm'
+                  : 'text-gray-500 hover:text-gray-700'
+              }`}
+            >
+              <Code className="w-3.5 h-3.5" />
+              HTML
+            </button>
+          </div>
         </div>
 
         {/* Document Sections */}
@@ -704,7 +786,72 @@ export function DocumentEditor({ document, onSave, projectId, viewMode = false, 
                       </Button>
                     </div>
 
-                    {isSectionBeingGenerated(section.id) ? (
+                    {editorMode === 'text' ? (
+                      activeEditSection === section.id ? (
+                        // Seção ativa: editor ReactQuill conectado à toolbar flutuante
+                        <div
+                          onBlur={(e) => {
+                            if (colorPickerOpen || alignPickerOpen) return; /* manter seção ativa enquanto pickers abertos */
+                            const toolbar = document.getElementById(toolbarId);
+                            const related = e.relatedTarget as Node | null;
+                            if (related && (e.currentTarget.contains(related) || toolbar?.contains(related))) return;
+                            /* relatedTarget pode estar no portal do dropdown (body) */
+                            if (related && typeof (related as Element).closest === 'function' && (related as Element).closest?.('[data-slot="dropdown-menu-content"]')) return;
+                            setActiveEditSection(null);
+                            handleSectionBlur(section.id);
+                          }}
+                          className={`doc-editor-quill overflow-hidden transition-all rounded border-2 ${
+                            updatingSections.has(section.id)
+                              ? 'border-blue-400'
+                              : 'border-indigo-400 ring-2 ring-indigo-100'
+                          }`}
+                        >
+                          <ReactQuill
+                            key={section.id}
+                            ref={activeQuillRef}
+                            value={section.content || ''}
+                            onChange={(html) => handleSectionChange(section.id, html)}
+                            readOnly={!!lock || isSectionBeingGenerated(section.id)}
+                            modules={quillModules}
+                            formats={QUILL_FORMATS}
+                            theme="snow"
+                            placeholder={`Digite aqui para "${section.title}"...`}
+                            className="min-h-[140px] [&_.ql-toolbar]:hidden"
+                          />
+                        </div>
+                      ) : (
+                        // Seção inativa: preview clicável
+                        <div
+                          onClick={() => {
+                            if (lock || isSectionBeingGenerated(section.id)) return;
+                            setActiveEditSection(section.id);
+                            handleSectionFocus(section.id);
+                          }}
+                          className={`min-h-[80px] p-4 rounded border transition-all overflow-hidden ${
+                            lock
+                              ? 'border-red-200 opacity-60 cursor-not-allowed'
+                              : isSectionBeingGenerated(section.id)
+                              ? 'border-indigo-200 bg-indigo-50/30 cursor-default'
+                              : updatingSections.has(section.id)
+                              ? 'border-blue-300 bg-blue-50/20 cursor-text'
+                              : 'border-transparent hover:border-gray-200 hover:bg-gray-50/40 cursor-text'
+                          }`}
+                        >
+                          {section.content ? (
+                            <div
+                              className="doc-view-mode-content max-w-full text-gray-800 leading-relaxed prose prose-sm break-words overflow-hidden [&_*]:max-w-full [&_*]:break-words"
+                              dangerouslySetInnerHTML={{ __html: section.content }}
+                            />
+                          ) : (
+                            <p className="text-gray-400 italic text-sm">
+                              {isSectionBeingGenerated(section.id)
+                                ? 'Gerando conteúdo com IA...'
+                                : `Clique para editar "${section.title}"...`}
+                            </p>
+                          )}
+                        </div>
+                      )
+                    ) : isSectionBeingGenerated(section.id) ? (
                       <TypingSectionContent
                         content={section.content || ''}
                         isGenerating={isSectionBeingGenerated(section.id)}
@@ -718,7 +865,7 @@ export function DocumentEditor({ document, onSave, projectId, viewMode = false, 
                             placeholder={lock ? `Bloqueado por ${lock.user_name}` : `Digite aqui para "${section.title}"...`}
                             disabled
                             readOnly
-                            className="min-h-[140px] transition-all bg-indigo-50/30 border-indigo-300"
+                            className="min-h-[140px] transition-all bg-indigo-50/30 border-indigo-300 overflow-hidden resize-none"
                           />
                         )}
                       </TypingSectionContent>
@@ -730,25 +877,25 @@ export function DocumentEditor({ document, onSave, projectId, viewMode = false, 
                         onBlur={() => handleSectionBlur(section.id)}
                         placeholder={lock ? `Bloqueado por ${lock.user_name}` : `Digite aqui para "${section.title}"...`}
                         disabled={!!lock}
-                        className={`min-h-[140px] transition-all ${
+                        className={`min-h-[140px] transition-all font-mono text-sm overflow-hidden resize-none ${
                           lock ? 'bg-gray-50 border-red-200 cursor-not-allowed opacity-60' :
                           updatingSections.has(section.id) ? 'border-blue-400 bg-blue-50/30' : ''
                         }`}
                       />
                     )}
-                    
+
                     {/* Tag de edição interna */}
                     {(lock || isSectionBeingGenerated(section.id)) && (
                       <div className="absolute top-3 left-3 flex items-center pointer-events-none">
-                        <Badge 
-                          variant={isSectionBeingGenerated(section.id) ? "default" : "destructive"} 
+                        <Badge
+                          variant={isSectionBeingGenerated(section.id) ? "default" : "destructive"}
                           className={`flex items-center gap-1.5 text-[11px] font-medium animate-pulse py-1 px-2 ${
                             isSectionBeingGenerated(section.id) ? 'bg-indigo-600' : ''
                           }`}
                         >
                           <Lock className="w-3 h-3" />
-                          {isSectionBeingGenerated(section.id) 
-                            ? 'Tópico em edição por IA' 
+                          {isSectionBeingGenerated(section.id)
+                            ? 'Tópico em edição por IA'
                             : `Tópico em edição por ${lock?.user_name || 'outro usuário'}`
                           }
                         </Badge>
@@ -756,7 +903,7 @@ export function DocumentEditor({ document, onSave, projectId, viewMode = false, 
                     )}
 
                     {lock && !isSectionBeingGenerated(section.id) && (
-                      <div className="absolute inset-0 z-10 flex items-center justify-center bg-gray-50/20" 
+                      <div className="absolute inset-0 z-10 flex items-center justify-center bg-gray-50/20"
                            onClick={() => toast.warning(`Este campo está sendo editado por ${lock.user_name}`)}>
                       </div>
                     )}
@@ -769,7 +916,7 @@ export function DocumentEditor({ document, onSave, projectId, viewMode = false, 
                   </div>
                 ) : (
                   <div
-                    className="max-w-none text-gray-700 leading-relaxed bg-gray-50 p-4 rounded border border-gray-100 space-y-4"
+                    className="doc-view-mode-content max-w-full text-gray-700 leading-relaxed bg-gray-50 p-4 rounded border border-gray-100 space-y-4 overflow-hidden break-words [&_*]:max-w-full [&_*]:break-words"
                     dangerouslySetInnerHTML={{ __html: section.content || '[Seção não editável]' }}
                   />
                 )}
@@ -810,7 +957,7 @@ export function DocumentEditor({ document, onSave, projectId, viewMode = false, 
           <AlertDialogHeader>
             <AlertDialogTitle>Confirmar recriação de conteúdo</AlertDialogTitle>
             <AlertDialogDescription>
-              {regenTarget === 'all' 
+              {regenTarget === 'all'
                 ? "Tem certeza que deseja recriar TODO o documento? O conteúdo atual de todas as seções editáveis será substituído por uma nova versão gerada pela IA, corrigindo escrita e contexto."
                 : "Tem certeza que deseja recriar esta seção? O conteúdo atual será substituído por uma nova versão gerada pela IA, corrigindo escrita e contexto."
               }
@@ -824,6 +971,223 @@ export function DocumentEditor({ document, onSave, projectId, viewMode = false, 
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      {/* Toolbar Flutuante — visível no modo Editor de Texto, oculta durante geração pela IA (badge ocupa o espaço) */}
+      {editorMode === 'text' && !isAnySectionBeingGenerated && (
+        <div className="sgid-floating-toolbar shadow-2xl print:hidden">
+          <div
+            id={toolbarId}
+            className="ql-toolbar ql-snow flex flex-row items-center flex-nowrap border-none bg-transparent"
+          >
+            <span className="ql-formats flex items-center flex-shrink-0">
+              <Select
+                value={fontSize}
+                onValueChange={(value) => {
+                  const editor = activeQuillRef.current?.getEditor?.();
+                  if (editor) {
+                    const range = editor.getSelection();
+                    const sizeValue = value === '__normal__' ? false : value;
+                    if (range) editor.format('size', sizeValue, 'user');
+                    setFontSize(value);
+                  }
+                }}
+              >
+                <SelectTrigger
+                  className="h-8 w-[80px] min-w-[80px] max-w-[80px] border-gray-200 bg-white text-sm font-medium text-gray-700 hover:bg-gray-50 shrink-0 overflow-hidden"
+                  title="Tamanho da fonte (px)"
+                >
+                  <SelectValue>{fontSize === '__normal__' ? 'Normal' : fontSize}</SelectValue>
+                </SelectTrigger>
+                <SelectContent side="top" className="max-h-[280px]">
+                  <SelectItem value="__normal__">Normal</SelectItem>
+                  {FONT_SIZES_PX.map((px) => (
+                    <SelectItem key={px} value={px}>{px}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </span>
+
+            <span className="ql-formats">
+              <button type="button" className="ql-bold" title="Negrito" dangerouslySetInnerHTML={{ __html: QUILL_ICONS.bold }} />
+              <button type="button" className="ql-italic" title="Itálico" dangerouslySetInnerHTML={{ __html: QUILL_ICONS.italic }} />
+              <button type="button" className="ql-underline" title="Sublinhado" dangerouslySetInnerHTML={{ __html: QUILL_ICONS.underline }} />
+              <button type="button" className="ql-strike" title="Riscado" dangerouslySetInnerHTML={{ __html: QUILL_ICONS.strike }} />
+            </span>
+
+            <span className="ql-formats flex items-center">
+              <DropdownMenu modal={false} open={colorPickerOpen} onOpenChange={(open) => {
+                setColorPickerOpen(open);
+                if (open) {
+                  const editor = activeQuillRef.current?.getEditor?.();
+                  const range = editor?.getSelection?.(true);
+                  if (editor && range) {
+                    const format = editor.getFormat?.(range.index, range.length) || editor.getFormat?.();
+                    const currentColor = typeof format?.color === 'string' ? format.color : null;
+                    if (currentColor && /^#[0-9A-Fa-f]{6}$/.test(currentColor)) {
+                      setFontColor(currentColor);
+                    } else if (currentColor && /^#[0-9A-Fa-f]{3}$/.test(currentColor)) {
+                      setFontColor(`#${currentColor[1]}${currentColor[1]}${currentColor[2]}${currentColor[2]}${currentColor[3]}${currentColor[3]}`);
+                    } else if (currentColor && currentColor.startsWith('rgb')) {
+                      setFontColor(rgbToHex(currentColor));
+                    }
+                  }
+                }
+              }}>
+                <DropdownMenuTrigger asChild>
+                  <button
+                    type="button"
+                    className="doc-editor-color-btn flex items-center justify-center w-8 h-8 rounded hover:bg-gray-100"
+                    title="Cor da fonte"
+                  >
+                    <Palette className="w-4 h-4 text-gray-600" />
+                  </button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent side="top" align="start" sideOffset={12} className="w-auto p-3 z-[9999] min-w-[260px]">
+                  <div className="space-y-3">
+                    <div className="grid grid-cols-7 gap-1.5">
+                      {COLOR_PALETTE.map((hex) => (
+                        <button
+                          key={hex}
+                          type="button"
+                          className={`w-7 h-7 rounded border-2 transition-all hover:scale-110 ${
+                            fontColor.toLowerCase() === hex.toLowerCase()
+                              ? 'border-indigo-600 ring-2 ring-indigo-200'
+                              : 'border-gray-200 hover:border-gray-300'
+                          }`}
+                          style={{ backgroundColor: hex }}
+                          title={hex}
+                          onClick={() => {
+                            setFontColor(hex);
+                            const editor = activeQuillRef.current?.getEditor?.();
+                            const range = editor?.getSelection();
+                            if (editor && range) editor.format('color', hex, 'user');
+                            setColorPickerOpen(false);
+                          }}
+                        />
+                      ))}
+                    </div>
+                    <div className="border-t pt-3">
+                      <p className="text-xs text-gray-500 mb-2">Cor personalizada</p>
+                      <HexColorPicker
+                        color={fontColor}
+                        onChange={(hex) => {
+                          setFontColor(hex);
+                          const editor = activeQuillRef.current?.getEditor?.();
+                          const range = editor?.getSelection();
+                          if (editor && range) editor.format('color', hex, 'user');
+                        }}
+                        onMouseUp={() => setColorPickerOpen(false)}
+                        style={{ width: 220, height: 140 }}
+                      />
+                      <div className="mt-2">
+                        <Input
+                          type="text"
+                          value={fontColor}
+                          onChange={(e) => setFontColor(e.target.value)}
+                          onBlur={() => {
+                            if (/^#[0-9A-Fa-f]{6}$/.test(fontColor)) {
+                              const editor = activeQuillRef.current?.getEditor?.();
+                              const range = editor?.getSelection();
+                              if (editor && range) editor.format('color', fontColor, 'user');
+                            }
+                            setColorPickerOpen(false);
+                          }}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter' && /^#[0-9A-Fa-f]{6}$/.test(fontColor)) {
+                              const editor = activeQuillRef.current?.getEditor?.();
+                              const range = editor?.getSelection();
+                              if (editor && range) editor.format('color', fontColor, 'user');
+                              setColorPickerOpen(false);
+                            }
+                          }}
+                          className="w-full h-8 text-xs font-mono"
+                        />
+                      </div>
+                    </div>
+                  </div>
+                </DropdownMenuContent>
+              </DropdownMenu>
+            </span>
+
+            <span className="ql-formats flex items-center">
+              <DropdownMenu modal={false} open={alignPickerOpen} onOpenChange={setAlignPickerOpen}>
+                <DropdownMenuTrigger asChild>
+                  <button
+                    type="button"
+                    className="doc-editor-align-btn flex items-center justify-center w-8 h-8 rounded hover:bg-gray-100"
+                    title="Alinhamento"
+                  >
+                    {currentAlign === 'center' && <AlignCenter className="w-4 h-4 text-gray-600" />}
+                    {currentAlign === 'right' && <AlignRight className="w-4 h-4 text-gray-600" />}
+                    {currentAlign === 'justify' && <AlignJustify className="w-4 h-4 text-gray-600" />}
+                    {(currentAlign === 'left' || !currentAlign) && <AlignLeft className="w-4 h-4 text-gray-600" />}
+                  </button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent side="top" align="start" sideOffset={8} className="z-[9999] min-w-[140px]">
+                  <button
+                    type="button"
+                    className="flex items-center gap-2 w-full px-2 py-1.5 text-sm hover:bg-gray-100 rounded cursor-pointer"
+                    onClick={() => {
+                      const editor = activeQuillRef.current?.getEditor?.();
+                      const range = editor?.getSelection();
+                      if (editor && range) editor.format('align', false, 'user');
+                      setCurrentAlign('left');
+                      setAlignPickerOpen(false);
+                    }}
+                  >
+                    <AlignLeft className="w-4 h-4" /> Esquerda
+                  </button>
+                  <button
+                    type="button"
+                    className="flex items-center gap-2 w-full px-2 py-1.5 text-sm hover:bg-gray-100 rounded cursor-pointer"
+                    onClick={() => {
+                      const editor = activeQuillRef.current?.getEditor?.();
+                      const range = editor?.getSelection();
+                      if (editor && range) editor.format('align', 'center', 'user');
+                      setCurrentAlign('center');
+                      setAlignPickerOpen(false);
+                    }}
+                  >
+                    <AlignCenter className="w-4 h-4" /> Centro
+                  </button>
+                  <button
+                    type="button"
+                    className="flex items-center gap-2 w-full px-2 py-1.5 text-sm hover:bg-gray-100 rounded cursor-pointer"
+                    onClick={() => {
+                      const editor = activeQuillRef.current?.getEditor?.();
+                      const range = editor?.getSelection();
+                      if (editor && range) editor.format('align', 'right', 'user');
+                      setCurrentAlign('right');
+                      setAlignPickerOpen(false);
+                    }}
+                  >
+                    <AlignRight className="w-4 h-4" /> Direita
+                  </button>
+                  <button
+                    type="button"
+                    className="flex items-center gap-2 w-full px-2 py-1.5 text-sm hover:bg-gray-100 rounded cursor-pointer"
+                    onClick={() => {
+                      const editor = activeQuillRef.current?.getEditor?.();
+                      const range = editor?.getSelection();
+                      if (editor && range) editor.format('align', 'justify', 'user');
+                      setCurrentAlign('justify');
+                      setAlignPickerOpen(false);
+                    }}
+                  >
+                    <AlignJustify className="w-4 h-4" /> Justificar
+                  </button>
+                </DropdownMenuContent>
+              </DropdownMenu>
+            </span>
+
+            <span className="ql-formats">
+              <button type="button" className="ql-link" title="Link" dangerouslySetInnerHTML={{ __html: QUILL_ICONS.link }} />
+              <button type="button" className="ql-blockquote" title="Citação" dangerouslySetInnerHTML={{ __html: QUILL_ICONS.blockquote }} />
+              <button type="button" className="ql-clean" title="Limpar formatação" dangerouslySetInnerHTML={{ __html: QUILL_ICONS.clean }} />
+            </span>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

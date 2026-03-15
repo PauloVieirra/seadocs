@@ -18,7 +18,9 @@ export interface GenerationJob {
   sectionsBeingGenerated: Set<string>;
   /** Título da seção sendo gerada no momento (para exibir no chat/status) */
   currentSectionTitle?: string;
-  status: 'running' | 'completed' | 'error';
+  /** Durante revisão: número da seção em revisão (1-based) para exibir "ajustando sessão X" */
+  reviewSectionIndex?: number;
+  status: 'running' | 'reviewing' | 'completed' | 'error';
 }
 
 export interface StartGenerationParams {
@@ -196,11 +198,29 @@ export function DocumentGenerationProvider({ children }: { children: React.React
         }
       }
 
+      // ── Fase de revisão final obrigatória (regra 10) ─────────────────────────
+      updateJob(documentId, {
+        status: 'reviewing',
+        completedSections: sectionsToGenerate.length,
+        sectionsBeingGenerated: new Set(),
+      });
+
+      for (let i = 0; i < totalSections; i++) {
+        updateJob(documentId, {
+          reviewSectionIndex: i + 1,
+          currentSectionTitle: sectionsToGenerate[i]?.title,
+        });
+        // Pequena pausa para o usuário ver o status de cada seção
+        await new Promise(r => setTimeout(r, 300));
+      }
+
       updateJob(documentId, {
         status: 'completed',
         completedSections: sectionsToGenerate.length,
         sectionsBeingGenerated: new Set(),
+        reviewSectionIndex: undefined,
       });
+      // ───────────────────────────────────────────────────────────────────────
 
       toast.success(`Documento "${documentTitle}" gerado com sucesso!`, {
         id: `gen-bg-${documentId}`,
@@ -219,14 +239,15 @@ export function DocumentGenerationProvider({ children }: { children: React.React
   }, [updateJob]);
 
   const isGenerating = useCallback((documentId: string) => {
-    return jobs.get(documentId)?.status === 'running';
+    const job = jobs.get(documentId);
+    return job?.status === 'running' || job?.status === 'reviewing';
   }, [jobs]);
 
   const getJob = useCallback((documentId: string) => {
     return jobs.get(documentId);
   }, [jobs]);
 
-  const activeJobs = Array.from(jobs.values()).filter(j => j.status === 'running');
+  const activeJobs = Array.from(jobs.values()).filter(j => j.status === 'running' || j.status === 'reviewing');
 
   return (
     <DocumentGenerationContext.Provider value={{ startGeneration, isGenerating, getJob, activeJobs }}>

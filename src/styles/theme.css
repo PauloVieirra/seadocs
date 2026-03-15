@@ -482,7 +482,9 @@
   width: max-content !important;
   max-width: 98vw;
   white-space: nowrap;
-  overflow: visible; /* Permite dropdowns (ex: alinhamento) abrirem para cima */
+  overflow-x: auto; /* Scroll horizontal quando necessário - todas as ferramentas visíveis */
+  overflow-y: visible; /* Dropdowns (alinhamento, etc.) abrem para cima */
+  -webkit-overflow-scrolling: touch;
 }
 
 .sgid-floating-toolbar .ql-toolbar.ql-snow {
@@ -494,6 +496,7 @@
   align-items: center !important;
   flex-wrap: nowrap !important;
   width: auto !important;
+  flex-shrink: 0 !important; /* Todas as ferramentas visíveis - não encolher */
   overflow: visible;
 }
 
@@ -528,10 +531,48 @@
   padding: 4px !important;
   color: #444 !important; /* Cor de fallback se o SVG falhar */
 }
+.sgid-floating-toolbar .ql-snow.ql-toolbar button svg,
+.sgid-floating-toolbar .ql-snow .ql-toolbar button svg {
+  width: 18px !important;
+  height: 18px !important;
+  flex-shrink: 0;
+}
 
-.sgid-floating-toolbar .ql-snow.ql-toolbar button:hover {
+.sgid-floating-toolbar .ql-snow.ql-toolbar button:hover,
+.sgid-floating-toolbar .doc-editor-color-btn:hover {
   background-color: rgba(0, 0, 0, 0.05) !important;
   border-radius: 4px;
+}
+
+/* Botão de cor no DocumentEditor - mesmo visual dos demais */
+.sgid-floating-toolbar .doc-editor-color-btn {
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  width: 28px !important;
+  height: 28px !important;
+  padding: 4px !important;
+  color: #444 !important;
+}
+
+/* Botão de alinhamento no DocumentEditor */
+.sgid-floating-toolbar .doc-editor-align-btn {
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  width: 28px !important;
+  height: 28px !important;
+  padding: 4px !important;
+  color: #444 !important;
+}
+.sgid-floating-toolbar .doc-editor-align-btn:hover {
+  background-color: rgba(0, 0, 0, 0.05) !important;
+  border-radius: 4px;
+}
+
+/* Ocultar toolbar duplicada dentro do doc-editor-quill */
+.doc-editor-quill .ql-toolbar {
+  display: none !important;
 }
 
 .sgid-floating-toolbar .ql-snow .ql-picker {
@@ -690,6 +731,79 @@
   padding: 40px 60px 120px !important; /* Padding lateral interno da folha e espaço para a barra */
   position: relative;
   z-index: 10;
+}
+
+/* Modo de visualização: preservar formatação (tamanho, cor, alinhamento) e evitar vazamento */
+.doc-view-mode-content {
+  overflow-x: hidden !important;
+  max-width: 100% !important;
+  word-wrap: break-word !important;
+  overflow-wrap: break-word !important;
+}
+.doc-view-mode-content p,
+.doc-view-mode-content li,
+.doc-view-mode-content h1,
+.doc-view-mode-content h2,
+.doc-view-mode-content h3,
+.doc-view-mode-content blockquote,
+.doc-view-mode-content pre,
+.doc-view-mode-content table,
+.doc-view-mode-content span,
+.doc-view-mode-content div {
+  max-width: 100% !important;
+  overflow-wrap: break-word !important;
+  word-wrap: break-word !important;
+}
+.doc-view-mode-content table {
+  table-layout: fixed !important;
+}
+.doc-view-mode-content pre,
+.doc-view-mode-content code {
+  white-space: pre-wrap !important;
+  word-break: break-word !important;
+}
+/* Tamanhos e alinhamentos do Quill no modo visualização */
+.doc-view-mode-content .ql-size-12px { font-size: 12px !important; }
+.doc-view-mode-content .ql-size-14px { font-size: 14px !important; }
+.doc-view-mode-content .ql-size-16px { font-size: 16px !important; }
+.doc-view-mode-content .ql-size-18px { font-size: 18px !important; }
+.doc-view-mode-content .ql-size-20px { font-size: 20px !important; }
+.doc-view-mode-content .ql-size-24px { font-size: 24px !important; }
+.doc-view-mode-content .ql-size-28px { font-size: 28px !important; }
+.doc-view-mode-content .ql-size-32px { font-size: 32px !important; }
+.doc-view-mode-content .ql-size-36px { font-size: 36px !important; }
+.doc-view-mode-content .ql-size-40px { font-size: 40px !important; }
+.doc-view-mode-content .ql-size-48px { font-size: 48px !important; }
+.doc-view-mode-content .ql-size-56px { font-size: 56px !important; }
+.doc-view-mode-content .ql-size-64px { font-size: 64px !important; }
+.doc-view-mode-content .ql-size-72px { font-size: 72px !important; }
+.doc-view-mode-content .ql-size-80px { font-size: 80px !important; }
+.doc-view-mode-content .ql-align-center { text-align: center !important; }
+.doc-view-mode-content .ql-align-right { text-align: right !important; }
+.doc-view-mode-content .ql-align-justify { text-align: justify !important; }
+
+/* DocumentEditor: texto não pode vazar do espaço de edição */
+.doc-editor-quill .ql-container,
+.doc-editor-quill .ql-editor {
+  overflow-x: hidden !important;
+  max-width: 100% !important;
+  word-wrap: break-word !important;
+  overflow-wrap: break-word !important;
+}
+.doc-editor-quill .ql-editor p,
+.doc-editor-quill .ql-editor li,
+.doc-editor-quill .ql-editor h1,
+.doc-editor-quill .ql-editor h2,
+.doc-editor-quill .ql-editor h3,
+.doc-editor-quill .ql-editor blockquote,
+.doc-editor-quill .ql-editor pre,
+.doc-editor-quill .ql-editor table {
+  max-width: 100% !important;
+  overflow-wrap: break-word !important;
+  word-wrap: break-word !important;
+}
+.doc-editor-quill .ql-editor table {
+  table-layout: fixed !important;
 }
 
 @media (max-width: 767px) {

@@ -4,12 +4,13 @@
 
 **Fonte única:** `Spec/REGRAS_CONSTITUCIONAIS.md` — todas as regras constitucionais estão centralizadas neste arquivo.
 
-**Resumo R1–R5:**
+**Resumo R1–R6:**
 - **R1.** Alterações limitadas ao escopo solicitado.
 - **R2.** Spec obrigatório no modelo (`spec_path`).
 - **R3.** Validar Spec antes da geração.
 - **R4.** Seguir rigorosamente as diretrizes do Spec.
-- **R5.** Não replicar conversas da base — interpretar e redigir em linguagem formal.
+- **R5.** Não replicar conversas entre pessoas da base de conhecimento — interpretar e redigir em linguagem formal.
+- **R6.** Chat: não inventar respostas — se não há informação no projeto, responder apenas que não há informações sobre isso.
 
 ---
 
@@ -18,6 +19,7 @@
 3. **Sem Restauração Automática**: Não tente restaurar versões de arquivos ou desfazer alterações de forma automática. Qualquer reversão deve ser solicitada.
 4. **Foco no Usuário**: Sempre valide se uma alteração estrutural (como mudar um banco de dados) não quebrará a visualização atual de dados do usuário.
 5. **Status de Projetos**: O status "Rascunho" (draft) existe apenas para projetos não publicados. Após publicar um projeto, seu status passa a ser "Publicado" (published), nunca permanece como rascunho.
+6. **Toolbar DocumentEditor**: Não alterar a barra de ferramentas do `DocumentEditor` (tela de criação de documento) sem solicitação explícita. Modelo de referência: `Spec/Spec_Toolbar_Criacao_Documento.md`.
 
 
 

@@ -1,6 +1,7 @@
 import React, { useMemo, useRef, useState, useEffect } from 'react';
 import ReactQuill, { Quill } from 'react-quill-new';
 import 'react-quill-new/dist/quill.snow.css';
+import { ensureCustomBlotsRegistered } from '../../lib/quill-blots';
 import { Button } from './ui/button';
 import { Input } from './ui/input';
 import { Label } from './ui/label';
@@ -15,7 +16,7 @@ import { HexColorPicker } from 'react-colorful';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from './ui/alert-dialog';
 import { listSpecFiles, type SpecFile } from '../../services/spec-service';
 
-let customBlotsRegistered = false;
+ensureCustomBlotsRegistered();
 
 /** Tamanhos de fonte em pixels (12 a 80) */
 const FONT_SIZES_PX = ['12px', '14px', '16px', '18px', '20px', '24px', '28px', '32px', '36px', '40px', '48px', '56px', '64px', '72px', '80px'];
@@ -28,135 +29,6 @@ function rgbToHex(rgb: string): string {
   const b = parseInt(m[3], 10).toString(16).padStart(2, '0');
   return `#${r}${g}${b}`;
 }
-
-function ensureCustomBlotsRegistered() {
-  if (customBlotsRegistered) return;
-
-  const QuillAny: any = Quill;
-
-  // Tamanhos de fonte customizados (12px a 80px) - sobrescrever whitelist
-  const SizeClass = QuillAny.import('attributors/class/size');
-  SizeClass.whitelist = FONT_SIZES_PX;
-  QuillAny.register(SizeClass, true);
-  const BlockEmbed = QuillAny.import('blots/block/embed');
-
-  // Blot para Metadado (Campo Editável)
-  class MetadataFieldBlot extends BlockEmbed {
-    static blotName = 'metadataField';
-    static tagName = 'div';
-    static className = 'sgid-metadata-field';
-
-    static create(value: { id?: string; title?: string; help?: string; topicId?: string; topicName?: string; repeatable?: boolean; planningInstruction?: string }) {
-      const node: HTMLElement = super.create();
-      const id = value?.id || `field-${Date.now()}`;
-      const title = value?.title || 'Campo';
-      const help = value?.help || '';
-      const topicId = value?.topicId || '';
-      const topicName = value?.topicName || (topicId.startsWith('cell:') ? `Célula ${topicId.split(':').pop()}` : topicId);
-      const repeatable = value?.repeatable ?? false;
-      const planningInstruction = value?.planningInstruction || '';
-
-      node.setAttribute('contenteditable', 'false');
-      node.setAttribute('data-field-id', id);
-      node.setAttribute('data-field-title', title);
-      node.setAttribute('data-field-help', help);
-      node.setAttribute('data-topic-id', topicId);
-      if (repeatable) node.setAttribute('data-repeatable', 'true');
-      if (planningInstruction) node.setAttribute('data-planning-instruction', planningInstruction);
-
-      const header = document.createElement('div');
-      header.className = 'sgid-metadata-field__header';
-
-      const titleEl = document.createElement('div');
-      titleEl.className = 'sgid-metadata-field__title';
-      titleEl.innerText = title;
-      header.appendChild(titleEl);
-
-      if (repeatable) {
-        const badge = document.createElement('span');
-        badge.className = 'text-[9px] bg-blue-100 text-blue-700 px-1.5 py-0.5 rounded-full ml-2 font-semibold';
-        badge.innerText = 'REPETÍVEL';
-        titleEl.appendChild(badge);
-      }
-
-      if (topicId && !repeatable) {
-        const topicTag = document.createElement('span');
-        topicTag.className = 'text-[9px] bg-blue-100 text-blue-700 px-1.5 py-0.5 rounded-full ml-2';
-        topicTag.innerText = `Tópico: ${topicName}`;
-        titleEl.appendChild(topicTag);
-      }
-
-      if (help) {
-        const helpEl = document.createElement('div');
-        helpEl.className = 'sgid-metadata-field__help';
-        helpEl.innerText = help;
-        helpEl.style.fontSize = '10px';
-        helpEl.style.opacity = '0.7';
-        header.appendChild(helpEl);
-      }
-
-      const body = document.createElement('div');
-      body.className = 'sgid-metadata-field__textarea';
-      body.innerText = repeatable
-        ? 'Campo dinâmico — a IA criará as instâncias necessárias ao gerar o documento.'
-        : 'Digite aqui (campo editável no documento)...';
-
-      node.appendChild(header);
-      node.appendChild(body);
-
-      return node;
-    }
-
-    static value(node: HTMLElement) {
-      return {
-        id: node.getAttribute('data-field-id') || '',
-        title: node.getAttribute('data-field-title') || '',
-        help: node.getAttribute('data-field-help') || '',
-        topicId: node.getAttribute('data-topic-id') || '',
-        repeatable: node.getAttribute('data-repeatable') === 'true',
-        planningInstruction: node.getAttribute('data-planning-instruction') || '',
-      };
-    }
-  }
-
-  // Blot para Tópico (Container Pastel) - BlockEmbed para garantir estrutura com data-topic-id
-  class TopicBlot extends BlockEmbed {
-    static blotName = 'topic';
-    static tagName = 'div';
-    static className = 'sgid-topic';
-
-    static create(value: { id?: string; name?: string } | string) {
-      const node: HTMLElement = super.create();
-      const id = (typeof value === 'object' && value?.id) || (typeof value === 'string' ? value : '') || `topic-${Date.now()}`;
-      const name = (typeof value === 'object' && value?.name) || 'Novo Tópico';
-
-      node.setAttribute('contenteditable', 'false');
-      node.setAttribute('data-topic-id', id);
-
-      const titleEl = document.createElement('p');
-      titleEl.className = 'sgid-topic-title';
-      titleEl.innerText = name;
-      node.appendChild(titleEl);
-
-      return node;
-    }
-
-    static value(node: HTMLElement) {
-      const titleEl = node.querySelector('.sgid-topic-title') || node.querySelector('p') as HTMLElement | null;
-      const name = (titleEl as HTMLElement)?.innerText?.trim() || 'Tópico sem nome';
-      return {
-        id: node.getAttribute('data-topic-id') || '',
-        name,
-      };
-    }
-  }
-
-  QuillAny.register(MetadataFieldBlot);
-  QuillAny.register(TopicBlot);
-  customBlotsRegistered = true;
-}
-
-ensureCustomBlotsRegistered();
 
 function slugify(input: string) {
   return (input || '')

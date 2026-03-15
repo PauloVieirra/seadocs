@@ -39,7 +39,8 @@ export function ProjectEditor({ projectId, documentId, onBack }: ProjectEditorPr
   } | null>(null);
 
   const isGeneratingDocument = isGenerating(documentId);
-  const sectionsBeingGeneratedByAI = getJob(documentId)?.sectionsBeingGenerated ?? new Set<string>();
+  const generationJob = getJob(documentId);
+  const sectionsBeingGeneratedByAI = generationJob?.sectionsBeingGenerated ?? new Set<string>();
 
   useEffect(() => {
     if (isExternalUser) setViewMode(true);
@@ -84,14 +85,6 @@ export function ProjectEditor({ projectId, documentId, onBack }: ProjectEditorPr
     setDocument(updatedDoc);
     setTimeout(() => setSaving(false), 1000);
   };
-
-  const handleRequestGenerateAll = useCallback((sections: DocumentSection[]) => {
-    setGenerateRequest({
-      documentId,
-      projectId,
-      sections,
-    });
-  }, [documentId, projectId]);
 
   const handleSuggestedGenerateDocument = useCallback(() => {
     if (!document?.content?.sections) return;
@@ -186,7 +179,9 @@ export function ProjectEditor({ projectId, documentId, onBack }: ProjectEditorPr
               {isGeneratingDocument && (
                 <Badge variant="secondary" className="animate-pulse bg-blue-50 text-blue-700 border-blue-200 flex items-center gap-1.5">
                   <span className="w-2 h-2 rounded-full bg-blue-500 animate-ping inline-block" />
-                  IA gerando documento...
+                  {generationJob?.status === 'reviewing'
+                    ? `Revisando documento, procurando erros, ajustando sessão ${generationJob?.reviewSectionIndex ?? 0}`
+                    : 'IA gerando documento...'}
                 </Badge>
               )}
 
@@ -236,7 +231,6 @@ export function ProjectEditor({ projectId, documentId, onBack }: ProjectEditorPr
           projectId={projectId}
           viewMode={viewMode}
           onExitViewMode={isExternalUser ? undefined : () => setViewMode(false)}
-          onRequestGenerateAll={isExternalUser ? undefined : handleRequestGenerateAll}
           onDocumentUpdated={loadDocument}
           sectionsBeingGeneratedByParent={sectionsBeingGeneratedByAI}
           scrollToActiveSection={scrollToActiveSection}
@@ -262,6 +256,7 @@ export function ProjectEditor({ projectId, documentId, onBack }: ProjectEditorPr
           forceOpen={!!generateRequest}
           onSuggestedGenerateDocument={handleSuggestedGenerateDocument}
           onRequestCreateDocument={handleRequestCreateDocument}
+          documentHasContent={document?.content?.sections?.some(s => (s.content || '').trim()) ?? false}
         />
       )}
 

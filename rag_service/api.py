@@ -34,7 +34,9 @@ _CONSTITUTIONAL_RULES_FALLBACK = (
     "   Use papéis genéricos: [Responsável], [Gestor do Projeto], [Equipe Técnica].\n"
     "5. O documento deve conter APENAS o conteúdo final esperado para a seção.\n"
     "6. O Spec é APENAS regras de estrutura/formato. NUNCA copie, cite ou inclua texto do Spec no documento. "
-    "O conteúdo vem SOMENTE dos dados do projeto (base de conhecimento)."
+    "O conteúdo vem SOMENTE dos dados do projeto (base de conhecimento).\n"
+    "7. NÃO pule para a próxima sessão deixando texto incompleto. Se precisar mudar de sessão, remova o texto incompleto e complete na sessão adequada (ou crie sessão complementar). Pode encurtar uma sessão e criar outra para o restante — não há limite de sessões.\n"
+    "8. Ao finalizar o documento, executar revisão obrigatória. Status na tela: Revisando documento, procurando erros, ajustando sessão X."
 )
 
 
@@ -500,12 +502,16 @@ def chat(request: ChatRequest):
             system_instruction = """Você é um assistente especializado em documentação de projetos.
 Responda em português, de forma clara e objetiva.
 O usuário está editando um documento. Use o contexto da base de conhecimento para responder perguntas sobre esse documento e o projeto.
-Se o usuário pedir para gerar ou preencher o documento, sugira o botão "Gerar tudo com IA" no editor."""
+Se o usuário pedir para gerar ou preencher o documento, sugira o botão "Gerar tudo com IA" no editor.
+
+REGRA OBRIGATÓRIA — fora do escopo: Se a pergunta está fora do escopo do projeto ou NÃO existe informação sobre o assunto na base de conhecimento abaixo, responda APENAS: "Não há informações sobre isso na documentação deste projeto." NÃO sugira criar documentos, usar botões, inventar procedimentos ou dar alternativas."""
         else:
             system_instruction = """Você é um assistente especializado em documentação de projetos.
 Responda em português, de forma clara e objetiva.
 O contexto abaixo é da base de conhecimento do projeto como um todo. Use-o para responder perguntas sobre o projeto.
-Se o usuário pedir para criar um novo documento, sugira usar o botão "Novo Documento"."""
+Se o usuário pedir para criar um novo documento, sugira usar o botão "Novo Documento".
+
+REGRA OBRIGATÓRIA — fora do escopo: Se a pergunta está fora do escopo do projeto ou NÃO existe informação sobre o assunto na base de conhecimento abaixo, responda APENAS: "Não há informações sobre isso na documentação deste projeto." NÃO sugira criar documentos, usar botões, inventar procedimentos ou dar alternativas."""
 
         prompt = f"""{system_instruction}
 

@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { RichTextDocumentModelEditor } from '../components/RichTextDocumentModelEditor';
 import { apiService } from '../../services/api';
@@ -7,7 +7,8 @@ import { Badge } from '../components/ui/badge';
 import { Button } from '../components/ui/button';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../components/ui/select';
 import { listTemplateExamples, analyzeDocumentTemplate, type AnalyzedTemplate } from '../../services/template-analysis-api';
-import { Wand2, Loader2 } from 'lucide-react';
+import { uploadSpec } from '../../services/spec-service';
+import { Wand2, Loader2, Upload } from 'lucide-react';
 
 export function CreateDocumentModelPage() {
   const navigate = useNavigate();
@@ -21,6 +22,11 @@ export function CreateDocumentModelPage() {
   const [selectedExample, setSelectedExample] = useState<string>('');
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [generatedTemplate, setGeneratedTemplate] = useState<AnalyzedTemplate | null>(null);
+
+  // Enviar Spec (apenas Administrador)
+  const [isUploadingSpec, setIsUploadingSpec] = useState(false);
+  const specFileInputRef = useRef<HTMLInputElement>(null);
+  const currentUser = apiService.getCurrentUser();
 
   useEffect(() => {
     apiService.getLocalModelDrafts().then((drafts) => {
@@ -68,6 +74,36 @@ export function CreateDocumentModelPage() {
     setDraftSaved(saved);
   };
 
+  const handleEnviarSpecClick = () => {
+    specFileInputRef.current?.click();
+  };
+
+  const handleSpecFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (!file.name.toLowerCase().endsWith('.md')) {
+      toast.error('Selecione um arquivo .md');
+      e.target.value = '';
+      return;
+    }
+    setIsUploadingSpec(true);
+    try {
+      const content = await file.text();
+      const bucketPath = `Spec/${file.name}`;
+      const result = await uploadSpec(bucketPath, content);
+      if (result) {
+        toast.success(`Spec "${file.name}" enviado com sucesso para o bucket.`);
+      } else {
+        toast.error('Falha ao enviar Spec. Verifique as permissões do bucket.');
+      }
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Erro ao enviar Spec');
+    } finally {
+      setIsUploadingSpec(false);
+      e.target.value = '';
+    }
+  };
+
   const handleCancel = () => {
     navigate('/document-models'); // Navegar de volta para o painel de gerenciamento de modelos
   };
@@ -94,6 +130,29 @@ export function CreateDocumentModelPage() {
         <div className="flex items-center justify-between mb-4">
           <h1 className="text-3xl font-extrabold text-gray-900">Criar Novo Modelo de Documento</h1>
           <div className="flex items-center gap-2">
+            {currentUser?.role === 'admin' && (
+              <>
+                <input
+                  ref={specFileInputRef}
+                  type="file"
+                  accept=".md"
+                  className="hidden"
+                  onChange={handleSpecFileChange}
+                />
+                <Button
+                  variant="secondary"
+                  onClick={handleEnviarSpecClick}
+                  disabled={isUploadingSpec}
+                  className="gap-2"
+                >
+                  {isUploadingSpec ? (
+                    <><Loader2 className="h-4 w-4 animate-spin" />Enviando...</>
+                  ) : (
+                    <><Upload className="h-4 w-4" />Enviar Spec</>
+                  )}
+                </Button>
+              </>
+            )}
             {isDraft && (
               <Badge variant="secondary" className="bg-amber-100 text-amber-800 border-amber-200">
                 Rascunho

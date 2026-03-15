@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useRef } from 'react';
 import { useNavigate } from 'react-router-dom'; // Importar useNavigate
 import { apiService, type DocumentModel, type User } from '../../services/api';
 import { Button } from './ui/button';
@@ -10,8 +10,9 @@ import { Input } from './ui/input';
 import { Label } from './ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select';
 import { Checkbox } from './ui/checkbox'; // Removed Textarea as it's not needed for new model creation
-import { Plus, FileText, Edit, Trash2, Copy } from 'lucide-react';
-import { RichTextDocumentModelEditor } from './RichTextDocumentModelEditor'; // Import RichTextDocumentModelEditor
+import { Plus, FileText, Edit, Trash2, Copy, RotateCcw, Lock, Upload } from 'lucide-react';
+import { RichTextDocumentModelEditor } from './RichTextDocumentModelEditor';
+import { uploadSpec } from '../../services/spec-service';
 import { toast } from 'sonner';
 
 interface DocumentModelManagementPanelProps {
@@ -27,6 +28,11 @@ export function DocumentModelManagementPanel({ currentUser }: DocumentModelManag
   const [isSavingModel, setIsSavingModel] = useState(false); // For saving state in editor
   const [deletingModelId, setDeletingModelId] = useState<string | null>(null);
   const [duplicatingModelId, setDuplicatingModelId] = useState<string | null>(null);
+  const [restoringModelId, setRestoringModelId] = useState<string | null>(null);
+  const [restoreConfirmOpen, setRestoreConfirmOpen] = useState(false);
+  const [modelToRestore, setModelToRestore] = useState<DocumentModel | null>(null);
+  const [isUploadingSpec, setIsUploadingSpec] = useState(false);
+  const specFileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     loadDocumentModels();
@@ -127,9 +133,59 @@ export function DocumentModelManagementPanel({ currentUser }: DocumentModelManag
   };
 
   const canDeleteModel = (model: DocumentModel) =>
-    model.isLocalDraft ||
-    model.creatorId === currentUser.id ||
-    (model.creatorId == null && currentUser.role === 'admin');
+    !model.isProtected &&
+    (model.isLocalDraft ||
+      model.creatorId === currentUser.id ||
+      (model.creatorId == null && currentUser.role === 'admin'));
+
+  const canRestoreModel = (model: DocumentModel) =>
+    !model.isLocalDraft && !!model.originalTemplateContent;
+
+  const handleEnviarSpecClick = () => {
+    specFileInputRef.current?.click();
+  };
+
+  const handleSpecFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (!file.name.toLowerCase().endsWith('.md')) {
+      toast.error('Selecione um arquivo .md');
+      e.target.value = '';
+      return;
+    }
+    setIsUploadingSpec(true);
+    try {
+      const content = await file.text();
+      const bucketPath = `Spec/${file.name}`;
+      const result = await uploadSpec(bucketPath, content);
+      if (result) {
+        toast.success(`Spec "${file.name}" enviado com sucesso para o bucket.`);
+      } else {
+        toast.error('Falha ao enviar Spec. Verifique as permissões do bucket.');
+      }
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Erro ao enviar Spec');
+    } finally {
+      setIsUploadingSpec(false);
+      e.target.value = '';
+    }
+  };
+
+  const handleRestoreModel = async () => {
+    if (!modelToRestore) return;
+    setRestoringModelId(modelToRestore.id);
+    try {
+      await apiService.restoreDocumentModel(modelToRestore.id);
+      toast.success(`Modelo "${modelToRestore.name}" restaurado ao formato original.`);
+      setRestoreConfirmOpen(false);
+      setModelToRestore(null);
+      loadDocumentModels();
+    } catch (error: unknown) {
+      toast.error(error instanceof Error ? error.message : 'Erro ao restaurar modelo');
+    } finally {
+      setRestoringModelId(null);
+    }
+  };
 
   const handleDeleteModel = async (model: DocumentModel) => {
     if (!canDeleteModel(model)) {
@@ -166,14 +222,42 @@ export function DocumentModelManagementPanel({ currentUser }: DocumentModelManag
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <h3 className="text-lg font-medium">Gerenciamento de Modelos de Documento</h3>
-        {(currentUser.role === 'admin' || currentUser.role === 'manager' || currentUser.role === 'technical_responsible') ? (
-          <Button onClick={async () => {
-            await apiService.deleteLocalModelDraft('model_draft_new');
-            navigate('/create-document-model');
-          }}>
-            <Plus className="mr-2 h-4 w-4" /> Criar Novo Modelo
-          </Button>
-        ) : null}
+        <div className="flex items-center gap-2">
+          {currentUser.role === 'admin' && (
+            <>
+              <input
+                ref={specFileInputRef}
+                type="file"
+                accept=".md"
+                className="hidden"
+                onChange={handleSpecFileChange}
+              />
+              <Button
+                variant="secondary"
+                onClick={handleEnviarSpecClick}
+                disabled={isUploadingSpec}
+                className="gap-2"
+              >
+                {isUploadingSpec ? (
+                  <span className="flex items-center gap-2">
+                    <span className="h-4 w-4 animate-spin rounded-full border-2 border-current border-t-transparent" />
+                    Enviando...
+                  </span>
+                ) : (
+                  <><Upload className="h-4 w-4" />Enviar Spec</>
+                )}
+              </Button>
+            </>
+          )}
+          {(currentUser.role === 'admin' || currentUser.role === 'manager' || currentUser.role === 'technical_responsible') && (
+            <Button onClick={async () => {
+              await apiService.deleteLocalModelDraft('model_draft_new');
+              navigate('/create-document-model');
+            }}>
+              <Plus className="mr-2 h-4 w-4" /> Criar Novo Modelo
+            </Button>
+          )}
+        </div>
       </div>
 
       {loading ? (
@@ -235,6 +319,12 @@ export function DocumentModelManagementPanel({ currentUser }: DocumentModelManag
                         Rascunho
                       </Badge>
                     )}
+                    {model.isProtected && (
+                      <Badge variant="outline" className="bg-amber-50 text-amber-700 border-amber-200" title="Modelo protegido — não pode ser excluído">
+                        <Lock className="w-3 h-3 mr-1" />
+                        Protegido
+                      </Badge>
+                    )}
                   </div>
                   <CardDescription>{model.type}</CardDescription>
                 </div>
@@ -267,6 +357,25 @@ export function DocumentModelManagementPanel({ currentUser }: DocumentModelManag
                     >
                       <Edit className="h-4 w-4" />
                     </Button>
+                    {canRestoreModel(model) && (
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setModelToRestore(model);
+                          setRestoreConfirmOpen(true);
+                        }}
+                        title="Restaurar ao formato original"
+                        disabled={restoringModelId === model.id}
+                      >
+                        {restoringModelId === model.id ? (
+                          <div className="h-4 w-4 animate-spin rounded-full border-2 border-current border-t-transparent" />
+                        ) : (
+                          <RotateCcw className="h-4 w-4" />
+                        )}
+                      </Button>
+                    )}
                     {canDeleteModel(model) && (
                     <AlertDialog>
                       <AlertDialogTrigger asChild onClick={(e) => e.stopPropagation()}>
@@ -372,6 +481,47 @@ export function DocumentModelManagementPanel({ currentUser }: DocumentModelManag
           </div>
         </DialogContent>
       </Dialog>
+
+      {/* Diálogo de confirmação de restauração */}
+      <AlertDialog
+        open={restoreConfirmOpen}
+        onOpenChange={(open) => {
+          setRestoreConfirmOpen(open);
+          if (!open) setModelToRestore(null);
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Restaurar ao formato original</AlertDialogTitle>
+            <AlertDialogDescription>
+              {modelToRestore && (
+                <>
+                  Tem certeza que deseja restaurar o modelo &quot;{modelToRestore.name}&quot; ao formato original em que foi criado?
+                  As alterações feitas desde a criação serão perdidas.
+                </>
+              )}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel
+              onClick={() => setModelToRestore(null)}
+              disabled={!!restoringModelId}
+            >
+              Cancelar
+            </AlertDialogCancel>
+            <AlertDialogAction
+              onClick={(e) => {
+                e.preventDefault();
+                handleRestoreModel();
+              }}
+              disabled={!modelToRestore || !!restoringModelId}
+              className="bg-amber-600 hover:bg-amber-700"
+            >
+              {restoringModelId ? 'Restaurando...' : 'Sim, restaurar'}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }
