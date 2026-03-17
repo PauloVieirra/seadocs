@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { Button } from './ui/button';
 import { 
   LogOut, 
@@ -10,7 +10,9 @@ import {
   UsersRound, 
   Menu,
   Settings2,
-  Library
+  Library,
+  Eraser,
+  Bot
 } from 'lucide-react';
 import { type User } from '../../services/api';
 import { usePermissions } from '../../hooks/usePermissions';
@@ -24,6 +26,11 @@ import {
   SheetFooter,
 } from './ui/sheet';
 import { Avatar, AvatarFallback, AvatarImage } from './ui/avatar';
+import { PasswordConfirmationDialog } from './PasswordConfirmationDialog';
+import { apiService } from '../../services/api';
+import { clearAllRAG } from '../../services/rag-api';
+import { clearSystemMemory } from '../../services/local-db';
+import { toast } from 'sonner';
 
 interface GlobalNavProps {
   user: User;
@@ -39,6 +46,7 @@ export function GlobalNav({
   const perms = usePermissions(user);
   const navigate = useNavigate();
   const location = useLocation();
+  const [clearMemoryDialogOpen, setClearMemoryDialogOpen] = useState(false);
 
   const getRoleBadge = (role: User['role']) => {
     const labels: Record<User['role'], string> = {
@@ -128,6 +136,18 @@ export function GlobalNav({
                 </Button>
               </>
             )}
+
+            {/* Gestão de IA: Specs e Skills (admin ou quem gerencia templates) */}
+            {(perms.canConfigureSystem() || perms.canManageTemplates()) && (
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => navigate('/ai-management')}
+                className={isActive('/ai-management') ? 'bg-gray-100' : ''}
+              >
+                <Bot className="w-4 h-4 mr-2" /> Gestão de IA
+              </Button>
+            )}
           </nav>
         </div>
 
@@ -170,17 +190,27 @@ export function GlobalNav({
 
               <div className="flex flex-col gap-2 flex-1">
                 {perms.canConfigureSystem() && (
-                  <Button 
-                    variant="ghost" 
-                    className="w-full justify-start h-12 text-gray-700 hover:bg-indigo-50 hover:text-indigo-600" 
-                    onClick={onConfigApi}
-                  >
-                    <Settings2 className="w-5 h-5 mr-3" />
-                    Configurar API
-                  </Button>
+                  <>
+                    <Button 
+                      variant="ghost" 
+                      className="w-full justify-start h-12 text-gray-700 hover:bg-indigo-50 hover:text-indigo-600" 
+                      onClick={onConfigApi}
+                    >
+                      <Settings2 className="w-5 h-5 mr-3" />
+                      Configurar API
+                    </Button>
+                    <Button 
+                      variant="ghost" 
+                      className="w-full justify-start h-12 text-gray-700 hover:bg-amber-50 hover:text-amber-700" 
+                      onClick={() => {
+                        setClearMemoryDialogOpen(true);
+                      }}
+                    >
+                      <Eraser className="w-5 h-5 mr-3" />
+                      Limpar memória do sistema
+                    </Button>
+                  </>
                 )}
-                
-                {/* Adicione outras opções de menu aqui se necessário */}
               </div>
 
               <SheetFooter className="mt-auto border-t pt-4">
@@ -195,6 +225,26 @@ export function GlobalNav({
               </SheetFooter>
             </SheetContent>
           </Sheet>
+
+          <PasswordConfirmationDialog
+            open={clearMemoryDialogOpen}
+            onOpenChange={setClearMemoryDialogOpen}
+            onConfirm={async (password) => {
+              const valid = await apiService.verifyPassword(password);
+              if (!valid) throw new Error('Senha incorreta.');
+              await clearSystemMemory();
+              try {
+                await clearAllRAG();
+              } catch (e) {
+                toast.warning('Memória local limpa. O serviço RAG pode estar offline — verifique se está rodando.');
+                return;
+              }
+              toast.success('Memória do sistema limpa. Será necessário reindexar os documentos para o RAG.');
+            }}
+            title="Limpar memória do sistema"
+            description="Esta ação remove caches locais, conversas do chat e a base RAG. As regras e orientações são mantidas. Será necessário reindexar os documentos. Digite sua senha para confirmar."
+            confirmLabel="Limpar memória"
+          />
         </div>
       </div>
     </header>

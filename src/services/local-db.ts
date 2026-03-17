@@ -12,6 +12,8 @@ export interface ModelDraft {
   templateContent: string;
   aiGuidance?: string;
   specPath?: string;
+  skillPath?: string;
+  exampleDocumentPath?: string;
   isDraft: boolean;
   updatedAt: string;
 }
@@ -141,4 +143,49 @@ export async function saveRAGUnderstandingCache(cacheKey: string, data: Omit<RAG
 /** Invalida o cache de resumo quando documentos são adicionados/removidos */
 export async function invalidateRAGSummaryCache(projectId: string): Promise<void> {
   await db.configs.delete(`${RAG_SUMMARY_PREFIX}${projectId}`);
+}
+
+// --- Persistência de conversas do chat (por projeto e usuário) ---
+
+const CHAT_PREFIX = 'chat_';
+
+export interface PersistedChatMessage {
+  id: string;
+  role: 'user' | 'assistant';
+  content: string;
+  timestamp: string; // ISO string
+}
+
+function chatStorageKey(projectId: string, userId: string, documentId?: string): string {
+  return `${CHAT_PREFIX}${projectId}_${userId}_${documentId ?? 'project'}`;
+}
+
+export async function getChatMessages(
+  projectId: string,
+  userId: string,
+  documentId?: string
+): Promise<PersistedChatMessage[]> {
+  const key = chatStorageKey(projectId, userId, documentId);
+  const data = await getConfig<{ messages: PersistedChatMessage[] }>(key);
+  return data?.messages ?? [];
+}
+
+export async function saveChatMessages(
+  projectId: string,
+  userId: string,
+  documentId: string | undefined,
+  messages: PersistedChatMessage[]
+): Promise<void> {
+  const key = chatStorageKey(projectId, userId, documentId);
+  await saveConfig(key, { messages });
+}
+
+/** Limpa memória local do sistema: chat, caches RAG. Mantém configs (API keys) e regras. */
+export async function clearSystemMemory(): Promise<void> {
+  const all = await db.configs.toArray();
+  const prefixes = [CHAT_PREFIX, RAG_SUMMARY_PREFIX, RAG_UNDERSTANDING_PREFIX];
+  const keysToDelete = all
+    .filter((r) => prefixes.some((p) => r.key.startsWith(p)))
+    .map((r) => r.key);
+  await db.configs.bulkDelete(keysToDelete);
 }

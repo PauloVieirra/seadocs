@@ -6,9 +6,10 @@
   "scripts": {
     "build": "npm run copy-spec && vite build",
     "copy-spec": "mkdir -p public && node scripts/generate-spec-files.js",
-    "dev": "npm run copy-spec && concurrently -n vite,rag -c blue,green \"vite\" \"cd rag_service && python3 -m uvicorn api:app --reload --host 0.0.0.0 --port 8000\"",
+    "dev": "npm run copy-spec && concurrently -n vite,rag -c blue,green \"vite\" \"node scripts/start-rag.js\"",
     "dev:frontend": "vite",
-    "rag": "cd rag_service && python3 -m uvicorn api:app --reload --host 0.0.0.0 --port 8000"
+    "rag": "node scripts/start-rag.js",
+    "rag:install": "pip install -r rag_service/requirements.txt"
   },
   "dependencies": {
     "@emotion/react": "11.14.0",

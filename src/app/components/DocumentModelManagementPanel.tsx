@@ -67,7 +67,7 @@ export function DocumentModelManagementPanel({ currentUser }: DocumentModelManag
   };
 
 
-  const handleEditDocumentModel = async (name: string, type: string, templateContent: string, isDraft: boolean, aiGuidance: string, specPath?: string) => {
+  const handleEditDocumentModel = async (name: string, type: string, templateContent: string, isDraft: boolean, aiGuidance: string, specPath?: string, skillPath?: string, exampleDocumentPath?: string) => {
     setIsSavingModel(true);
     try {
       if (!selectedModelForEdit) return;
@@ -77,10 +77,10 @@ export function DocumentModelManagementPanel({ currentUser }: DocumentModelManag
       }
 
       if (selectedModelForEdit.isLocalDraft) {
-        await apiService.createDocumentModel(name, type, templateContent, false, undefined, isDraft, aiGuidance, specPath);
+        await apiService.createDocumentModel(name, type, templateContent, false, undefined, isDraft, aiGuidance, specPath, skillPath, exampleDocumentPath);
         await apiService.deleteLocalModelDraft(selectedModelForEdit.id);
       } else {
-        const updatedModel: DocumentModel = { ...selectedModelForEdit, name, type, templateContent, isDraft, aiGuidance, specPath };
+        const updatedModel: DocumentModel = { ...selectedModelForEdit, name, type, templateContent, isDraft, aiGuidance, specPath, skillPath, exampleDocumentPath };
         await apiService.updateDocumentModel(updatedModel);
       }
 
@@ -121,7 +121,9 @@ export function DocumentModelManagementPanel({ currentUser }: DocumentModelManag
         undefined,
         model.isDraft ?? false,
         model.aiGuidance ?? '',
-        model.specPath
+        model.specPath,
+        model.skillPath,
+        model.exampleDocumentPath
       );
       toast.success('Modelo duplicado com sucesso!');
       await loadDocumentModels();

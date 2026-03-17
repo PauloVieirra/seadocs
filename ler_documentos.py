@@ -193,7 +193,7 @@ def chamar_ollama(prompt, system_prompt=None):
         "prompt": prompt,
         "stream": False,
         "options": {
-            "temperature": 0.4,  # Temperatura baixa para maior fidelidade
+            "temperature": 0.3,  # Temperatura baixa para maior fidelidade
             "num_predict": 1000
         }
     }

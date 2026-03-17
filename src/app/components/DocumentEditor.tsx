@@ -3,7 +3,7 @@ import { useNavigate, useLocation } from 'react-router-dom';
 import { Button } from './ui/button';
 import { Textarea } from './ui/textarea';
 import { Input } from './ui/input';
-import { RotateCw, Plus, Save, FileDown, Edit3, Lock, RefreshCw, PenLine, PenTool, Code, Type, Palette, AlignLeft, AlignCenter, AlignRight, AlignJustify } from 'lucide-react';
+import { RotateCw, Plus, Save, FileDown, Edit3, Lock, RefreshCw, PenLine, PenTool, Code, Type, Palette, AlignLeft, AlignCenter, AlignRight, AlignJustify, ThumbsUp, ThumbsDown } from 'lucide-react';
 import 'react-quill-new/dist/quill.snow.css';
 import ReactQuill, { Quill } from 'react-quill-new';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select';
@@ -13,8 +13,9 @@ import {
   DropdownMenuTrigger,
 } from './ui/dropdown-menu';
 import { HexColorPicker } from 'react-colorful';
-import { apiService, type Document, type DocumentContent, type DocumentSection } from '../../services/api';
-import { generateSectionContent } from '../../services/rag-api';
+import { apiService, type Document, type DocumentContent, type DocumentSection, type DocumentEvaluation } from '../../services/api';
+import { generateSectionContent, indexPositiveFeedback, removePositiveFeedback } from '../../services/rag-api';
+import { downloadDocument } from '../../services/ai-storage-service';
 import { fetchSpecContent } from '../../services/spec-service';
 import { getSignDocumentUrl, isGovBrConfigured } from '../../services/govbr-api';
 import { toast } from 'sonner';
@@ -82,12 +83,16 @@ interface DocumentEditorProps {
   onDocumentUpdated?: () => void;
   /** IDs das seções que estão sendo geradas pelo pai (ex: chat IA) - bloqueia edição */
   sectionsBeingGeneratedByParent?: Set<string>;
+  /** Quando true, documento está sendo gerado pelo pai (ex: chat) - esconde barra imediatamente ao clicar "Sim, criar documento" */
+  isDocumentBeingGeneratedByParent?: boolean;
   /** Quando true, faz scroll para centralizar a seção sendo gerada (ex.: ao clicar no botão "IA gerando") */
   scrollToActiveSection?: boolean;
+  /** Callback para delegar geração ao pai (ex: chat IA) em vez de fluxo local */
+  onRequestGenerateAll?: (sections: DocumentSection[]) => void;
 }
 
-export function DocumentEditor({ document, onSave, projectId, viewMode = false, onExitViewMode, onDocumentUpdated, sectionsBeingGeneratedByParent, scrollToActiveSection }: DocumentEditorProps) {
-  const [content, setContent] = useState<DocumentContent>(document.content);
+export function DocumentEditor({ document, onSave, projectId, viewMode = false, onExitViewMode, onDocumentUpdated, sectionsBeingGeneratedByParent, isDocumentBeingGeneratedByParent, scrollToActiveSection, onRequestGenerateAll }: DocumentEditorProps) {
+  const [content, setContent] = useState<DocumentContent>(document.content ?? { sections: [] });
   const [editorMode, setEditorMode] = useState<'text' | 'html'>('text');
   const [activeEditSection, setActiveEditSection] = useState<string | null>(null);
   const [fontSize, setFontSize] = useState<string>('__normal__');
@@ -119,6 +124,57 @@ export function DocumentEditor({ document, onSave, projectId, viewMode = false, 
   const [isSavingReview, setIsSavingReview] = useState(false);
   const [isSigning, setIsSigning] = useState(false);
   const [signConfirmOpen, setSignConfirmOpen] = useState(false);
+
+  // Avaliação do criador (visível apenas ao criador)
+  const [evaluation, setEvaluation] = useState<DocumentEvaluation | null>(null);
+  const [evaluationLoading, setEvaluationLoading] = useState(true);
+  const [evaluationSubmitting, setEvaluationSubmitting] = useState(false);
+  const [evaluationComment, setEvaluationComment] = useState('');
+
+  const isCreator = document.creatorId && currentUser?.id && document.creatorId === currentUser.id;
+
+  useEffect(() => {
+    if (!isCreator || !document.id) {
+      setEvaluationLoading(false);
+      return;
+    }
+    apiService.getDocumentEvaluation(document.id).then((ev) => {
+      setEvaluation(ev ?? null);
+      if (ev?.comment) setEvaluationComment(ev.comment);
+    }).finally(() => setEvaluationLoading(false));
+  }, [document.id, isCreator]);
+
+  const handleSubmitEvaluation = async (rating: 'good' | 'regular' | 'bad') => {
+    if (!isCreator || evaluationSubmitting) return;
+    if (rating === 'regular' && !evaluationComment.trim()) {
+      toast.error('Para "Pode melhorar", a descrição é obrigatória.');
+      return;
+    }
+    setEvaluationSubmitting(true);
+    try {
+      const ev = await apiService.saveDocumentEvaluation(document.id, rating, evaluationComment.trim() || undefined);
+      setEvaluation(ev);
+      if (rating === 'good') {
+        const sections = (content.sections || [])
+          .filter(s => (s.content || '').trim())
+          .map(s => ({ title: s.title, content: s.content || '' }));
+        if (sections.length > 0) {
+          await indexPositiveFeedback({ projectId, documentId: document.id, sections });
+        }
+      } else if (rating === 'bad') {
+        await removePositiveFeedback(document.id);
+      }
+      toast.success(
+        rating === 'good' ? 'Obrigado! Sua avaliação ajuda a IA a melhorar.' :
+        rating === 'regular' ? 'Feedback registrado. A IA considerará sua descrição na próxima recriação.' :
+        'Feedback registrado.'
+      );
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Erro ao salvar avaliação.');
+    } finally {
+      setEvaluationSubmitting(false);
+    }
+  };
 
   // Sincronizar ícone de alinhamento com a seleção atual do editor
   useEffect(() => {
@@ -189,12 +245,21 @@ export function DocumentEditor({ document, onSave, projectId, viewMode = false, 
     const userLock = locksArray.find(l => l.user_id === currentUser?.id);
     const editingSectionId = userLock?.section_id;
 
+    const isSectionBeingGeneratedCheck = (sectionId: string) =>
+      sectionsBeingGeneratedByAI.has(sectionId) || (sectionsBeingGeneratedByParent?.has(sectionId) ?? false);
+
     setContent(prev => {
       let hasChanges = false;
-      const newSections = document.content.sections.map(incomingSection => {
+      const sections = document.content?.sections ?? [];
+      const newSections = sections.map(incomingSection => {
         // Se esta é a seção que EU estou editando, mantenho meu estado local TOTALMENTE
         // para não perder o cursor ou caracteres enquanto digito.
+        // EXCEÇÃO: se a seção está sendo gerada pela IA, aceitar o conteúdo do servidor
+        // para evitar exibir conteúdo desatualizado ou repetido.
         if (incomingSection.id === editingSectionId) {
+          if (isSectionBeingGeneratedCheck(incomingSection.id)) {
+            return incomingSection;
+          }
           return prev.sections.find(s => s.id === editingSectionId) || incomingSection;
         }
         
@@ -224,7 +289,7 @@ export function DocumentEditor({ document, onSave, projectId, viewMode = false, 
       });
 
       if (!hasChanges && prev.sections.length === newSections.length) return prev;
-      return { ...document.content, sections: newSections };
+      return { ...(document.content ?? {}), sections: newSections };
     });
   }, [document.content, activeLocks, currentUser?.id]);
 
@@ -239,7 +304,7 @@ export function DocumentEditor({ document, onSave, projectId, viewMode = false, 
     // Função para forçar o desbloqueio ao clicar fora de qualquer área de edição
     const handleGlobalClick = (e: MouseEvent) => {
       const target = e.target as HTMLElement;
-      const activeEl = document.activeElement;
+      const activeEl = window.document.activeElement;
       
       // Se estamos editando um campo
       if (activeEl instanceof HTMLElement && (activeEl.tagName === 'TEXTAREA' || activeEl.tagName === 'INPUT')) {
@@ -314,6 +379,7 @@ export function DocumentEditor({ document, onSave, projectId, viewMode = false, 
 
   const isAnySectionBeingGenerated =
     isGeneratingAll ||
+    (isDocumentBeingGeneratedByParent ?? false) ||
     sectionsBeingGeneratedByAI.size > 0 ||
     (sectionsBeingGeneratedByParent?.size ?? 0) > 0;
 
@@ -412,10 +478,13 @@ export function DocumentEditor({ document, onSave, projectId, viewMode = false, 
         {/* Document Page */}
         <div className="w-full max-w-[21cm] bg-white shadow-2xl p-4 md:p-[2.5cm] min-h-[29.7cm] flex flex-col print:shadow-none print:p-0 print:w-full overflow-hidden">
           <div className="space-y-8 overflow-hidden min-w-0">
-            {content.sections.map((section) => (
-              <div key={section.id} className="break-inside-avoid min-w-0 overflow-hidden">
+            {content.sections.map((section, idx) => (
+              <div
+                key={`doc-${document.id}-sec-${idx}-${section.id}`}
+                className={`break-inside-avoid min-w-0 overflow-hidden ${section.parentFieldId ? 'doc-section-child ml-6 pl-4 border-l-2 border-gray-200' : ''}`}
+              >
                 <div 
-                  className="doc-view-mode-content text-gray-700 leading-relaxed space-y-4"
+                  className={`doc-view-mode-content text-gray-700 leading-relaxed space-y-4 ${section.parentFieldId ? 'doc-section-child-content' : ''}`}
                   dangerouslySetInnerHTML={{ __html: section.content || '<p class="text-gray-400 italic">Conteúdo pendente...</p>' }}
                 />
               </div>
@@ -551,11 +620,30 @@ export function DocumentEditor({ document, onSave, projectId, viewMode = false, 
       .map(s => `<section data-title="${s.title}">\n${s.content}\n</section>`)
       .join('\n\n');
 
+    const previousEvaluation = await apiService.getDocumentEvaluation(document.id);
+    const creatorFeedback = previousEvaluation
+      ? `Avaliação anterior: ${previousEvaluation.rating === 'good' ? 'bom' : previousEvaluation.rating === 'regular' ? 'pode melhorar' : 'não ficou bom'}${previousEvaluation.comment ? `. Comentário: ${previousEvaluation.comment}` : ''}`
+      : undefined;
+
     let specGuidelines: string | undefined;
+    let documentType: string | undefined;
+    let exampleDocument: string | undefined;
     if (document.templateId) {
       const model = await apiService.getDocumentModel(document.templateId);
+      documentType = model?.type;
+      const parts: string[] = [];
       if (model?.specPath) {
-        specGuidelines = await fetchSpecContent(model.specPath) ?? undefined;
+        const c = await fetchSpecContent(model.specPath);
+        if (c) parts.push(`--- SPEC ---\n${c}`);
+      }
+      if (model?.skillPath) {
+        const c = await downloadDocument('skill', model.skillPath);
+        if (c) parts.push(`\n--- SKILL ---\n${c}`);
+      }
+      if (parts.length > 0) specGuidelines = parts.join('\n');
+      if (model?.exampleDocumentPath) {
+        const exContent = await downloadDocument('examples', model.exampleDocumentPath);
+        if (exContent) exampleDocument = exContent;
       }
     }
 
@@ -572,6 +660,7 @@ export function DocumentEditor({ document, onSave, projectId, viewMode = false, 
 
       toast.loading(`Refazendo conteúdo para: ${section.title}...`, { id: 'regen-section' });
 
+      const parentSection = section.parentFieldId ? content.sections.find((s) => s.id === section.parentFieldId) : null;
       const { content: aiContent } = await generateSectionContent({
         projectId,
         sectionTitle: section.title,
@@ -580,6 +669,11 @@ export function DocumentEditor({ document, onSave, projectId, viewMode = false, 
         sectionIndex,
         totalSections: content.sections.length,
         specGuidelines,
+        documentType,
+        creatorFeedback,
+        exampleDocument,
+        parentFieldId: section.parentFieldId,
+        parentFieldTitle: parentSection?.title,
       });
 
       const updatedSections = content.sections.map(s =>
@@ -619,11 +713,30 @@ export function DocumentEditor({ document, onSave, projectId, viewMode = false, 
       return;
     }
 
+    const previousEvaluation = await apiService.getDocumentEvaluation(document.id);
+    const creatorFeedback = previousEvaluation
+      ? `Avaliação anterior: ${previousEvaluation.rating === 'good' ? 'bom' : previousEvaluation.rating === 'regular' ? 'pode melhorar' : 'não ficou bom'}${previousEvaluation.comment ? `. Comentário: ${previousEvaluation.comment}` : ''}`
+      : undefined;
+
     let specGuidelines: string | undefined;
+    let documentType: string | undefined;
+    let exampleDocument: string | undefined;
     if (document.templateId) {
       const model = await apiService.getDocumentModel(document.templateId);
+      documentType = model?.type;
+      const parts: string[] = [];
       if (model?.specPath) {
-        specGuidelines = await fetchSpecContent(model.specPath) ?? undefined;
+        const c = await fetchSpecContent(model.specPath);
+        if (c) parts.push(`--- SPEC ---\n${c}`);
+      }
+      if (model?.skillPath) {
+        const c = await downloadDocument('skill', model.skillPath);
+        if (c) parts.push(`\n--- SKILL ---\n${c}`);
+      }
+      if (parts.length > 0) specGuidelines = parts.join('\n');
+      if (model?.exampleDocumentPath) {
+        const exContent = await downloadDocument('examples', model.exampleDocumentPath);
+        if (exContent) exampleDocument = exContent;
       }
     }
 
@@ -651,14 +764,20 @@ export function DocumentEditor({ document, onSave, projectId, viewMode = false, 
 
             toast.loading(`Gerando conteúdo para: ${section.title}...`, { id: 'gen-progress' });
             
+            const parentSection = section.parentFieldId ? updatedSections.find((s) => s.id === section.parentFieldId) : null;
             const { content: aiContent } = await generateSectionContent({
               projectId,
               sectionTitle: section.title,
               helpText: section.helpText,
+              exampleDocument,
               previousSectionsHtml: previousSectionsHtml || undefined,
               sectionIndex: i,
               totalSections: updatedSections.length,
               specGuidelines,
+              documentType,
+              creatorFeedback,
+              parentFieldId: section.parentFieldId,
+              parentFieldTitle: parentSection?.title,
             });
 
             updatedSections[i] = { ...section, content: aiContent };
@@ -751,14 +870,14 @@ export function DocumentEditor({ document, onSave, projectId, viewMode = false, 
 
         {/* Document Sections */}
         <div className="space-y-6">
-          {content.sections.map((section) => {
+          {content.sections.map((section, idx) => {
             const lock = getSectionLock(section.id);
             
             return (
               <div
-                key={section.id}
+                key={`doc-${document.id}-sec-${idx}-${section.id}`}
                 ref={(el) => { sectionRefsMap.current.set(section.id, el); }}
-                className="group relative"
+                className={`group relative ${section.parentFieldId ? 'doc-section-child ml-6 pl-4 border-l-2 border-gray-200' : ''}`}
               >
                 <div className="flex gap-2 items-center mb-2 justify-end">
                   {section.helpText && (
@@ -792,7 +911,7 @@ export function DocumentEditor({ document, onSave, projectId, viewMode = false, 
                         <div
                           onBlur={(e) => {
                             if (colorPickerOpen || alignPickerOpen) return; /* manter seção ativa enquanto pickers abertos */
-                            const toolbar = document.getElementById(toolbarId);
+                            const toolbar = window.document.getElementById(toolbarId);
                             const related = e.relatedTarget as Node | null;
                             if (related && (e.currentTarget.contains(related) || toolbar?.contains(related))) return;
                             /* relatedTarget pode estar no portal do dropdown (body) */
@@ -807,7 +926,7 @@ export function DocumentEditor({ document, onSave, projectId, viewMode = false, 
                           }`}
                         >
                           <ReactQuill
-                            key={section.id}
+                            key={`doc-${document.id}-sec-${idx}-${section.id}`}
                             ref={activeQuillRef}
                             value={section.content || ''}
                             onChange={(html) => handleSectionChange(section.id, html)}
@@ -943,6 +1062,83 @@ export function DocumentEditor({ document, onSave, projectId, viewMode = false, 
             {isSavingToLocalStorage ? 'Salvando...' : 'Salvar Documento'}
           </Button>
         </div>
+
+        {/* Avaliação do criador — visível apenas ao criador, ajuda a IA a refinar gerações futuras */}
+        {isCreator && !viewMode && (
+          <div className="mt-10 pt-8 border-t border-gray-200 print:hidden">
+            <p className="text-sm font-medium text-gray-700 mb-2">Como foi o resultado da IA neste documento?</p>
+            <p className="text-xs text-gray-500 mb-4">Sua avaliação ajuda a refinar a criação dos próximos documentos.</p>
+            {evaluationLoading ? (
+              <div className="text-sm text-gray-500">Carregando...</div>
+            ) : evaluation ? (
+              <div className="space-y-2">
+                <div className="flex items-center gap-2 text-sm">
+                  {evaluation.rating === 'good' && <ThumbsUp className="w-5 h-5 text-green-600" />}
+                  {evaluation.rating === 'regular' && <span className="text-blue-600 font-medium">~</span>}
+                  {evaluation.rating === 'bad' && <ThumbsDown className="w-5 h-5 text-amber-600" />}
+                  <span className={
+                    evaluation.rating === 'good' ? 'text-green-700' :
+                    evaluation.rating === 'regular' ? 'text-blue-700' : 'text-amber-700'
+                  }>
+                    {evaluation.rating === 'good' ? 'Documento ficou bom' :
+                     evaluation.rating === 'regular' ? 'Pode melhorar' : 'Não ficou bom'}
+                  </span>
+                  {evaluation.comment && (
+                    <span className="text-gray-600">— {evaluation.comment}</span>
+                  )}
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setEvaluation(null)}
+                  className="text-xs text-indigo-600 hover:underline"
+                >
+                  Alterar avaliação
+                </button>
+              </div>
+            ) : (
+              <div className="space-y-3">
+                <div className="flex flex-wrap gap-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => handleSubmitEvaluation('good')}
+                    disabled={evaluationSubmitting}
+                    className="text-green-700 border-green-200 hover:bg-green-50"
+                  >
+                    <ThumbsUp className="w-4 h-4 mr-1.5" />
+                    Bom
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => handleSubmitEvaluation('regular')}
+                    disabled={evaluationSubmitting}
+                    className="text-blue-700 border-blue-200 hover:bg-blue-50"
+                  >
+                    Pode melhorar
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => handleSubmitEvaluation('bad')}
+                    disabled={evaluationSubmitting}
+                    className="text-amber-700 border-amber-200 hover:bg-amber-50"
+                  >
+                    <ThumbsDown className="w-4 h-4 mr-1.5" />
+                    Não ficou bom
+                  </Button>
+                </div>
+                <Textarea
+                  placeholder="Comentário (obrigatório para 'Pode melhorar'). Ex: o que melhorou ou faltou."
+                  value={evaluationComment}
+                  onChange={(e) => setEvaluationComment(e.target.value)}
+                  className="text-sm min-h-[60px]"
+                  disabled={evaluationSubmitting}
+                />
+              </div>
+            )}
+          </div>
+        )}
       </div>
 
       <NewSectionDialog

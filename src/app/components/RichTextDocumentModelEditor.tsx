@@ -10,11 +10,12 @@ import { toast } from 'sonner';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from './ui/dialog';
 import { Textarea } from './ui/textarea';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select';
-import { Layout, Type, Save, X, PlusCircle, Database, Palette, Search } from 'lucide-react';
+import { Type, Save, X, PlusCircle, Database, Palette, Plus, Search } from 'lucide-react';
 import { Popover, PopoverContent, PopoverTrigger } from './ui/popover';
 import { HexColorPicker } from 'react-colorful';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from './ui/alert-dialog';
-import { listSpecFiles, type SpecFile } from '../../services/spec-service';
+import { CreateDocumentTypeDialog } from './CreateDocumentTypeDialog';
+import { listAllDocuments, type BucketDocument } from '../../services/ai-storage-service';
 
 ensureCustomBlotsRegistered();
 
@@ -39,19 +40,118 @@ function slugify(input: string) {
     .replace(/(^-|-$)/g, '');
 }
 
-/** Retorna o índice onde inserir o metadado (logo após o tópico) ou -1 se não encontrar */
-function findTopicInsertPosition(editor: { getContents: () => { ops?: unknown[] }; root?: HTMLElement }, topicId: string): number {
+/** Retorna o fieldId do próximo bloco de metadado após o dado, na ordem do DOM, ou null se for o último */
+function getNextMetadataFieldId(root: HTMLElement, afterFieldId: string): string | null {
+  const blocks = Array.from(root.querySelectorAll('.sgid-metadata-field'));
+  const idx = blocks.findIndex((b) => b.getAttribute('data-field-id') === afterFieldId);
+  if (idx < 0 || idx >= blocks.length - 1) return null;
+  return (blocks[idx + 1] as HTMLElement).getAttribute('data-field-id');
+}
+
+/** Retorna o fieldId do primeiro metadado após o bloco dado (na ordem do DOM), ou null */
+function getNextMetadataFieldIdAfterBlock(root: HTMLElement, blockEl: HTMLElement): string | null {
+  const blocks = Array.from(root.children).filter((c): c is HTMLElement => c instanceof HTMLElement);
+  const idx = blocks.indexOf(blockEl);
+  if (idx < 0) return null;
+  for (let i = idx + 1; i < blocks.length; i++) {
+    const b = blocks[i];
+    if (b.classList.contains('sgid-metadata-field')) return b.getAttribute('data-field-id');
+  }
+  return null;
+}
+
+/** Retorna o fieldId do primeiro metadado antes do bloco dado (na ordem do DOM), ou do primeiro metadado do doc se este for o primeiro bloco */
+function getPreviousMetadataFieldIdBeforeBlock(root: HTMLElement, blockEl: HTMLElement): string | null {
+  const blocks = Array.from(root.children).filter((c): c is HTMLElement => c instanceof HTMLElement);
+  const idx = blocks.indexOf(blockEl);
+  if (idx < 0) return null;
+  for (let i = idx - 1; i >= 0; i--) {
+    const b = blocks[i];
+    if (b.classList.contains('sgid-metadata-field')) return b.getAttribute('data-field-id');
+  }
+  return getFirstMetadataFieldId(root);
+}
+
+/** Retorna o fieldId do primeiro metadado no documento */
+function getFirstMetadataFieldId(root: HTMLElement): string | null {
+  const first = root.querySelector('.sgid-metadata-field');
+  return first ? (first as HTMLElement).getAttribute('data-field-id') : null;
+}
+
+/** Retorna o elemento "bloco" que é filho direto do .ql-editor, ou o próprio el se for filho */
+function getEditorBlockElement(el: HTMLElement, root: HTMLElement): HTMLElement | null {
+  if (!el || !root.contains(el)) return null;
+  let node: HTMLElement | null = el;
+  while (node && node !== root) {
+    if (node.parentElement === root) return node;
+    node = node.parentElement;
+  }
+  return null;
+}
+
+/** Retorna todos os blocos do editor na ordem do DOM (filhos diretos de .ql-editor) */
+function getEditorBlocksInOrder(root: HTMLElement): HTMLElement[] {
+  return Array.from(root.children).filter((c): c is HTMLElement => c instanceof HTMLElement);
+}
+
+/** Move bloco de metadado no editor via API Quill (delta) para garantir consistência */
+function moveMetadataBlockInDelta(
+  editor: { getContents: () => { ops?: unknown[] }; setContents: (delta: unknown) => void },
+  fromFieldId: string,
+  insertBeforeFieldId: string | null
+): boolean {
+  const delta = editor.getContents();
+  const ops = (delta?.ops ? [...delta.ops] : []) as Array<{ insert?: string | Record<string, unknown>; retain?: number; attributes?: Record<string, unknown> }>;
+  let fromOpIdx = -1;
+  let toOpIdx = -1;
+  const getMetadataIdFromOp = (op: { insert?: unknown }) => {
+    const ins = op.insert;
+    if (!ins || typeof ins !== 'object') return null;
+    const obj = ins as Record<string, unknown>;
+    const mf = obj.metadataField ?? obj.metadatafield;
+    if (!mf) return null;
+    const val = mf as { id?: string } | string;
+    return typeof val === 'object' ? val?.id ?? null : (typeof val === 'string' ? val : null);
+  };
+  for (let i = 0; i < ops.length; i++) {
+    const id = getMetadataIdFromOp(ops[i]);
+    if (id === fromFieldId) fromOpIdx = i;
+    if (id === insertBeforeFieldId) toOpIdx = i;
+  }
+  if (fromOpIdx < 0) return false;
+  if (insertBeforeFieldId && fromFieldId === insertBeforeFieldId) return false; /* mesma posição */
+  const insertIdx = insertBeforeFieldId ? (toOpIdx >= 0 ? toOpIdx : fromOpIdx) : ops.length;
+  const [movedOp] = ops.splice(fromOpIdx, 1);
+  const newInsertIdx = insertIdx > fromOpIdx ? insertIdx - 1 : insertIdx;
+  ops.splice(newInsertIdx, 0, movedOp);
+  editor.setContents({ ops });
+  return true;
+}
+
+/** Retorna o índice onde inserir o metadado (logo após o metadado pai ou tópico) ou -1 se não encontrar */
+function findParentInsertPosition(editor: { getContents: () => { ops?: unknown[] }; root?: HTMLElement }, parentId: string): number {
   const delta = editor.getContents();
   if (!delta?.ops) return -1;
   let index = 0;
+  const getMetadataId = (op: { insert?: unknown }) => {
+    const ins = op.insert;
+    if (!ins || typeof ins !== 'object') return null;
+    const obj = ins as Record<string, unknown>;
+    const mf = obj.metadataField ?? obj.metadatafield;
+    if (!mf) return null;
+    const val = mf as { id?: string } | string;
+    return typeof val === 'object' ? val?.id ?? null : (typeof val === 'string' ? val : null);
+  };
   for (const op of delta.ops) {
     const o = op as { insert?: string | Record<string, unknown>; retain?: number };
     if (typeof o.insert === 'object' && o.insert !== null) {
+      const metaId = getMetadataId(o);
+      if (metaId === parentId) return index + 1;
       if ('topic' in o.insert) {
         const topicInsert = o.insert as { topic?: { id?: string } | string };
         const topicVal = topicInsert.topic;
         const id = typeof topicVal === 'object' ? topicVal?.id : topicVal;
-        if (id === topicId) return index + 1;
+        if (id === parentId) return index + 1;
       }
       index += 1;
     } else if (typeof o.insert === 'string') {
@@ -65,7 +165,7 @@ function findTopicInsertPosition(editor: { getContents: () => { ops?: unknown[] 
 
 
 interface RichTextDocumentModelEditorProps {
-  onSave: (name: string, type: string, templateContent: string, isDraft?: boolean, aiGuidance?: string, specPath?: string) => Promise<void>;
+  onSave: (name: string, type: string, templateContent: string, isDraft?: boolean, aiGuidance?: string, specPath?: string, skillPath?: string, exampleDocumentPath?: string) => Promise<void>;
   onCancel: () => void;
   isLoading: boolean;
   initialData?: DocumentModel;
@@ -84,15 +184,29 @@ export function RichTextDocumentModelEditor({
 }: RichTextDocumentModelEditorProps) {
   const quillRef = useRef<ReactQuill | null>(null);
   const pendingDeleteRef = useRef<{ type: 'topic' | 'metadata'; topicId?: string; fieldId?: string } | null>(null);
+  const syncEditorDataRef = useRef<(() => void) | null>(null);
   const [name, setName] = useState(initialData?.name || '');
   const [type, setType] = useState(initialData?.type || '');
   const [editorData, setEditorData] = useState(initialData?.templateContent || '');
   const [specPath, setSpecPath] = useState(initialData?.specPath || '');
+  const [skillPath, setSkillPath] = useState(initialData?.skillPath || '');
+  const [exampleDocumentPath, setExampleDocumentPath] = useState(initialData?.exampleDocumentPath || '');
   const [specSearchQuery, setSpecSearchQuery] = useState('');
-  const [specFiles, setSpecFiles] = useState<SpecFile[]>([]);
-  const [specFilesLoading, setSpecFilesLoading] = useState(true);
+  const [skillSearchQuery, setSkillSearchQuery] = useState('');
+  const [exampleSearchQuery, setExampleSearchQuery] = useState('');
+  const [specsAndSkills, setSpecsAndSkills] = useState<BucketDocument[]>([]);
+  const [specsSkillsLoading, setSpecsSkillsLoading] = useState(true);
   const [specSearchOpen, setSpecSearchOpen] = useState(false);
+  const [skillSearchOpen, setSkillSearchOpen] = useState(false);
+  const [exampleSearchOpen, setExampleSearchOpen] = useState(false);
   const specSearchRef = useRef<HTMLDivElement>(null);
+  const skillSearchRef = useRef<HTMLDivElement>(null);
+  const exampleSearchRef = useRef<HTMLDivElement>(null);
+
+  // Tipos de documento (select + cadastro)
+  const [documentTypes, setDocumentTypes] = useState<{ id: string; name: string }[]>([]);
+  const [documentTypesLoading, setDocumentTypesLoading] = useState(true);
+  const [createTypeDialogOpen, setCreateTypeDialogOpen] = useState(false);
 
   // Metadado State
   const [fieldDialogOpen, setFieldDialogOpen] = useState(false);
@@ -102,10 +216,10 @@ export function RichTextDocumentModelEditor({
   const [fieldHelp, setFieldHelp] = useState('');
   const [fieldRepeatable, setFieldRepeatable] = useState(false);
   const [fieldPlanningInstruction, setFieldPlanningInstruction] = useState('');
-  const [associatedTopic, setAssociatedTopic] = useState<string>('none');
+  const [associatedParentField, setAssociatedParentField] = useState<string>('none');
 
-  // Tópico State
-  const [existingTopics, setExistingTopics] = useState<{id: string, name: string}[]>([]);
+  // Metadados existentes para associação pai-filho (e tópicos legados)
+  const [existingMetadataFields, setExistingMetadataFields] = useState<{id: string, name: string}[]>([]);
   const [topicDialogOpen, setTopicDialogOpen] = useState(false);
   const [editingTopicId, setEditingTopicId] = useState<string | null>(null);
   const [topicName, setTopicName] = useState('');
@@ -130,47 +244,53 @@ export function RichTextDocumentModelEditor({
       setType(initialData.type);
       setEditorData(initialData.templateContent);
       setSpecPath(initialData.specPath || '');
-      setSpecSearchQuery(initialData.specPath || '');
+      setSkillPath(initialData.skillPath || '');
+      setExampleDocumentPath(initialData.exampleDocumentPath || '');
+      setSpecSearchQuery(initialData.specPath ? initialData.specPath.split('/').pop()?.replace('.md', '') || '' : '');
+      setSkillSearchQuery(initialData.skillPath ? initialData.skillPath.split('/').pop()?.replace('.md', '') || '' : '');
+      setExampleSearchQuery(initialData.exampleDocumentPath ? initialData.exampleDocumentPath.split('/').pop()?.replace(/\.(md|docx)$/i, '') || '' : '');
     }
   }, [initialData]);
 
-  // Atualizar display do Spec selecionado quando a lista carrega (path → label)
   useEffect(() => {
-    if (specFiles.length && specPath && specSearchQuery === specPath) {
-      const found = specFiles.find((f) => f.path === specPath);
-      if (found) setSpecSearchQuery(found.label);
-    }
-  }, [specFiles, specPath, specSearchQuery]);
-
-  // Carregar lista de Specs do bucket 'specs' no Supabase Storage
-  useEffect(() => {
-    setSpecFilesLoading(true);
-    listSpecFiles()
-      .then((data) => setSpecFiles(data))
-      .catch(() => setSpecFiles([]))
-      .finally(() => setSpecFilesLoading(false));
+    listAllDocuments().then(setSpecsAndSkills).catch(() => []).finally(() => setSpecsSkillsLoading(false));
   }, []);
+
+  const specs = specsAndSkills.filter(d => d.type === 'specs');
+  const skills = specsAndSkills.filter(d => d.type === 'skill');
+  const examples = specsAndSkills.filter(d => d.type === 'examples');
+  const specFiltered = specSearchQuery.trim()
+    ? specs.filter(s => s.name.toLowerCase().includes(specSearchQuery.toLowerCase()) || s.path.toLowerCase().includes(specSearchQuery.toLowerCase()))
+    : specs;
+  const skillFiltered = skillSearchQuery.trim()
+    ? skills.filter(s => s.name.toLowerCase().includes(skillSearchQuery.toLowerCase()) || s.path.toLowerCase().includes(skillSearchQuery.toLowerCase()))
+    : skills;
+  const exampleFiltered = exampleSearchQuery.trim()
+    ? examples.filter(s => s.name.toLowerCase().includes(exampleSearchQuery.toLowerCase()) || s.path.toLowerCase().includes(exampleSearchQuery.toLowerCase()))
+    : examples;
+
+  useEffect(() => {
+    const h = (e: MouseEvent) => {
+      if (specSearchRef.current && !specSearchRef.current.contains(e.target as Node)) setSpecSearchOpen(false);
+      if (skillSearchRef.current && !skillSearchRef.current.contains(e.target as Node)) setSkillSearchOpen(false);
+      if (exampleSearchRef.current && !exampleSearchRef.current.contains(e.target as Node)) setExampleSearchOpen(false);
+    };
+    document.addEventListener('mousedown', h);
+    return () => document.removeEventListener('mousedown', h);
+  }, []);
+
+  // Carregar tipos de documento
+  const loadDocumentTypes = React.useCallback(async () => {
+    setDocumentTypesLoading(true);
+    const types = await apiService.listDocumentTypes();
+    setDocumentTypes(types);
+    setDocumentTypesLoading(false);
+  }, []);
+  useEffect(() => {
+    loadDocumentTypes();
+  }, [loadDocumentTypes]);
 
   // Fechar dropdown ao clicar fora
-  useEffect(() => {
-    const handleClickOutside = (e: MouseEvent) => {
-      if (specSearchRef.current && !specSearchRef.current.contains(e.target as Node)) {
-        setSpecSearchOpen(false);
-      }
-    };
-    document.addEventListener('mousedown', handleClickOutside);
-    return () => document.removeEventListener('mousedown', handleClickOutside);
-  }, []);
-
-  const specFilteredResults = specSearchQuery.trim()
-    ? specFiles.filter(
-        (f) =>
-          f.label.toLowerCase().includes(specSearchQuery.toLowerCase()) ||
-          f.path.toLowerCase().includes(specSearchQuery.toLowerCase())
-      )
-    : specFiles;
-  const showSpecResults = specSearchOpen && !specFilesLoading;
-
   // Handler para botões editar e excluir (tabela, tópico, metadado) - event delegation
   // Usa retry para garantir que o handler seja anexado quando o editor estiver pronto
   useEffect(() => {
@@ -241,7 +361,7 @@ export function RichTextDocumentModelEditor({
           setFieldHelp(metaEl.getAttribute('data-field-help') || '');
           setFieldRepeatable(metaEl.getAttribute('data-repeatable') === 'true');
           setFieldPlanningInstruction(metaEl.getAttribute('data-planning-instruction') || '');
-          setAssociatedTopic(metaEl.getAttribute('data-topic-id') || 'none');
+          setAssociatedParentField(metaEl.getAttribute('data-parent-field-id') || metaEl.getAttribute('data-topic-id') || 'none');
           setEditingMetadataId(metaEl.getAttribute('data-field-id') || '');
           setFieldDialogOpen(true);
         }
@@ -279,6 +399,7 @@ export function RichTextDocumentModelEditor({
   useEffect(() => {
     // Espera o editor estar disponível (pode não estar ainda na primeira execução)
     let observer: MutationObserver | null = null;
+    let cleanupPointerListeners: (() => void) | null = null;
 
     const setup = () => {
       const editor = quillRef.current?.getEditor?.();
@@ -286,6 +407,17 @@ export function RichTextDocumentModelEditor({
 
       const SVG_EDIT = '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/></svg>';
       const SVG_DELETE = '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/></svg>';
+      const SVG_DRAG = '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="9" cy="6" r="1.5"/><circle cx="15" cy="6" r="1.5"/><circle cx="9" cy="12" r="1.5"/><circle cx="15" cy="12" r="1.5"/><circle cx="9" cy="18" r="1.5"/><circle cx="15" cy="18" r="1.5"/></svg>';
+
+      let draggedMetadataFieldId: string | null = null;
+      let pointerDragState: { fieldId: string; startX: number; startY: number; active: boolean } | null = null;
+      const DRAG_THRESHOLD_PX = 5;
+
+      const clearAllDropIndicators = () => {
+        editor.root.querySelectorAll('.sgid-drag-over-above, .sgid-drag-over-below').forEach((n) => {
+          n.classList.remove('sgid-drag-over-above', 'sgid-drag-over-below');
+        });
+      };
 
       const addTopicButtons = (el: HTMLElement) => {
         if (el.querySelector('.sgid-topic-edit-btn')) return;
@@ -317,6 +449,24 @@ export function RichTextDocumentModelEditor({
           fieldId = `field-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
           el.setAttribute('data-field-id', fieldId);
         }
+
+        // Handle de arrastar (tracker) — usa pointer events em vez de HTML5 drag (evita conflito com contenteditable)
+        const header = el.querySelector('.sgid-metadata-field__header') as HTMLElement;
+        if (header && !header.querySelector('.sgid-metadata-drag-handle')) {
+          const dragHandle = document.createElement('div');
+          dragHandle.className = 'sgid-metadata-drag-handle';
+          dragHandle.setAttribute('data-field-id', fieldId);
+          dragHandle.setAttribute('title', 'Arrastar para reordenar');
+          dragHandle.innerHTML = SVG_DRAG;
+          header.insertBefore(dragHandle, header.firstChild);
+
+          dragHandle.addEventListener('mousedown', (e: MouseEvent) => {
+            e.preventDefault();
+            e.stopPropagation();
+            pointerDragState = { fieldId, startX: e.clientX, startY: e.clientY, active: false };
+          });
+        }
+
         const editBtn = document.createElement('button');
         editBtn.type = 'button';
         editBtn.className = 'sgid-metadata-edit-btn';
@@ -345,6 +495,88 @@ export function RichTextDocumentModelEditor({
       editor.root.querySelectorAll('.sgid-topic').forEach(el => addTopicButtons(el as HTMLElement));
       editor.root.querySelectorAll('.sgid-metadata-field').forEach(el => addMetadataButtons(el as HTMLElement));
 
+      // Pointer-based drag: mousemove/mouseup no document para funcionar com contenteditable
+      const performDrop = (srcId: string, clientX: number, clientY: number) => {
+        const elAtPoint = document.elementFromPoint(clientX, clientY);
+        if (!elAtPoint) return;
+        const block = getEditorBlockElement(elAtPoint as HTMLElement, editor.root);
+        if (!block) return;
+        const rect = block.getBoundingClientRect();
+        const insertAbove = clientY < rect.top + rect.height / 2;
+        let targetFieldId: string | null;
+        if (block.classList.contains('sgid-metadata-field')) {
+          targetFieldId = insertAbove ? block.getAttribute('data-field-id') : getNextMetadataFieldId(editor.root, block.getAttribute('data-field-id') || '');
+        } else {
+          targetFieldId = insertAbove ? getPreviousMetadataFieldIdBeforeBlock(editor.root, block) : getNextMetadataFieldIdAfterBlock(editor.root, block);
+        }
+        if (moveMetadataBlockInDelta(editor, srcId, targetFieldId)) {
+          syncEditorDataRef.current?.();
+        } else {
+          const srcEl = editor.root.querySelector(`.sgid-metadata-field[data-field-id="${srcId}"]`) as HTMLElement;
+          if (srcEl) {
+            let insertBeforeEl: HTMLElement | null = null;
+            if (targetFieldId) {
+              insertBeforeEl = editor.root.querySelector(`.sgid-metadata-field[data-field-id="${targetFieldId}"]`) as HTMLElement;
+            }
+            const blockToMove = getEditorBlockElement(srcEl, editor.root);
+            if (blockToMove?.parentElement) {
+              if (insertBeforeEl) {
+                const targetBlock = getEditorBlockElement(insertBeforeEl, editor.root);
+                if (targetBlock) blockToMove.parentElement.insertBefore(blockToMove, targetBlock);
+              } else {
+                blockToMove.parentElement.appendChild(blockToMove);
+              }
+              syncEditorDataRef.current?.();
+            }
+          }
+        }
+      };
+
+      const onPointerMove = (e: MouseEvent) => {
+        if (!pointerDragState) return;
+        const dx = e.clientX - pointerDragState.startX;
+        const dy = e.clientY - pointerDragState.startY;
+        if (!pointerDragState.active && (Math.abs(dx) > DRAG_THRESHOLD_PX || Math.abs(dy) > DRAG_THRESHOLD_PX)) {
+          pointerDragState.active = true;
+          draggedMetadataFieldId = pointerDragState.fieldId;
+          document.body.style.cursor = 'grabbing';
+          document.body.style.userSelect = 'none';
+          const metaEl = editor.root.querySelector(`.sgid-metadata-field[data-field-id="${pointerDragState.fieldId}"]`) as HTMLElement;
+          if (metaEl) metaEl.classList.add('sgid-metadata-dragging');
+        }
+        if (pointerDragState.active) {
+          clearAllDropIndicators();
+          const elAtPoint = document.elementFromPoint(e.clientX, e.clientY);
+          const block = elAtPoint ? getEditorBlockElement(elAtPoint as HTMLElement, editor.root) : null;
+          if (block && block.getAttribute?.('data-field-id') !== pointerDragState.fieldId) {
+            const rect = block.getBoundingClientRect();
+            block.classList.add(e.clientY < rect.top + rect.height / 2 ? 'sgid-drag-over-above' : 'sgid-drag-over-below');
+          }
+        }
+      };
+
+      const onPointerUp = (e: MouseEvent) => {
+        if (!pointerDragState) return;
+        if (pointerDragState.active) {
+          performDrop(pointerDragState.fieldId, e.clientX, e.clientY);
+          const metaEl = editor.root.querySelector(`.sgid-metadata-field[data-field-id="${pointerDragState.fieldId}"]`) as HTMLElement;
+          if (metaEl) metaEl.classList.remove('sgid-metadata-dragging');
+        }
+        clearAllDropIndicators();
+        document.body.style.cursor = '';
+        document.body.style.userSelect = '';
+        pointerDragState = null;
+        draggedMetadataFieldId = null;
+      };
+
+      document.addEventListener('mousemove', onPointerMove, true);
+      document.addEventListener('mouseup', onPointerUp, true);
+
+      cleanupPointerListeners = () => {
+        document.removeEventListener('mousemove', onPointerMove, true);
+        document.removeEventListener('mouseup', onPointerUp, true);
+      };
+
       // MutationObserver: adiciona botões em qualquer nó que o Quill inserir depois
       observer = new MutationObserver(mutations => {
         for (const mutation of mutations) {
@@ -361,9 +593,20 @@ export function RichTextDocumentModelEditor({
       return () => { cancelAnimationFrame(raf); observer?.disconnect(); };
     }
 
-    return () => observer?.disconnect();
+    return () => {
+      observer?.disconnect();
+      cleanupPointerListeners?.();
+    };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Ref para sincronizar editorData após reordenação por drag-and-drop
+  useEffect(() => {
+    syncEditorDataRef.current = () => {
+      const editor = quillRef.current?.getEditor?.();
+      if (editor?.root) setEditorData(getCleanEditorHTML(editor.root));
+    };
+  });
 
   // Sincronizar tamanho de fonte com a seleção do editor
   useEffect(() => {
@@ -394,30 +637,30 @@ export function RichTextDocumentModelEditor({
           templateContent: editorData || '',
           aiGuidance: initialData?.aiGuidance ?? '',
           specPath: specPath || undefined,
+          skillPath: skillPath || undefined,
+          exampleDocumentPath: exampleDocumentPath || undefined,
           isDraft: true
         }).then(() => onDraftStatusChange?.(true, true));
       }
     }, DRAFT_DEBOUNCE_MS);
     return () => clearTimeout(timer);
-  }, [name, type, editorData, specPath, isEditMode, isLoading, onDraftStatusChange, initialData?.aiGuidance]);
+  }, [name, type, editorData, specPath, skillPath, exampleDocumentPath, isEditMode, isLoading, onDraftStatusChange, initialData?.aiGuidance]);
 
-  // Extrair tópicos existentes no documento para associar metadados (inclui blocos Tópico e células de tabela)
+  // Extrair metadados existentes no documento para associação pai-filho (árvore organizacional)
   useEffect(() => {
     const parser = new DOMParser();
     const doc = parser.parseFromString(editorData, 'text/html');
-    const topics: { id: string; name: string }[] = [];
+    const fields: { id: string; name: string }[] = [];
 
-    // Tópicos (blocos sgid-topic)
-    doc.querySelectorAll('.sgid-topic').forEach((node: Element) => {
-      const id = node.getAttribute('data-topic-id');
+    doc.querySelectorAll('.sgid-metadata-field').forEach((node: Element) => {
+      const id = node.getAttribute('data-field-id');
       if (id) {
-        const titleEl = node.querySelector('.sgid-topic-title') || node.querySelector('p') as HTMLElement | null;
-        const name = ((titleEl as HTMLElement)?.innerText?.trim() || (node as HTMLElement).innerText.trim() || '').substring(0, 30) || 'Tópico sem nome';
-        topics.push({ id, name });
+        const title = (node.getAttribute('data-field-title') || (node as HTMLElement).innerText?.trim() || '').substring(0, 50) || 'Campo';
+        fields.push({ id, name: title });
       }
     });
 
-    setExistingTopics(topics);
+    setExistingMetadataFields(fields);
   }, [editorData]);
 
   const toolbarId = useMemo(() => `model-toolbar-${Math.random().toString(16).slice(2)}`, []);
@@ -431,11 +674,11 @@ export function RichTextDocumentModelEditor({
       return;
     }
     const savingAsDraft = initialData?.isDraft ?? true;
-    if (!savingAsDraft && !specPath.trim()) {
-      toast.error('Documento Spec é obrigatório ao salvar o modelo. Selecione um Spec na lista.');
+    if (!savingAsDraft && (!specPath.trim() || !skillPath.trim())) {
+      toast.error('Spec e Skill são obrigatórios ao salvar o modelo. Selecione ambos.');
       return;
     }
-    await onSave(name, type, contentToSave, savingAsDraft, initialData?.aiGuidance ?? '', specPath.trim() || undefined);
+    await onSave(name, type, contentToSave, savingAsDraft, initialData?.aiGuidance ?? '', specPath.trim() || undefined, skillPath.trim() || undefined, exampleDocumentPath.trim() || undefined);
   };
 
   const openFieldDialog = () => {
@@ -445,7 +688,7 @@ export function RichTextDocumentModelEditor({
     setFieldHelp('');
     setFieldRepeatable(false);
     setFieldPlanningInstruction('');
-    setAssociatedTopic('none');
+    setAssociatedParentField('none');
     setFieldDialogOpen(true);
   };
 
@@ -466,8 +709,8 @@ export function RichTextDocumentModelEditor({
     if (editBtn) topicEl.appendChild(editBtn);
     if (deleteBtn) topicEl.appendChild(deleteBtn);
 
-    // Atualizar referência do tópico em metadados associados (tag exibida)
-    const metaFields = editor.root.querySelectorAll(`.sgid-metadata-field[data-topic-id="${editingTopicId}"]`);
+    // Atualizar referência em metadados filhos (tag exibida)
+    const metaFields = editor.root.querySelectorAll(`.sgid-metadata-field[data-topic-id="${editingTopicId}"], .sgid-metadata-field[data-parent-field-id="${editingTopicId}"]`);
     metaFields.forEach((meta) => {
       const metaEl = meta as HTMLElement;
       const titleEl = metaEl.querySelector('.sgid-metadata-field__title');
@@ -476,7 +719,7 @@ export function RichTextDocumentModelEditor({
         titleEl.innerHTML = fieldTitle.trim();
         const tag = document.createElement('span');
         tag.className = 'text-[9px] bg-blue-100 text-blue-700 px-1.5 py-0.5 rounded-full ml-2';
-        tag.innerText = `Tópico: ${topicName.trim()}`;
+        tag.innerText = `Filho de: ${topicName.trim()}`;
         titleEl.appendChild(tag);
       }
     });
@@ -530,15 +773,15 @@ export function RichTextDocumentModelEditor({
     }
   };
 
-  // Retorna o HTML do editor sem os botões de UI dinâmicos (edit/delete).
-  // Esses botões são injetados no DOM via addMetadataButtons/addTopicButtons e NÃO
+  // Retorna o HTML do editor sem os botões de UI dinâmicos (edit/delete/drag).
+  // Esses elementos são injetados no DOM via addMetadataButtons/addTopicButtons e NÃO
   // devem ser persistidos em editorData — caso contrário ReactQuill os recebe como
   // parte do value, reconstrói os blots sem eles e quebra o segundo campo.
   const getCleanEditorHTML = (root: HTMLElement): string => {
     const tmp = document.createElement('div');
     tmp.innerHTML = root.innerHTML;
     tmp.querySelectorAll(
-      '.sgid-metadata-edit-btn, .sgid-metadata-delete-btn, .sgid-topic-edit-btn, .sgid-topic-delete-btn'
+      '.sgid-metadata-edit-btn, .sgid-metadata-delete-btn, .sgid-metadata-drag-handle, .sgid-topic-edit-btn, .sgid-topic-delete-btn'
     ).forEach((el) => el.remove());
     return tmp.innerHTML;
   };
@@ -558,7 +801,7 @@ export function RichTextDocumentModelEditor({
     if (isLoading) return;
     // Ignorar cliques nos botões de ação (editar/excluir) para evitar scroll e permitir abertura do modal
     const target = e.target as HTMLElement;
-    if (target.closest('.sgid-topic-edit-btn, .sgid-topic-delete-btn, .sgid-metadata-edit-btn, .sgid-metadata-delete-btn')) {
+    if (target.closest('.sgid-topic-edit-btn, .sgid-topic-delete-btn, .sgid-metadata-edit-btn, .sgid-metadata-delete-btn, .sgid-metadata-drag-handle')) {
       return;
     }
     const editor = quillRef.current?.getEditor?.();
@@ -572,9 +815,10 @@ export function RichTextDocumentModelEditor({
     if (pending.type === 'topic' && pending.topicId) {
       const topicEl = editor.root.querySelector(`.sgid-topic[data-topic-id="${pending.topicId}"]`) as HTMLElement;
       if (topicEl) {
-        editor.root.querySelectorAll(`.sgid-metadata-field[data-topic-id="${pending.topicId}"]`).forEach((meta) => {
+        editor.root.querySelectorAll(`.sgid-metadata-field[data-topic-id="${pending.topicId}"], .sgid-metadata-field[data-parent-field-id="${pending.topicId}"]`).forEach((meta) => {
           const metaEl = meta as HTMLElement;
-          metaEl.setAttribute('data-topic-id', '');
+          metaEl.removeAttribute('data-topic-id');
+          metaEl.removeAttribute('data-parent-field-id');
           const titleEl = metaEl.querySelector('.sgid-metadata-field__title');
           if (titleEl) {
             const fieldTitle = metaEl.getAttribute('data-field-title') || '';
@@ -587,6 +831,15 @@ export function RichTextDocumentModelEditor({
     } else if (pending.type === 'metadata' && pending.fieldId) {
       const metaEl = editor.root.querySelector(`.sgid-metadata-field[data-field-id="${pending.fieldId}"]`) as HTMLElement;
       if (metaEl) {
+        editor.root.querySelectorAll(`.sgid-metadata-field[data-parent-field-id="${pending.fieldId}"]`).forEach((child) => {
+          const childEl = child as HTMLElement;
+          childEl.removeAttribute('data-parent-field-id');
+          const titleEl = childEl.querySelector('.sgid-metadata-field__title');
+          if (titleEl) {
+            const fieldTitle = childEl.getAttribute('data-field-title') || '';
+            titleEl.innerHTML = fieldTitle.trim();
+          }
+        });
         metaEl.remove();
         toast.success('Metadado excluído.');
       }
@@ -610,8 +863,8 @@ export function RichTextDocumentModelEditor({
       return;
     }
 
-    const topic = associatedTopic !== 'none' ? existingTopics.find((t) => t.id === associatedTopic) : null;
-    const topicName = topic?.name;
+    const parentField = associatedParentField !== 'none' ? existingMetadataFields.find((f) => f.id === associatedParentField) : null;
+    const parentFieldTitle = parentField?.name;
 
     if (editingMetadataId) {
       const metaEl = editor.root.querySelector(`.sgid-metadata-field[data-field-id="${editingMetadataId}"]`) as HTMLElement;
@@ -627,7 +880,8 @@ export function RichTextDocumentModelEditor({
       metaEl.setAttribute('data-field-id', uniqueId);
       metaEl.setAttribute('data-field-title', fieldTitle.trim());
       metaEl.setAttribute('data-field-help', fieldHelp.trim());
-      metaEl.setAttribute('data-topic-id', associatedTopic !== 'none' ? associatedTopic : '');
+      metaEl.setAttribute('data-parent-field-id', associatedParentField !== 'none' ? associatedParentField : '');
+      metaEl.removeAttribute('data-topic-id');
       if (fieldRepeatable) {
         metaEl.setAttribute('data-repeatable', 'true');
         if (fieldPlanningInstruction.trim()) metaEl.setAttribute('data-planning-instruction', fieldPlanningInstruction.trim());
@@ -645,10 +899,10 @@ export function RichTextDocumentModelEditor({
           badge.className = 'text-[9px] bg-blue-100 text-blue-700 px-1.5 py-0.5 rounded-full ml-2 font-semibold';
           badge.innerText = 'REPETÍVEL';
           titleEl.appendChild(badge);
-        } else if (associatedTopic !== 'none' && topicName) {
+        } else if (associatedParentField !== 'none' && parentFieldTitle) {
           const tag = document.createElement('span');
           tag.className = 'text-[9px] bg-blue-100 text-blue-700 px-1.5 py-0.5 rounded-full ml-2';
-          tag.innerText = `Tópico: ${topicName}`;
+          tag.innerText = `Filho de: ${parentFieldTitle}`;
           titleEl.appendChild(tag);
         }
       }
@@ -659,6 +913,27 @@ export function RichTextDocumentModelEditor({
         ? 'Campo dinâmico — a IA criará as instâncias necessárias ao gerar o documento.'
         : 'Digite aqui (campo editável no documento)...';
 
+      // Atualizar tag "Filho de" em metadados que têm este como pai
+      editor.root.querySelectorAll(`.sgid-metadata-field[data-parent-field-id="${uniqueId}"]`).forEach((child) => {
+        const childEl = child as HTMLElement;
+        const childTitleEl = childEl.querySelector('.sgid-metadata-field__title');
+        if (childTitleEl) {
+          const childFieldTitle = childEl.getAttribute('data-field-title') || '';
+          childTitleEl.innerHTML = childFieldTitle.trim();
+          if (childEl.getAttribute('data-repeatable') === 'true') {
+            const badge = document.createElement('span');
+            badge.className = 'text-[9px] bg-blue-100 text-blue-700 px-1.5 py-0.5 rounded-full ml-2 font-semibold';
+            badge.innerText = 'REPETÍVEL';
+            childTitleEl.appendChild(badge);
+          } else {
+            const tag = document.createElement('span');
+            tag.className = 'text-[9px] bg-blue-100 text-blue-700 px-1.5 py-0.5 rounded-full ml-2';
+            tag.innerText = `Filho de: ${fieldTitle.trim()}`;
+            childTitleEl.appendChild(tag);
+          }
+        }
+      });
+
       setEditorData(getCleanEditorHTML(editor.root));
       setFieldDialogOpen(false);
       setEditingMetadataId(null);
@@ -668,22 +943,20 @@ export function RichTextDocumentModelEditor({
       const uniqueId = generateUniqueId(baseId);
 
       let insertAt: number;
-      let topicInsertPos = -1;
-      if (associatedTopic !== 'none') {
-        topicInsertPos = findTopicInsertPosition(editor, associatedTopic);
-        if (topicInsertPos >= 0) {
-          insertAt = topicInsertPos;
+      let parentInsertPos = -1;
+      if (associatedParentField !== 'none') {
+        parentInsertPos = findParentInsertPosition(editor, associatedParentField);
+        if (parentInsertPos >= 0) {
+          insertAt = parentInsertPos;
         } else {
-          const range = editor.getSelection(true);
-          insertAt = range ? range.index : editor.getLength();
+          insertAt = editor.getLength();
         }
       } else {
-        const range = editor.getSelection(true);
-        insertAt = range ? range.index : editor.getLength();
+        insertAt = editor.getLength();
       }
 
-      const isAfterTopic = topicInsertPos >= 0;
-      if (insertAt > 0 && !isAfterTopic) {
+      const isAfterParent = parentInsertPos >= 0;
+      if (insertAt > 0 && !isAfterParent) {
         const prevChar = editor.getText(insertAt - 1, 1);
         if (prevChar && prevChar !== '\n') {
           editor.insertText(insertAt, '\n', 'user');
@@ -695,8 +968,10 @@ export function RichTextDocumentModelEditor({
         id: uniqueId,
         title: fieldTitle.trim(),
         help: fieldHelp.trim(),
-        topicId: associatedTopic !== 'none' ? associatedTopic : '',
-        topicName,
+        parentFieldId: associatedParentField !== 'none' ? associatedParentField : '',
+        parentFieldTitle: parentFieldTitle,
+        topicId: associatedParentField !== 'none' ? associatedParentField : '',
+        topicName: parentFieldTitle,
         repeatable: fieldRepeatable,
         planningInstruction: fieldPlanningInstruction.trim(),
       }, 'user');
@@ -730,67 +1005,146 @@ export function RichTextDocumentModelEditor({
           </div>
           <div className="space-y-2">
             <Label htmlFor="model-type" className="text-sm font-semibold text-gray-700">Tipo de Documento *</Label>
-            <div className="relative">
-              <Layout className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
-              <Input
-                id="model-type"
-                className="pl-10 h-11 border-gray-200 focus:ring-blue-500 rounded-lg"
-                placeholder="Ex: Jurídico, Técnico, Financeiro"
-                value={type}
-                onChange={(e) => setType(e.target.value)}
-                required
+            <div className="flex gap-2">
+              <Select
+                value={type || '__none__'}
+                onValueChange={(v) => setType(v === '__none__' ? '' : v)}
+                disabled={isLoading || documentTypesLoading}
+              >
+                <SelectTrigger id="model-type" className="flex-1 h-11 border-gray-200 focus:ring-blue-500 rounded-lg">
+                  <SelectValue placeholder="Selecione ou cadastre um tipo..." />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="__none__">
+                    <span className="text-gray-400">Selecione um tipo...</span>
+                  </SelectItem>
+                  {documentTypes.map((dt) => (
+                    <SelectItem key={dt.id} value={dt.name}>
+                      {dt.name}
+                    </SelectItem>
+                  ))}
+                  {type && !documentTypes.some((dt) => dt.name === type) && (
+                    <SelectItem value={type}>{type}</SelectItem>
+                  )}
+                </SelectContent>
+              </Select>
+              <Button
+                type="button"
+                variant="outline"
+                size="icon"
+                className="h-11 w-11 shrink-0"
+                onClick={() => setCreateTypeDialogOpen(true)}
                 disabled={isLoading}
-              />
+                title="Cadastrar novo tipo de documento"
+              >
+                <Plus className="w-4 h-4" />
+              </Button>
             </div>
+            <CreateDocumentTypeDialog
+              open={createTypeDialogOpen}
+              onOpenChange={setCreateTypeDialogOpen}
+              onCreated={async (newName) => {
+                await apiService.createDocumentType(newName);
+                await loadDocumentTypes();
+                setType(newName);
+                toast.success(`Tipo "${newName}" cadastrado e selecionado.`);
+              }}
+            />
           </div>
           <div className="space-y-2 md:col-span-2" ref={specSearchRef}>
-            <Label htmlFor="model-spec" className="text-sm font-semibold text-gray-700">Documento Spec * (obrigatório por regra constitucional)</Label>
+            <Label htmlFor="model-spec" className="text-sm font-semibold text-gray-700">Spec * (obrigatório)</Label>
             <div className="relative">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400 pointer-events-none" />
               <Input
                 id="model-spec"
                 type="text"
-                className="pl-10 h-11 border-gray-200 focus:ring-blue-500 rounded-lg"
-                placeholder="Clique para ver os Specs disponíveis ou digite para filtrar..."
+                className="pl-10 h-11"
+                placeholder="Buscar e selecionar Spec..."
                 value={specSearchQuery}
-                onChange={(e) => {
-                  setSpecSearchQuery(e.target.value);
-                  setSpecSearchOpen(true);
-                }}
+                onChange={(e) => { setSpecSearchQuery(e.target.value); setSpecSearchOpen(true); }}
                 onFocus={() => setSpecSearchOpen(true)}
                 disabled={isLoading}
               />
-              {showSpecResults && (
-                <div className="absolute top-full left-0 right-0 mt-1 bg-white border border-gray-200 rounded-lg shadow-lg z-50 max-h-48 overflow-y-auto">
-                  {specFilesLoading ? (
-                    <div className="px-4 py-3 text-sm text-gray-500">Carregando Specs do bucket...</div>
-                  ) : specFilteredResults.length === 0 ? (
-                    <div className="px-4 py-3 text-sm text-gray-500">
-                      {specFiles.length === 0
-                        ? 'Nenhum Spec no bucket. Faça upload de arquivos .md no bucket "specs" do Supabase Storage.'
-                        : 'Nenhum Spec encontrado para esta busca.'}
-                    </div>
-                  ) : (
-                    specFilteredResults.map((f) => (
-                      <button
-                        key={f.path}
-                        type="button"
-                        className="w-full text-left px-4 py-2.5 hover:bg-gray-100 first:rounded-t-lg last:rounded-b-lg text-sm"
-                        onClick={() => {
-                          setSpecPath(f.path);
-                          setSpecSearchQuery(f.label);
-                          setSpecSearchOpen(false);
-                        }}
-                      >
-                        <span className="font-medium">{f.label}</span>
-                        <span className="text-gray-500 text-xs ml-2">{f.path}</span>
+              {specSearchOpen && (
+                <div className="absolute top-full left-0 right-0 mt-1 bg-white border rounded-lg shadow-lg z-50 max-h-48 overflow-y-auto">
+                  {specsSkillsLoading ? <div className="px-4 py-3 text-sm text-gray-500">Carregando...</div> :
+                    specFiltered.length === 0 ? <div className="px-4 py-3 text-sm text-gray-500">Nenhum Spec encontrado.</div> :
+                    specFiltered.map((s) => (
+                      <button key={s.path} type="button" className="w-full text-left px-4 py-2.5 hover:bg-gray-100 text-sm"
+                        onClick={() => { setSpecPath(s.path); setSpecSearchQuery(s.name); setSpecSearchOpen(false); }}>
+                        <span className="font-medium">{s.name}</span>
+                        <span className="text-gray-500 text-xs ml-2">{s.path}</span>
                       </button>
-                    ))
-                  )}
+                    ))}
                 </div>
               )}
             </div>
-            <p className="text-xs text-gray-500">Specs carregados do bucket Supabase Storage. A IA seguirá rigorosamente as diretrizes do Spec selecionado ao gerar documentos.</p>
+          </div>
+          <div className="space-y-2 md:col-span-2" ref={skillSearchRef}>
+            <Label htmlFor="model-skill" className="text-sm font-semibold text-gray-700">Skill * (obrigatório)</Label>
+            <div className="relative">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400 pointer-events-none" />
+              <Input
+                id="model-skill"
+                type="text"
+                className="pl-10 h-11"
+                placeholder="Buscar e selecionar Skill..."
+                value={skillSearchQuery}
+                onChange={(e) => { setSkillSearchQuery(e.target.value); setSkillSearchOpen(true); }}
+                onFocus={() => setSkillSearchOpen(true)}
+                disabled={isLoading}
+              />
+              {skillSearchOpen && (
+                <div className="absolute top-full left-0 right-0 mt-1 bg-white border rounded-lg shadow-lg z-50 max-h-48 overflow-y-auto">
+                  {specsSkillsLoading ? <div className="px-4 py-3 text-sm text-gray-500">Carregando...</div> :
+                    skillFiltered.length === 0 ? <div className="px-4 py-3 text-sm text-gray-500">Nenhum Skill encontrado.</div> :
+                    skillFiltered.map((s) => (
+                      <button key={s.path} type="button" className="w-full text-left px-4 py-2.5 hover:bg-gray-100 text-sm"
+                        onClick={() => { setSkillPath(s.path); setSkillSearchQuery(s.name); setSkillSearchOpen(false); }}>
+                        <span className="font-medium">{s.name}</span>
+                        <span className="text-gray-500 text-xs ml-2">{s.path}</span>
+                      </button>
+                    ))}
+                </div>
+              )}
+            </div>
+          </div>
+          <div className="space-y-2 md:col-span-2" ref={exampleSearchRef}>
+            <Label htmlFor="model-example" className="text-sm font-semibold text-gray-700">Documento de exemplo (opcional)</Label>
+            <div className="relative">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400 pointer-events-none" />
+              <Input
+                id="model-example"
+                type="text"
+                className="pl-10 h-11"
+                placeholder="Buscar e selecionar documento de exemplo..."
+                value={exampleSearchQuery}
+                onChange={(e) => { setExampleSearchQuery(e.target.value); setExampleSearchOpen(true); }}
+                onFocus={() => setExampleSearchOpen(true)}
+                disabled={isLoading}
+              />
+              {exampleSearchOpen && (
+                <div className="absolute top-full left-0 right-0 mt-1 bg-white border rounded-lg shadow-lg z-50 max-h-48 overflow-y-auto">
+                  {specsSkillsLoading ? <div className="px-4 py-3 text-sm text-gray-500">Carregando...</div> :
+                    exampleFiltered.length === 0 ? <div className="px-4 py-3 text-sm text-gray-500">Nenhum exemplo encontrado. Faça upload em Gestão de IA.</div> :
+                    <>
+                      <button key="__clear__" type="button" className="w-full text-left px-4 py-2.5 hover:bg-gray-100 text-sm text-gray-500"
+                        onClick={() => { setExampleDocumentPath(''); setExampleSearchQuery(''); setExampleSearchOpen(false); }}>
+                        (Nenhum)
+                      </button>
+                      {exampleFiltered.map((s) => (
+                        <button key={s.path} type="button" className="w-full text-left px-4 py-2.5 hover:bg-gray-100 text-sm"
+                          onClick={() => { setExampleDocumentPath(s.path); setExampleSearchQuery(s.name); setExampleSearchOpen(false); }}>
+                          <span className="font-medium">{s.name}</span>
+                          <span className="text-gray-500 text-xs ml-2">{s.path}</span>
+                        </button>
+                      ))}
+                    </>
+                  }
+                </div>
+              )}
+            </div>
+            <p className="text-xs text-gray-500">A IA usa o exemplo para entender organização e formato esperado do documento.</p>
           </div>
         </div>
       </div>
@@ -966,16 +1320,6 @@ export function RichTextDocumentModelEditor({
             <div className="sgid-toolbar-custom-buttons flex flex-row items-center gap-2 ml-4 border-l pl-4 border-gray-200 flex-shrink-0">
               <button
                 type="button"
-                className="sgid-toolbar-custom-btn hover:bg-blue-50 hover:text-blue-600"
-                onClick={insertTopic}
-                disabled={isLoading}
-                title="Adicionar Tópico (Seção Pastel)"
-              >
-                <PlusCircle className="w-4 h-4" />
-                Tópicos
-              </button>
-              <button
-                type="button"
                 className="sgid-toolbar-custom-btn hover:bg-indigo-50 hover:text-indigo-600"
                 onClick={openFieldDialog}
                 disabled={isLoading}
@@ -1088,22 +1432,23 @@ export function RichTextDocumentModelEditor({
               </div>
             )}
 
-            {!fieldRepeatable && (
-              <div className="space-y-2">
-                <Label htmlFor="associated-topic" className="text-sm font-medium">Associar a um Tópico (opcional)</Label>
-                <Select value={associatedTopic} onValueChange={setAssociatedTopic}>
-                  <SelectTrigger className="rounded-lg">
-                    <SelectValue placeholder="Selecione um tópico..." />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="none">Nenhum vínculo</SelectItem>
-                    {existingTopics.map(topic => (
-                      <SelectItem key={topic.id} value={topic.id}>{topic.name}</SelectItem>
+            <div className="space-y-2">
+              <Label htmlFor="associated-parent" className="text-sm font-medium">Metadado pai (opcional)</Label>
+              <Select value={associatedParentField || 'none'} onValueChange={setAssociatedParentField}>
+                <SelectTrigger className="rounded-lg">
+                  <SelectValue placeholder="Selecione um metadado pai..." />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="none">Nenhum (raiz da árvore)</SelectItem>
+                  {existingMetadataFields
+                    .filter((f) => f.id !== editingMetadataId)
+                    .map((f) => (
+                      <SelectItem key={f.id} value={f.id}>{f.name}</SelectItem>
                     ))}
-                  </SelectContent>
-                </Select>
-              </div>
-            )}
+                </SelectContent>
+              </Select>
+              <p className="text-xs text-gray-500">Se selecionado, este metadado será filho do indicado. O texto gerado será exibido em árvore organizacional (indentado).</p>
+            </div>
 
             <div className="space-y-2">
               <Label htmlFor="field-help" className="text-sm font-medium">Instruções para o preenchimento</Label>

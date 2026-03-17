@@ -3,7 +3,7 @@ import { Button } from './ui/button';
 import { Input } from './ui/input';
 import { Send, Bot, User, Loader2, Minimize2, Paperclip, FileCheck } from 'lucide-react';
 import { apiService } from '../../services/api';
-import { invalidateRAGSummaryCache } from '../../services/local-db';
+import { invalidateRAGSummaryCache, getChatMessages, saveChatMessages, type PersistedChatMessage } from '../../services/local-db';
 import { getDocumentationSummaryWithCache, getDocumentUnderstandingWithCache, chatWithRAG, type DocumentSectionInput } from '../../services/rag-api';
 import { useDocumentGeneration } from '../../contexts/DocumentGenerationContext';
 import { toast } from 'sonner';
@@ -24,6 +24,13 @@ interface GenerateRequest {
   sections: DocumentSection[];
 }
 
+/** Seção do documento para o chat (id, título, índice 1-based) */
+export interface DocumentSectionForChat {
+  id: string;
+  title: string;
+  index: number;
+}
+
 interface AIChatProps {
   projectId: string;
   documentId?: string;
@@ -41,23 +48,31 @@ interface AIChatProps {
   onRequestCreateDocument?: () => void;
   /** Se true, o botão exibe "Recriar esse documento" em vez de "Sim, criar documento" */
   documentHasContent?: boolean;
+  /** Seções editáveis do documento (para o chat entender "corrija a seção 2", etc.) */
+  documentSections?: DocumentSectionForChat[];
+  /** Chamado quando o chat detecta pedido de corrigir/recriar uma seção específica. sectionIndex é 1-based. */
+  onRequestRegenerateSection?: (sectionIndex: number, instruction?: string) => void;
+  /** Chamado quando o chat detecta pedido de recriar todo o documento com instrução. */
+  onRequestRegenerateAll?: (instruction?: string) => void;
 }
 
-export function AIChat({ projectId, documentId, generateRequest, onConfirmGenerate, onGenerateComplete, forceOpen, onSuggestedGenerateDocument, onRequestCreateDocument, documentHasContent = false }: AIChatProps) {
+const DEFAULT_MESSAGES: Message[] = [
+  {
+    id: '1',
+    role: 'assistant',
+    content: 'Olá! Sou seu assistente de IA. Carregando...',
+    timestamp: new Date()
+  }
+];
+
+export function AIChat({ projectId, documentId, generateRequest, onConfirmGenerate, onGenerateComplete, forceOpen, onSuggestedGenerateDocument, onRequestCreateDocument, documentHasContent = false, documentSections, onRequestRegenerateSection, onRequestRegenerateAll }: AIChatProps) {
   const isProjectContext = !documentId;
   const { getJob } = useDocumentGeneration();
   const generationJob = documentId ? getJob(documentId) : undefined;
   const isGeneratingFromChat = generationJob?.status === 'running' || generationJob?.status === 'reviewing';
-  const [messages, setMessages] = useState<Message[]>(() => [
-    {
-      id: '1',
-      role: 'assistant',
-      content: isProjectContext
-        ? 'Olá! Sou seu assistente de IA. Posso responder perguntas sobre o projeto com base na documentação disponível. Como posso ajudar?'
-        : 'Olá! Sou seu assistente de IA. Carregando resumo da documentação...',
-      timestamp: new Date()
-    }
-  ]);
+  const [messages, setMessages] = useState<Message[]>(DEFAULT_MESSAGES);
+  const [chatLoaded, setChatLoaded] = useState(false);
+  const hadPersistedRef = useRef(false);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
@@ -75,6 +90,60 @@ export function AIChat({ projectId, documentId, generateRequest, onConfirmGenera
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
+
+  // Carrega conversas persistidas (por projeto e usuário)
+  useEffect(() => {
+    const userId = apiService.getCurrentUser()?.id ?? 'anonymous';
+    let cancelled = false;
+
+    getChatMessages(projectId, userId, documentId).then((persisted) => {
+      if (cancelled) return;
+      if (persisted.length > 0) {
+        hadPersistedRef.current = true;
+        setMessages(persisted.map((m) => ({
+          id: m.id,
+          role: m.role,
+          content: m.content,
+          timestamp: new Date(m.timestamp),
+        })));
+        hasAnalyzedRef.current = true;
+      } else {
+        hadPersistedRef.current = false;
+        if (isProjectContext) {
+          setMessages([{
+            id: '1',
+            role: 'assistant',
+            content: 'Olá! Sou seu assistente de IA. Posso responder perguntas sobre o projeto com base na documentação disponível. Como posso ajudar?',
+            timestamp: new Date()
+          }]);
+        } else {
+          setMessages([{
+            id: '1',
+            role: 'assistant',
+            content: 'Olá! Sou seu assistente de IA. Carregando resumo da documentação...',
+            timestamp: new Date()
+          }]);
+        }
+      }
+      setChatLoaded(true);
+    });
+
+    return () => { cancelled = true; };
+  }, [projectId, documentId, isProjectContext]);
+
+  // Persiste mensagens quando mudam (apenas quando há conversa real, ex: mensagem do usuário)
+  useEffect(() => {
+    if (!chatLoaded || messages.length === 0) return;
+    if (!messages.some((m) => m.role === 'user')) return; // não persiste só a mensagem inicial
+    const userId = apiService.getCurrentUser()?.id ?? 'anonymous';
+    const toSave: PersistedChatMessage[] = messages.map((m) => ({
+      id: m.id,
+      role: m.role,
+      content: m.content,
+      timestamp: m.timestamp instanceof Date ? m.timestamp.toISOString() : new Date(m.timestamp).toISOString(),
+    }));
+    saveChatMessages(projectId, userId, documentId, toSave).catch(() => {});
+  }, [chatLoaded, projectId, documentId, messages]);
 
   // Fluxo "Gerar tudo com IA": lê documento, mostra resumo, botão "correto, crie o documento"
   useEffect(() => {
@@ -137,9 +206,9 @@ export function AIChat({ projectId, documentId, generateRequest, onConfirmGenera
   }, [generateRequest, documentId, projectId, onConfirmGenerate, onGenerateComplete]);
 
   // Ao abrir o chat no nível do documento (com documentId), exibe resumo da documentação
-  // No nível do projeto, não carrega resumo — o chat funciona como assistente para perguntas
+  // Só executa se não houver conversas persistidas
   useEffect(() => {
-    if (isProjectContext || hasAnalyzedRef.current || generateRequest) return;
+    if (!chatLoaded || isProjectContext || hasAnalyzedRef.current || generateRequest) return;
 
     const loadSummary = async () => {
       try {
@@ -186,7 +255,7 @@ export function AIChat({ projectId, documentId, generateRequest, onConfirmGenera
     };
 
     loadSummary();
-  }, [projectId, generateRequest, onRequestCreateDocument, documentHasContent, isProjectContext]);
+  }, [chatLoaded, projectId, generateRequest, onRequestCreateDocument, documentHasContent, isProjectContext]);
 
   const handleSend = async () => {
     if (!input.trim() || loading) return;
@@ -208,12 +277,52 @@ export function AIChat({ projectId, documentId, generateRequest, onConfirmGenera
         projectId,
         message: userInput,
         documentId,
+        documentSections: documentSections ?? undefined,
       });
-      
+
+      // Executa ações estruturadas imediatamente (corrigir seção, recriar com instrução)
+      let actionExecuted = false;
+      if (suggested_action && typeof suggested_action === 'object') {
+        if (suggested_action.type === 'regenerate_section' && onRequestRegenerateSection) {
+          onRequestRegenerateSection(suggested_action.section_index, suggested_action.instruction ?? undefined);
+          actionExecuted = true;
+          toast.info('Recriando a seção solicitada...');
+        } else if (suggested_action.type === 'regenerate_all' && onRequestRegenerateAll) {
+          // Se instruction é genérica (ex: "Executando a correção"), usa a mensagem do usuário
+          let instruction = suggested_action.instruction ?? undefined;
+          const badInstructions = ['executando', 'correção solicitada', 'solicitada', 'em andamento'];
+          if (!instruction || badInstructions.some(b => (instruction || '').toLowerCase().includes(b))) {
+            instruction = userInput.trim().slice(0, 400);
+          }
+          onRequestRegenerateAll(instruction);
+          actionExecuted = true;
+          toast.info('Recriando o documento com a correção solicitada...');
+        }
+      }
+
+      // Fallback: se backend não retornou ação mas a mensagem pede recriação, executa
+      if (!actionExecuted && documentId && onRequestRegenerateAll) {
+        const msg = userInput.toLowerCase();
+        const actionKeywords = ['refaça', 'recreie', 'recrie', 'corrija o documento', 'recreie o documento', 'corrija as repetições', 'documento repetindo', 'evitar repetições', 'sim, refaça', 'sim, recreie'];
+        if (actionKeywords.some(kw => msg.includes(kw))) {
+          onRequestRegenerateAll(userInput.trim());
+          actionExecuted = true;
+          toast.info('Recriando o documento com a correção solicitada...');
+        }
+      }
+
+      // Resposta limpa: nunca exibir blocos [SEADOCS_ACTION]
+      let displayContent = (response || '')
+        .replace(/\[\s*SEADOCS_ACTION\s*\][\s\S]*?\[\s*\/\s*SEADOCS_ACTION\s*\]/gi, '')
+        .trim();
+      if (actionExecuted && (!displayContent || displayContent.length < 20)) {
+        displayContent = 'Executando a correção solicitada. O documento está sendo recriado.';
+      }
+
       const assistantMessage: Message = {
         id: (Date.now() + 1).toString(),
         role: 'assistant',
-        content: response,
+        content: displayContent,
         timestamp: new Date(),
         action: suggested_action === 'generate_document' && onSuggestedGenerateDocument ? {
           label: 'Gerar documento agora',
@@ -459,7 +568,8 @@ export function AIChat({ projectId, documentId, generateRequest, onConfirmGenera
                       <Button
                         size="sm"
                         onClick={message.action.onClick}
-                        className="bg-indigo-600 hover:bg-indigo-700 text-white"
+                        disabled={isGeneratingFromChat}
+                        className="bg-indigo-600 hover:bg-indigo-700 text-white disabled:opacity-50 disabled:pointer-events-none"
                       >
                         <FileCheck className="w-4 h-4 mr-2" />
                         {message.action.label}
@@ -540,7 +650,7 @@ export function AIChat({ projectId, documentId, generateRequest, onConfirmGenera
         <p className="text-xs text-gray-500 mt-2">
           {isProjectContext
             ? '💡 Pergunte sobre o projeto ou peça para criar um novo documento'
-            : '💡 Anexe documentos ou peça para adicionar, editar ou revisar'}
+            : '💡 Peça para corrigir seções, recriar com linguagem mais simples, ou gerar o documento'}
         </p>
       </div>
     </div>

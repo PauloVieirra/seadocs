@@ -8,6 +8,7 @@ import { toast } from 'sonner';
 import { apiService, type DocumentSection } from '../services/api';
 import { generateSectionContent, planDocumentStructure, type PlannedSection } from '../services/rag-api';
 import { fetchSpecContent } from '../services/spec-service';
+import { downloadDocument } from '../services/ai-storage-service';
 
 export interface GenerationJob {
   documentId: string;
@@ -23,17 +24,49 @@ export interface GenerationJob {
   status: 'running' | 'reviewing' | 'completed' | 'error';
 }
 
+export interface RegenerateSectionParams {
+  documentId: string;
+  projectId: string;
+  section: DocumentSection;
+  /** Seções do documento (para lookup do pai na hierarquia) */
+  sections: DocumentSection[];
+  sectionIndex: number;
+  totalSections: number;
+  previousSectionsHtml: string;
+  instruction?: string;
+  templateId?: string;
+  /** Avaliação anterior do criador (para recriação — a IA considera esse feedback) */
+  previousEvaluation?: { rating: string; comment?: string | null } | null;
+}
+
+export interface RegenerateAllWithInstructionParams {
+  documentId: string;
+  projectId: string;
+  documentTitle: string;
+  sections: DocumentSection[];
+  instruction?: string;
+  templateId?: string;
+  /** Avaliação anterior do criador (para recriação — a IA considera esse feedback) */
+  previousEvaluation?: { rating: string; comment?: string | null } | null;
+}
+
 export interface StartGenerationParams {
   documentId: string;
   projectId: string;
   documentTitle: string;
   sections: DocumentSection[];
   templateId?: string;
+  /** Avaliação anterior do criador (para recriação — a IA considera esse feedback) */
+  previousEvaluation?: { rating: string; comment?: string | null } | null;
 }
 
 interface DocumentGenerationContextValue {
   /** Inicia a geração em segundo plano. Ignorado se já estiver rodando para o mesmo documento. */
   startGeneration: (params: StartGenerationParams) => void;
+  /** Regenera uma seção específica com instrução opcional (ex: "linguagem mais simples"). */
+  regenerateSection: (params: RegenerateSectionParams) => Promise<void>;
+  /** Regenera todo o documento aplicando instrução a todas as seções. */
+  regenerateAllWithInstruction: (params: RegenerateAllWithInstructionParams) => void;
   /** Retorna true se o documento informado está sendo gerado no momento. */
   isGenerating: (documentId: string) => boolean;
   /** Retorna o job de geração do documento, se existir. */
@@ -44,6 +77,8 @@ interface DocumentGenerationContextValue {
 
 const DocumentGenerationContext = createContext<DocumentGenerationContextValue>({
   startGeneration: () => {},
+  regenerateSection: async () => {},
+  regenerateAllWithInstruction: () => {},
   isGenerating: () => false,
   getJob: () => undefined,
   activeJobs: [],
@@ -64,7 +99,7 @@ export function DocumentGenerationProvider({ children }: { children: React.React
   }, []);
 
   const startGeneration = useCallback(async (params: StartGenerationParams) => {
-    const { documentId, projectId, documentTitle, sections, templateId } = params;
+    const { documentId, projectId, documentTitle, sections, templateId, previousEvaluation } = params;
 
     // Guarda síncrono: evita iniciar duas gerações para o mesmo documento
     if (runningRef.current.has(documentId)) return;
@@ -84,21 +119,32 @@ export function DocumentGenerationProvider({ children }: { children: React.React
       return next;
     });
 
-    // Monta spec guidelines: apenas o spec do modelo vai para o LLM.
-    // As regras constitucionais (Spec/REGRAS_CONSTITUCIONAIS.md) controlam o comportamento do sistema
-    // e já são aplicadas pelo código — não devem ser incluídas no prompt do LLM.
+    // Monta spec + skill + exemplo do modelo. A IA usa todos para gerar com eficiência.
     let specGuidelines: string | undefined;
+    let documentType: string | undefined;
+    let exampleDocument: string | undefined;
     if (templateId) {
       const model = await apiService.getDocumentModel(templateId);
+      documentType = model?.type;
+      const parts: string[] = [];
       if (model?.specPath) {
-        const content = await fetchSpecContent(model.specPath);
-        if (!content) {
-          toast.error(`Spec não encontrado: ${model.specPath}. Verifique o bucket 'specs' no Supabase Storage.`);
+        const specContent = await fetchSpecContent(model.specPath);
+        if (!specContent) {
+          toast.error(`Spec não encontrado: ${model.specPath}. Verifique o bucket 'specs'.`);
           updateJob(documentId, { status: 'error', sectionsBeingGenerated: new Set() });
           runningRef.current.delete(documentId);
           return;
         }
-        specGuidelines = content;
+        parts.push(`--- SPEC ---\n${specContent}`);
+      }
+      if (model?.skillPath) {
+        const skillContent = await downloadDocument('skill', model.skillPath);
+        if (skillContent) parts.push(`\n--- SKILL ---\n${skillContent}`);
+      }
+      if (parts.length > 0) specGuidelines = parts.join('\n');
+      if (model?.exampleDocumentPath) {
+        const exContent = await downloadDocument('examples', model.exampleDocumentPath);
+        if (exContent) exampleDocument = exContent;
       }
     }
 
@@ -175,6 +221,10 @@ export function DocumentGenerationProvider({ children }: { children: React.React
         }
 
         try {
+          const creatorFeedback = previousEvaluation
+            ? `Avaliação anterior: ${previousEvaluation.rating === 'good' ? 'bom' : previousEvaluation.rating === 'regular' ? 'pode melhorar' : 'não ficou bom'}${previousEvaluation.comment ? `. Comentário: ${previousEvaluation.comment}` : ''}`
+            : undefined;
+          const parentSection = section.parentFieldId ? sectionsToGenerate.find((s) => s.id === section.parentFieldId) : null;
           const { content: aiContent } = await generateSectionContent({
             projectId,
             sectionTitle: section.title,
@@ -183,6 +233,11 @@ export function DocumentGenerationProvider({ children }: { children: React.React
             sectionIndex: i,
             totalSections,
             specGuidelines,
+            documentType,
+            creatorFeedback,
+            exampleDocument,
+            parentFieldId: section.parentFieldId,
+            parentFieldTitle: parentSection?.title,
           });
 
           if (apiService.isUUID(documentId)) {
@@ -238,6 +293,88 @@ export function DocumentGenerationProvider({ children }: { children: React.React
     }
   }, [updateJob]);
 
+  const regenerateSection = useCallback(async (params: RegenerateSectionParams) => {
+    const { documentId, projectId, section, sectionIndex, totalSections, previousSectionsHtml, instruction, templateId, previousEvaluation } = params;
+    if (runningRef.current.has(documentId)) return;
+    runningRef.current.add(documentId);
+
+    const helpText = [section.helpText, instruction].filter(Boolean).join('. ');
+    updateJob(documentId, {
+      documentId,
+      projectId,
+      documentTitle: section.title,
+      totalSections: 1,
+      completedSections: 0,
+      sectionsBeingGenerated: new Set([section.id]),
+      currentSectionTitle: section.title,
+      status: 'running',
+    });
+
+    let specGuidelines: string | undefined;
+    let documentType: string | undefined;
+    let exampleDocument: string | undefined;
+    if (templateId) {
+      const model = await apiService.getDocumentModel(templateId);
+      documentType = model?.type;
+      const parts: string[] = [];
+      if (model?.specPath) {
+        const c = await fetchSpecContent(model.specPath);
+        if (c) parts.push(`--- SPEC ---\n${c}`);
+      }
+      if (model?.skillPath) {
+        const c = await downloadDocument('skill', model.skillPath);
+        if (c) parts.push(`\n--- SKILL ---\n${c}`);
+      }
+      if (parts.length > 0) specGuidelines = parts.join('\n');
+      if (model?.exampleDocumentPath) {
+        const exContent = await downloadDocument('examples', model.exampleDocumentPath);
+        if (exContent) exampleDocument = exContent;
+      }
+    }
+
+    try {
+      if (apiService.isUUID(documentId)) await apiService.acquireSectionLock(documentId, section.id);
+      const creatorFeedback = previousEvaluation
+        ? `Avaliação anterior: ${previousEvaluation.rating === 'good' ? 'bom' : previousEvaluation.rating === 'regular' ? 'pode melhorar' : 'não ficou bom'}${previousEvaluation.comment ? `. Comentário: ${previousEvaluation.comment}` : ''}`
+        : undefined;
+      const parentSection = section.parentFieldId ? params.sections.find((s) => s.id === section.parentFieldId) : null;
+      const { content: aiContent } = await generateSectionContent({
+        projectId,
+        sectionTitle: section.title,
+        helpText: helpText || undefined,
+        previousSectionsHtml: previousSectionsHtml || undefined,
+        sectionIndex,
+        totalSections,
+        specGuidelines,
+        documentType,
+        creatorFeedback,
+        exampleDocument,
+        parentFieldId: section.parentFieldId,
+        parentFieldTitle: parentSection?.title,
+      });
+      if (apiService.isUUID(documentId)) {
+        await apiService.updateDocumentSection(documentId, section.id, aiContent);
+      }
+      toast.success(`Seção "${section.title}" atualizada.`, { id: `regen-${section.id}`, duration: 4000 });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Erro desconhecido';
+      toast.error(`Falha ao atualizar seção: ${msg}`, { id: `regen-${section.id}`, duration: 5000 });
+    } finally {
+      if (apiService.isUUID(documentId)) await apiService.releaseSectionLock(documentId, section.id);
+      updateJob(documentId, { status: 'completed', sectionsBeingGenerated: new Set() });
+      runningRef.current.delete(documentId);
+    }
+  }, [updateJob]);
+
+  const regenerateAllWithInstruction = useCallback((params: RegenerateAllWithInstructionParams) => {
+    const { sections, instruction, previousEvaluation, ...rest } = params;
+    const sectionsWithInstruction: DocumentSection[] = sections.map(s => ({
+      ...s,
+      helpText: [s.helpText, instruction].filter(Boolean).join('. '),
+    }));
+    startGeneration({ ...rest, sections: sectionsWithInstruction, previousEvaluation });
+  }, [startGeneration]);
+
   const isGenerating = useCallback((documentId: string) => {
     const job = jobs.get(documentId);
     return job?.status === 'running' || job?.status === 'reviewing';
@@ -250,7 +387,7 @@ export function DocumentGenerationProvider({ children }: { children: React.React
   const activeJobs = Array.from(jobs.values()).filter(j => j.status === 'running' || j.status === 'reviewing');
 
   return (
-    <DocumentGenerationContext.Provider value={{ startGeneration, isGenerating, getJob, activeJobs }}>
+    <DocumentGenerationContext.Provider value={{ startGeneration, regenerateSection, regenerateAllWithInstruction, isGenerating, getJob, activeJobs }}>
       {children}
     </DocumentGenerationContext.Provider>
   );

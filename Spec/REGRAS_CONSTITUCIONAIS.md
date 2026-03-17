@@ -8,9 +8,9 @@
 
 **R1.** Nunca mudar, editar, apagar ou modificar partes do código ou funcionalidades que não foram solicitadas. Alterações devem ser limitadas estritamente ao escopo da solicitação do usuário.
 
-**R2. Spec obrigatório no modelo:** Todo modelo de documento DEVE ter um documento Spec relacionado durante a criação do modelo. O campo `spec_path` (caminho do Spec na pasta `Spec/` ou no bucket) é obrigatório.
+**R2. Spec e Skill obrigatórios no modelo:** Todo modelo de documento DEVE ter Spec e Skill associados. Os campos `spec_path` (bucket specs) e `skill_path` (bucket skill) são obrigatórios. A IA usa ambos na geração para eficiência.
 
-**R3. Validação antes da geração:** Antes de iniciar a criação do documento, a IA DEVE validar o documento Spec associado ao modelo. Se o Spec não existir ou estiver inválido, a geração NÃO pode prosseguir.
+**R3. Validação antes da geração:** Antes de iniciar a criação do documento, a IA DEVE validar o Spec e o Skill associados ao modelo. Se o Spec não existir ou estiver inválido, a geração NÃO pode prosseguir.
 
 **R4. Rigor nas diretrizes Spec:** O Spec contém APENAS regras de estrutura e formatação (ex.: hierarquia EP→FT→HU, numeração, uso de tabelas). A IA deve seguir essas regras de forma, mas NUNCA copiar ou incluir texto do Spec no documento. O conteúdo do documento vem EXCLUSIVAMENTE da base de conhecimento do projeto.
 
@@ -53,10 +53,13 @@ REGRAS OBRIGATÓRIAS (violação invalida o documento):
 2. NÃO replique partes de conversas extraídas da base (chats, mensagens, diálogos). INTERPRETE a conversa e crie texto formal que represente o que precisa ser feito — nunca copie diálogos literais.
 3. NÃO inclua raciocínio, explicações de processo ou planos de ação da IA no texto gerado. Proibido: frases como 'Vou estruturar...', 'Analisando os dados...', 'Passo 1:...'.
 4. NÃO mencione nomes de pessoas físicas (autores, participantes, responsáveis, stakeholders). Use papéis genéricos: [Responsável], [Gestor do Projeto], [Equipe Técnica].
-5. O documento deve conter APENAS o conteúdo final esperado para a seção.
-6. O Spec é APENAS regras de estrutura/formato. NUNCA copie, cite ou inclua texto do Spec no documento. O conteúdo vem SOMENTE dos dados do projeto (base de conhecimento).
-7. NÃO pule para a próxima sessão deixando texto incompleto. Se precisar mudar de sessão, remova o texto incompleto e complete na sessão adequada (ou crie sessão complementar). Pode encurtar uma sessão e criar outra para o restante — não há limite de sessões.
-8. Ao finalizar o documento, executar revisão obrigatória. Status na tela: "Revisando documento, procurando erros, ajustando sessão X".
+5. O documento deve conter APENAS o conteúdo esperado para a seção.
+6. O Spec contém EXEMPLOS e INSTRUÇÕES. É PROIBIDO copiar qualquer texto do Spec (ex.: "Objetivo, público-alvo", "O que é o sistema", "Como [perfil], quero [ação]", "[Épico 1]", "[Visão geral...]"). O Spec define ESTRUTURA; o CONTEÚDO vem SOMENTE dos dados do projeto. A IA deve GERAR o texto.
+7. NÃO INVENTE conteúdo. Use APENAS informações presentes nos [DADOS DO PROJETO] recuperados da base. Se não houver informação para a seção, escreva de forma breve que não há dados disponíveis ou deixe em branco.
+8. As seções são PARTES de um único documento, NÃO documentos separados. A partir da seção 2, é PROIBIDO repetir introdução, objetivos, visão geral ou contexto — já estão na seção 1.
+9. NÃO pule para a próxima sessão deixando texto incompleto. Cada seção deve terminar com frases e parágrafos completos. Se precisar mudar de sessão, remova o texto incompleto e complete na sessão adequada (ou crie sessão complementar). Pode encurtar uma sessão e criar outra para o restante — não há limite de sessões.
+10. Ao finalizar o documento, executar revisão obrigatória. Status na tela: "Revisando documento, procurando erros, ajustando sessão X".
+11. Ignore as tags de markdown no documento gerado; elas são apenas para formatação no editor de texto.
 ```
 
 # REGRAS INSTITUCIONAIS DE GERAÇÃO DE DOCUMENTOS
@@ -223,24 +226,19 @@ A revisão deve percorrer todas as seções, validar as regras (repetição, inc
 
 1. Usuário solicita criação do documento
 2. IA identifica o modelo do documento (ex.: Memorando, Requisitos)
-3. IA lê o spec_path do modelo → ex.: Spec/Spac_Memorando.md
-4. IA valida: o Spec existe? Está legível?
+3. IA lê o **spec_path** e **skill_path** do modelo.
+4. IA valida: Spec e Skill existem? Estão legíveis?
 5. Se NÃO → interromper e informar o usuário
-6. Se SIM → carregar o conteúdo do Spec
-7. Para cada seção: gerar conteúdo baseado na base de conhecimento (regra 9: nunca pular sessão com texto incompleto)
-8. **Revisão final obrigatória**: status na tela "Revisando documento, procurando erros, ajustando sessão X"
-9. Entregar documento conforme estrutura do Spec
+6. Se SIM → usa o conteúdo do Spec e do Skill como guia para criar o documento.
+7. A IA recebe **tipo + Spec + Skill** e usa todos para montar a estrutura. O tipo reforça qual estrutura aplicar; o Spec detalha a organização; o Skill orienta a geração com eficiência.
+8. Gerar conteúdo baseado na base de conhecimento (regra 9: nunca pular sessão com texto incompleto)
+9. **Revisão final obrigatória**: status na tela "Revisando documento, procurando erros, ajustando sessão X"
+10. Entregar documento conforme estrutura do Spec e tipo documental.
 
 ---
 
 ## Documentos Spec disponíveis
-
-| Arquivo | Tipo de documento |
-|---------|-------------------|
-| `Spec/Spac_Requisitos_Design.md` | Requisitos de Design (Épico → Feature → História → RF → RNF) |
-| `Spec/Spec_Requisitos_Sistema.md` | Requisitos de Sistema (Título · Projeto · Histórico · Introdução · Visão Geral · Escopo · Organização · EP → FT → HU → RF) |
-| `Spec/Spec_Especificacao_Requisitos.md` | Especificação de Requisitos (modelo protegido, alinhado ao fluxo da IA) |
-
+O sistema deve buscar no supabase as specs disponiveis no buckect
 ---
 
 ## Regra de Auto-verificação

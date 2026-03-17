@@ -140,6 +140,15 @@ DECLARE
   v_sections jsonb;
   v_original jsonb;
 BEGIN
+  -- Corrige original_sections se foi criada como boolean (ex.: versão anterior)
+  IF EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema = 'public' AND table_name = 'templates' AND column_name = 'original_sections'
+    AND data_type = 'boolean'
+  ) THEN
+    ALTER TABLE public.templates ALTER COLUMN original_sections TYPE jsonb USING NULL;
+  END IF;
+
   v_sections := jsonb_build_object('html', v_html);
   v_original := v_sections;
 

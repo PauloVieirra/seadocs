@@ -15,7 +15,7 @@ export function CreateDocumentModelPage() {
   const [isSaving, setIsSaving] = useState(false);
   const [isDraft, setIsDraft] = useState(true);
   const [draftSaved, setDraftSaved] = useState(false);
-  const [initialDraft, setInitialDraft] = useState<{ name: string; type: string; templateContent: string; specPath?: string } | null>(null);
+  const [initialDraft, setInitialDraft] = useState<{ name: string; type: string; templateContent: string; specPath?: string; skillPath?: string; exampleDocumentPath?: string } | null>(null);
 
   // Estado para geração automática a partir de exemplo
   const [exampleFiles, setExampleFiles] = useState<string[]>([]);
@@ -32,7 +32,7 @@ export function CreateDocumentModelPage() {
     apiService.getLocalModelDrafts().then((drafts) => {
       const draft = drafts.find(d => d.id === 'model_draft_new');
       if (draft) {
-        setInitialDraft({ name: draft.name, type: draft.type, templateContent: draft.templateContent, specPath: draft.specPath });
+        setInitialDraft({ name: draft.name, type: draft.type, templateContent: draft.templateContent, specPath: draft.specPath, skillPath: draft.skillPath, exampleDocumentPath: draft.exampleDocumentPath });
         setDraftSaved(true);
       }
     });
@@ -56,10 +56,10 @@ export function CreateDocumentModelPage() {
     }
   };
 
-  const handleSaveModel = async (name: string, type: string, templateContent: string, isDraft: boolean, aiGuidance: string, specPath?: string) => {
+  const handleSaveModel = async (name: string, type: string, templateContent: string, isDraft: boolean, aiGuidance: string, specPath?: string, skillPath?: string, exampleDocumentPath?: string) => {
     setIsSaving(true);
     try {
-      await apiService.createDocumentModel(name, type, templateContent, false, undefined, isDraft, aiGuidance, specPath); 
+      await apiService.createDocumentModel(name, type, templateContent, false, undefined, isDraft, aiGuidance, specPath, skillPath, exampleDocumentPath); 
       toast.success(isDraft ? 'Rascunho salvo no banco de dados!' : 'Modelo de documento salvo com sucesso!');
       navigate('/document-models'); // Navegar de volta para o painel de gerenciamento de modelos
     } catch (error: any) {
@@ -121,7 +121,7 @@ export function CreateDocumentModelPage() {
         isLocalDraft: true,
       }
     : initialDraft
-    ? { ...initialDraft, id: 'model_draft_new', isGlobal: false, createdAt: '', updatedAt: '', isLocalDraft: true, specPath: initialDraft.specPath }
+    ? { ...initialDraft, id: 'model_draft_new', isGlobal: false, createdAt: '', updatedAt: '', isLocalDraft: true, specPath: initialDraft.specPath, skillPath: initialDraft.skillPath, exampleDocumentPath: initialDraft.exampleDocumentPath }
     : undefined;
 
   return (

@@ -58,16 +58,30 @@ export async function listSpecFiles(): Promise<SpecFile[]> {
 
 /**
  * Baixa e retorna o conteúdo de um Spec pelo seu caminho no bucket 'specs'.
- * Aceita caminhos da raiz ('Spec_Requisitos.md') ou com subpasta ('Spec/Spac_Foo.md').
+ * Aceita caminhos da raiz ('spec_requisitos.md') ou com subpasta ('Spec/spec_requisitos.md').
+ * Tenta download direto; se falhar (ex.: 400 em bucket privado), usa URL assinada.
  */
 export async function fetchSpecContent(specPath: string): Promise<string | null> {
-  const pathAtRoot = specPath.replace(/^Spec\//, '');
-  const { data, error } = await supabase.storage.from(SPECS_BUCKET).download(pathAtRoot);
-  if (!error && data) return await data.text();
-  const pathWithSpec = specPath.startsWith('Spec/') ? specPath : `Spec/${specPath}`;
-  const { data: altData, error: altError } = await supabase.storage.from(SPECS_BUCKET).download(pathWithSpec);
-  if (altError || !altData) return null;
-  return await altData.text();
+  const pathsToTry = [
+    specPath,
+    specPath.replace(/^Spec\//, ''),
+    specPath.startsWith('Spec/') ? specPath : `Spec/${specPath}`,
+  ].filter((p, i, arr) => arr.indexOf(p) === i);
+
+  for (const path of pathsToTry) {
+    const { data, error } = await supabase.storage.from(SPECS_BUCKET).download(path);
+    if (!error && data) return await data.text();
+    const { data: signed } = await supabase.storage.from(SPECS_BUCKET).createSignedUrl(path, 60);
+    if (signed?.signedUrl) {
+      try {
+        const res = await fetch(signed.signedUrl);
+        if (res.ok) return await res.text();
+      } catch {
+        /* ignora */
+      }
+    }
+  }
+  return null;
 }
 
 /**

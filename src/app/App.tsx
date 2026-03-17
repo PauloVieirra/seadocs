@@ -19,6 +19,7 @@ import { ChangePasswordDialog } from './components/ChangePasswordDialog';
 import { ProtectedRoute } from './components/ProtectedRoute';
 import { GovBrCallbackPage } from './pages/GovBrCallbackPage';
 import { GenerationStatusBar } from './components/GenerationStatusBar';
+import { AIManagementPage } from './pages/AIManagementPage';
 
 type MainView = 'login' | 'dashboard' | 'editor' | 'projects' | 'users' | 'document-models' | 'groups' | 'settings' | 'admin-dashboard' | 'create-document-model';
 
@@ -210,6 +211,13 @@ export default function App() {
           <ProtectedRoute currentUser={currentUser} authLoaded={authLoaded}>
             <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
               <GroupManagementPanel user={currentUser!} />
+            </main>
+          </ProtectedRoute>
+        } />
+        <Route path="/ai-management" element={
+          <ProtectedRoute currentUser={currentUser} authLoaded={authLoaded}>
+            <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+              <AIManagementPage />
             </main>
           </ProtectedRoute>
         } />

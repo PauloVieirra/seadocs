@@ -1,7 +1,9 @@
 // API Service - Supabase + IndexedDB para rascunhos locais
 
 import { manusAPIService, type ManusConfig } from './manus-api';
-import { indexDocumentInRAG, deleteDocumentFromRAG, chatWithRAG } from './rag-api';
+import { indexDocumentInRAG, deleteDocumentFromRAG, chatWithRAG, proposeSectionsFromKnowledgeBase } from './rag-api';
+import { fetchSpecContent } from './spec-service';
+import { downloadDocument } from './ai-storage-service';
 import { supabase } from './supabase';
 import * as localDb from './local-db';
 import { permissionsService } from './permissions';
@@ -111,6 +113,12 @@ export interface Document {
   signedBy?: string | null;
 }
 
+export interface DocumentEvaluation {
+  documentId: string;
+  rating: 'good' | 'regular' | 'bad';
+  comment?: string | null;
+}
+
 export interface DocumentContent {
   sections: DocumentSection[];
   /** Instruções para a IA sobre o tipo de documento (vem do modelo) */
@@ -128,6 +136,8 @@ export interface DocumentSection {
   repeatable?: boolean;
   /** Instrução de planejamento: como identificar as instâncias no RAG */
   planningInstruction?: string;
+  /** ID do metadado pai: seção filha na árvore organizacional */
+  parentFieldId?: string;
 }
 
 export interface UploadedFile {
@@ -183,8 +193,12 @@ export interface DocumentModel {
   isDraft?: boolean;
   aiGuidance?: string;
   isLocalDraft?: boolean;
-  /** Caminho do documento Spec (ex: Spec/Spac_Requisitos_Design.md). Obrigatório para novos modelos. */
+  /** Caminho do Spec no bucket specs. Obrigatório para geração. */
   specPath?: string;
+  /** Caminho do Skill no bucket skill. Obrigatório para geração. */
+  skillPath?: string;
+  /** Caminho do documento de exemplo no bucket examples. A IA usa para entender organização e formato. */
+  exampleDocumentPath?: string;
   /** ID do usuário que criou o modelo. Apenas o dono pode excluir modelos não utilizados. */
   creatorId?: string | null;
   /** Se true, o modelo não pode ser excluído. */
@@ -571,20 +585,31 @@ class APIService {
     permissionsService.invalidateCache(userId);
   }
 
-  // Realtime
+  // Realtime — unsubscribe adiado para evitar "WebSocket closed before connection established"
+  private _deferredUnsubscribe(channel: ReturnType<typeof supabase.channel> | undefined, delayMs = 150) {
+    if (!channel || !supabase) return;
+    setTimeout(() => {
+      try {
+        supabase.removeChannel(channel);
+      } catch {
+        // Ignora erros ao remover canal (ex.: já desconectado)
+      }
+    }, delayMs);
+  }
+
   subscribeToDocuments(projectId: string | null, callback: () => void) {
     const channel = supabase?.channel('public:documents').on('postgres_changes', { event: '*', schema: 'public', table: 'documents' }, () => callback()).subscribe();
-    return { unsubscribe: () => { if (channel) supabase?.removeChannel(channel); } };
+    return { unsubscribe: () => this._deferredUnsubscribe(channel) };
   }
 
   subscribeToDocument(documentId: string, callback: (doc: Document) => void) {
     const channel = supabase?.channel(`doc:${documentId}`).on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'documents', filter: `id=eq.${documentId}` }, (payload) => callback(payload.new as any)).subscribe();
-    return { unsubscribe: () => { if (channel) supabase?.removeChannel(channel); } };
+    return { unsubscribe: () => this._deferredUnsubscribe(channel) };
   }
 
   subscribeToDocumentModels(callback: () => void) {
     const channel = supabase?.channel('public:templates').on('postgres_changes', { event: '*', schema: 'public', table: 'templates' }, () => callback()).subscribe();
-    return { unsubscribe: () => { if (channel) supabase?.removeChannel(channel); } };
+    return { unsubscribe: () => this._deferredUnsubscribe(channel) };
   }
 
   // Projetos
@@ -857,14 +882,14 @@ class APIService {
   async updateDocumentSection(documentId: string, sectionId: string, sectionContent: string): Promise<Document> {
     const doc = await this.getDocumentById(documentId);
     if (!doc) throw new Error('Documento não encontrado');
-    const sections = doc.content?.sections || [];
+    const sections = [...(doc.content?.sections || [])];
     const index = sections.findIndex(s => s.id === sectionId);
     if (index !== -1) {
-      sections[index].content = sectionContent;
+      sections[index] = { ...sections[index], content: sectionContent };
     } else {
       sections.push({ id: sectionId, title: 'Seção', content: sectionContent, isEditable: true });
     }
-    return this.updateDocument(documentId, { sections });
+    return this.updateDocument(documentId, { ...doc.content, sections });
   }
 
   /** Salva a justificativa de revisão do documento */
@@ -880,6 +905,39 @@ class APIService {
       .single();
     if (error) throw new Error(error.message);
     return this.mapDocumentFromDb(data);
+  }
+
+  /** Avaliação do criador sobre o documento gerado pela IA (refina o RAG) */
+  async saveDocumentEvaluation(documentId: string, rating: 'good' | 'regular' | 'bad', comment?: string): Promise<DocumentEvaluation> {
+    if (!supabase || !this.isUUID(documentId)) throw new Error('Documento inválido');
+    const current = this.currentUser ?? (await this.loadCurrentUserFromStorage());
+    if (!current) throw new Error('Usuário não autenticado');
+    const doc = await this.getDocumentById(documentId);
+    if (!doc || doc.creatorId !== current.id) throw new Error('Apenas o criador do documento pode avaliar');
+    if (rating === 'regular' && (!comment || !comment.trim())) {
+      throw new Error('Para a opção "Pode melhorar", a descrição é obrigatória.');
+    }
+    const { data, error } = await supabase
+      .from('document_evaluations')
+      .upsert(
+        { document_id: documentId, creator_id: current.id, rating, comment: comment || null },
+        { onConflict: 'document_id' }
+      )
+      .select()
+      .single();
+    if (error) throw new Error(error.message);
+    return { documentId, rating: data.rating as 'good' | 'regular' | 'bad', comment: data.comment as string | null };
+  }
+
+  async getDocumentEvaluation(documentId: string): Promise<DocumentEvaluation | null> {
+    if (!supabase || !this.isUUID(documentId)) return null;
+    const { data, error } = await supabase
+      .from('document_evaluations')
+      .select('rating, comment')
+      .eq('document_id', documentId)
+      .maybeSingle();
+    if (error || !data) return null;
+    return { documentId, rating: data.rating as 'good' | 'regular' | 'bad', comment: data.comment as string | null };
   }
 
   /** Marca o documento como assinado (registra em document_signatures + atualiza documents) */
@@ -912,11 +970,15 @@ class APIService {
       id: data.id as string,
       projectId: data.project_id as string,
       name: data.nome as string,
+      creatorId: (data.creator_id as string) ?? '',
+      creatorName: '',
       currentVersionId: data.current_version_id as string,
+      createdAt: (data.created_at as string) ?? '',
       updatedAt: data.updated_at as string,
       content: data.conteudo as DocumentContent,
       version: 1,
       templateId: (data.template_id as string) ?? undefined,
+      securityLevel: ((data.security_level as string) || 'public') as Document['securityLevel'],
       signedAt: (data.signed_at as string) ?? null,
       reviewJustification: (data.review_justification as string) ?? null,
       signedBy: (data.signed_by as string) ?? null,
@@ -933,51 +995,95 @@ class APIService {
     if (templateId && this.isUUID(templateId)) {
       const model = await this.getDocumentModel(templateId);
       if (model?.templateContent) {
-        const sections = this.parseTemplateContentToSections(model.templateContent);
+        let sections = this.parseTemplateContentToSections(model.templateContent);
+        if (this.isFallbackSections(sections) && projectId) {
+          try {
+            let specGuidelines: string | undefined;
+            try {
+              if (model.specPath) {
+                const specContent = await fetchSpecContent(model.specPath);
+                if (specContent) specGuidelines = specContent;
+              }
+              if (model.skillPath) {
+                const skillContent = await downloadDocument('skill', model.skillPath);
+                if (skillContent) specGuidelines = (specGuidelines ? `${specGuidelines}\n\n--- SKILL ---\n${skillContent}` : `--- SKILL ---\n${skillContent}`);
+              }
+            } catch {
+              specGuidelines = undefined;
+            }
+            const { sections: proposed } = await proposeSectionsFromKnowledgeBase({
+              projectId,
+              documentType: model.type || undefined,
+              specGuidelines,
+            });
+            if (proposed?.length) {
+              sections = proposed.map(s => ({
+                id: s.id,
+                title: s.title,
+                content: '',
+                isEditable: true,
+                helpText: s.helpText,
+              }));
+            }
+          } catch (e) {
+            console.warn('[createDocument] Falha ao propor seções via RAG, usando fallback:', e);
+            sections = [{ id: 'section1', title: 'Seção 1', content: '', isEditable: true }];
+          }
+        }
         conteudo = { sections, aiGuidance: model.aiGuidance };
       }
     }
+    if (!conteudo.sections?.length) {
+      conteudo = { ...conteudo, sections: [{ id: 'section1', title: 'Seção 1', content: '', isEditable: true }] };
+    }
+    const seenIds = new Set<string>();
+    const conteudoSanitized: DocumentContent = {
+      sections: conteudo.sections.map((s, i) => {
+        let id = String(s?.id || `section${i + 1}`).slice(0, 100);
+        if (seenIds.has(id)) {
+          let suffix = 0;
+          while (seenIds.has(`${id}-${suffix}`)) suffix++;
+          id = `${id}-${suffix}`;
+        }
+        seenIds.add(id);
+        return {
+          id,
+          title: String(s?.title || 'Seção').slice(0, 500),
+          content: String(s?.content ?? ''),
+          isEditable: Boolean(s?.isEditable !== false),
+          helpText: s?.helpText ? String(s.helpText).slice(0, 1000) : undefined,
+          repeatable: s?.repeatable === true ? true : undefined,
+          planningInstruction: s?.planningInstruction ? String(s.planningInstruction).slice(0, 500) : undefined,
+        };
+      }),
+      aiGuidance: conteudo.aiGuidance ? String(conteudo.aiGuidance).slice(0, 2000) : undefined,
+    };
     const { data, error } = await supabase
       .from('documents')
       .insert({
-        nome: name,
+        nome: String(name).slice(0, 500),
         project_id: projectId,
         template_id: templateId || null,
-        conteudo,
+        conteudo: conteudoSanitized,
         creator_id: this.currentUser.id,
         security_level: securityLevel
       })
       .select()
       .single();
     if (error) {
+      const code = (error as { code?: string }).code;
       const msg = error.message?.includes('row-level security') ? 'Sem permissão para criar documentos.' : error.message;
-      throw new Error(msg);
+      const hint = code === '23503' ? ' Verifique se o projeto existe.' : code === '42501' ? ' Verifique suas permissões.' : '';
+      throw new Error(msg + hint);
     }
-    return {
-      id: data.id,
-      projectId: data.project_id,
-      name: data.nome,
-      currentVersionId: data.current_version_id,
-      createdAt: data.created_at,
-      updatedAt: data.updated_at,
-      content: data.conteudo as DocumentContent,
-      version: 1
-    };
+    return this.mapDocumentFromDb(data);
   }
 
   async listProjectDocuments(projectId: string): Promise<Document[]> {
     if (!supabase || !this.isUUID(projectId)) return [];
     const { data, error } = await supabase.from('documents').select('*').eq('project_id', projectId);
     if (error || !data) return [];
-    return data.map(d => ({
-      id: d.id,
-      projectId: d.project_id,
-      name: d.nome,
-      currentVersionId: d.current_version_id,
-      updatedAt: d.updated_at,
-      content: d.conteudo as DocumentContent,
-      version: 1
-    } as Document));
+    return data.map(d => this.mapDocumentFromDb(d as Record<string, unknown>));
   }
 
   async deleteDocument(_projectId: string, documentId: string): Promise<void> {
@@ -1273,6 +1379,8 @@ class APIService {
       isDraft: data.is_draft === true,
       aiGuidance: data.ai_guidance ?? undefined,
       specPath: data.spec_path ?? undefined,
+      skillPath: (data as { skill_path?: string }).skill_path ?? undefined,
+      exampleDocumentPath: (data as { example_document_path?: string }).example_document_path ?? undefined,
       creatorId: data.creator_id ?? undefined,
       isProtected: data.is_protected === true,
       originalTemplateContent: data.original_sections?.html ?? undefined,
@@ -1297,6 +1405,8 @@ class APIService {
       isDraft: t.is_draft === true,
       aiGuidance: t.ai_guidance ?? undefined,
       specPath: t.spec_path ?? undefined,
+      skillPath: (t as { skill_path?: string }).skill_path ?? undefined,
+      exampleDocumentPath: (t as { example_document_path?: string }).example_document_path ?? undefined,
       creatorId: t.creator_id ?? undefined,
       isProtected: t.is_protected === true,
       originalTemplateContent: t.original_sections?.html ?? undefined,
@@ -1312,6 +1422,8 @@ class APIService {
     isDraft?: boolean,
     aiGuidance?: string,
     specPath?: string,
+    skillPath?: string,
+    exampleDocumentPath?: string,
     isProtected?: boolean
   ): Promise<DocumentModel> {
     if (!supabase) throw new Error('Supabase não configurado');
@@ -1329,6 +1441,8 @@ class APIService {
       file_url: '',
       ai_guidance: aiGuidance || null,
       spec_path: specPath || null,
+      skill_path: skillPath || null,
+      example_document_path: exampleDocumentPath || null,
       creator_id: current.id,
       is_protected: isProtected === true,
       original_sections: isProtected ? sections : null
@@ -1347,6 +1461,8 @@ class APIService {
       isDraft: data.is_draft === true,
       aiGuidance: data.ai_guidance ?? aiGuidance,
       specPath: data.spec_path ?? specPath,
+      skillPath: (data as { skill_path?: string }).skill_path ?? skillPath,
+      exampleDocumentPath: (data as { example_document_path?: string }).example_document_path ?? exampleDocumentPath,
       creatorId: data.creator_id ?? current.id
     };
   }
@@ -1363,7 +1479,9 @@ class APIService {
       sections: { html: updatedModel.templateContent ?? '' },
       global: updatedModel.isGlobal === true,
       ai_guidance: updatedModel.aiGuidance ?? null,
-      spec_path: updatedModel.specPath ?? null
+      spec_path: updatedModel.specPath ?? null,
+      skill_path: updatedModel.skillPath ?? null,
+      example_document_path: updatedModel.exampleDocumentPath ?? null
     };
     if (updatedModel.projectId !== undefined) updateData.project_id = updatedModel.projectId || null;
     const { error } = await supabase.from('templates').update(updateData).eq('id', updatedModel.id);
@@ -1430,6 +1548,54 @@ class APIService {
     return { ...model, templateContent: original };
   }
 
+  /** Lista Specs cadastrados no banco (para associar a tipos de documento) */
+  async listSpecs(): Promise<{ id: string; path: string; label: string }[]> {
+    if (!supabase) return [];
+    const { data, error } = await supabase.from('specs').select('id, path, label').order('label');
+    if (error || !data) return [];
+    return data.map(s => ({ id: s.id, path: (s as { path: string }).path, label: (s as { label: string }).label }));
+  }
+
+  async listDocumentTypes(): Promise<{ id: string; name: string }[]> {
+    if (!supabase) return [];
+    const { data, error } = await supabase.from('document_types').select('id, name').order('name');
+    if (error || !data) return [];
+    return data.map(d => ({ id: d.id, name: d.name }));
+  }
+
+  async createDocumentType(name: string): Promise<{ id: string; name: string }> {
+    if (!supabase) throw new Error('Supabase não configurado');
+    const current = this.currentUser ?? (await this.loadCurrentUserFromStorage());
+    if (!current) throw new Error('Usuário não autenticado');
+    const trimmed = (name || '').trim();
+    if (!trimmed) throw new Error('Nome do tipo de documento é obrigatório');
+    const { data, error } = await supabase
+      .from('document_types')
+      .insert({ name: trimmed })
+      .select('id, name')
+      .single();
+    if (error) {
+      if (error.code === '23505') throw new Error('Este tipo de documento já existe.');
+      throw new Error(error.message);
+    }
+    return { id: data.id, name: data.name };
+  }
+
+  async updateDocumentType(id: string, updates: { name?: string }): Promise<{ id: string; name: string }> {
+    if (!supabase || !this.isUUID(id)) throw new Error('Tipo inválido');
+    const current = this.currentUser ?? (await this.loadCurrentUserFromStorage());
+    if (!current) throw new Error('Usuário não autenticado');
+    const payload: Record<string, unknown> = {};
+    if (updates.name !== undefined) payload.name = updates.name.trim();
+    if (Object.keys(payload).length === 0) {
+      const { data } = await supabase.from('document_types').select('id, name').eq('id', id).single();
+      return data ? { id: data.id, name: data.name } : { id, name: '' };
+    }
+    const { data, error } = await supabase.from('document_types').update(payload).eq('id', id).select('id, name').single();
+    if (error) throw new Error(error.message);
+    return { id: data.id, name: data.name };
+  }
+
   async getLocalModelDrafts(): Promise<DocumentModel[]> {
     const drafts = await localDb.getModelDrafts();
     return drafts.map(d => ({
@@ -1443,11 +1609,13 @@ class APIService {
       isDraft: d.isDraft,
       aiGuidance: d.aiGuidance,
       specPath: d.specPath,
+      skillPath: d.skillPath,
+      exampleDocumentPath: d.exampleDocumentPath,
       isLocalDraft: true
     }));
   }
 
-  async saveLocalModelDraft(draft: { id: string; name: string; type: string; templateContent: string; aiGuidance?: string; specPath?: string; isDraft: boolean }): Promise<void> {
+  async saveLocalModelDraft(draft: { id: string; name: string; type: string; templateContent: string; aiGuidance?: string; specPath?: string; skillPath?: string; exampleDocumentPath?: string; isDraft: boolean }): Promise<void> {
     await localDb.saveModelDraft(draft);
   }
 
@@ -1593,9 +1761,14 @@ class APIService {
   private decodeHtmlEntities(input: string): string { try { const doc = new DOMParser().parseFromString(input, 'text/html'); return doc.documentElement.textContent || input; } catch { return input; } }
   private parseTemplateContentToSections(templateContent: string): DocumentSection[] {
     const html = templateContent || ''; const sections: DocumentSection[] = [];
-    try { const doc = new DOMParser().parseFromString(html, 'text/html'); const fields = doc.querySelectorAll('.sgid-metadata-field'); fields.forEach((el, i) => { sections.push({ id: el.getAttribute('data-field-id') || `field-${i}`, title: this.decodeHtmlEntities(el.getAttribute('data-field-title') || 'Campo'), content: '', isEditable: true, helpText: this.decodeHtmlEntities(el.getAttribute('data-field-help') || '') || undefined, repeatable: el.getAttribute('data-repeatable') === 'true', planningInstruction: this.decodeHtmlEntities(el.getAttribute('data-planning-instruction') || '') || undefined }); }); } catch {}
+    try { const doc = new DOMParser().parseFromString(html, 'text/html'); const fields = doc.querySelectorAll('.sgid-metadata-field'); fields.forEach((el, i) => { sections.push({ id: el.getAttribute('data-field-id') || `field-${i}`, title: this.decodeHtmlEntities(el.getAttribute('data-field-title') || 'Campo'), content: '', isEditable: true, helpText: this.decodeHtmlEntities(el.getAttribute('data-field-help') || '') || undefined, repeatable: el.getAttribute('data-repeatable') === 'true', planningInstruction: this.decodeHtmlEntities(el.getAttribute('data-planning-instruction') || '') || undefined, parentFieldId: el.getAttribute('data-parent-field-id') || el.getAttribute('data-topic-id') || undefined }); }); } catch {}
     if (sections.length === 0) { const legacyRegex = /<!-- EDITABLE_SECTION_START:([^:]+):([^>]+) -->(.*?)<!-- EDITABLE_SECTION_END -->/gs; let match; while ((match = legacyRegex.exec(html)) !== null) { sections.push({ id: match[1], title: this.decodeHtmlEntities(match[2]), content: '', isEditable: true }); } }
     return sections.length > 0 ? sections : [{ id: 'section1', title: 'Seção 1', content: '', isEditable: true }];
+  }
+
+  /** Retorna true se as seções são o fallback genérico (sem metadados definidos no template) */
+  private isFallbackSections(sections: DocumentSection[]): boolean {
+    return sections.length === 1 && sections[0].title === 'Seção 1' && sections[0].id === 'section1';
   }
 
   async addSectionToDocument(documentId: string, title: string, index?: number): Promise<Document> {

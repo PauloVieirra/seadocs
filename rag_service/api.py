@@ -1,5 +1,7 @@
 """API FastAPI do serviço RAG."""
+import json
 import os
+import re
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Optional
@@ -9,9 +11,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from supabase import create_client, Client
 
-from chroma_manager import get_or_create_collection
+from chroma_manager import get_or_create_collection, get_or_create_client
 from document_processor import (
     index_document,
+    index_positive_feedback as _index_positive_feedback,
+    delete_positive_feedback as _delete_positive_feedback,
     delete_document_from_chroma,
     compute_file_hash,
 )
@@ -35,9 +39,38 @@ _CONSTITUTIONAL_RULES_FALLBACK = (
     "5. O documento deve conter APENAS o conteúdo final esperado para a seção.\n"
     "6. O Spec é APENAS regras de estrutura/formato. NUNCA copie, cite ou inclua texto do Spec no documento. "
     "O conteúdo vem SOMENTE dos dados do projeto (base de conhecimento).\n"
-    "7. NÃO pule para a próxima sessão deixando texto incompleto. Se precisar mudar de sessão, remova o texto incompleto e complete na sessão adequada (ou crie sessão complementar). Pode encurtar uma sessão e criar outra para o restante — não há limite de sessões.\n"
-    "8. Ao finalizar o documento, executar revisão obrigatória. Status na tela: Revisando documento, procurando erros, ajustando sessão X."
+    "7. NÃO INVENTE conteúdo. Use APENAS informações presentes nos [DADOS DO PROJETO] recuperados da base. "
+    "Se não houver informação para a seção, escreva de forma breve que não há dados disponíveis ou deixe em branco.\n"
+    "8. As seções são PARTES de um único documento, NÃO documentos separados. A partir da seção 2, é PROIBIDO repetir introdução, objetivos, visão geral ou contexto.\n"
+    "9. NÃO pule para a próxima sessão deixando texto incompleto. Cada seção deve terminar com frases e parágrafos completos. Se precisar mudar de sessão, remova o texto incompleto e complete na sessão adequada (ou crie sessão complementar). Pode encurtar uma sessão e criar outra para o restante — não há limite de sessões.\n"
+    "10. Ao finalizar o documento, executar revisão obrigatória. Status na tela: Revisando documento, procurando erros, ajustando sessão X.\n"
+    "11. Ignore as tags de markdown no documento gerado; elas são apenas para formatação no editor de texto."
 )
+
+# Prompt de correção — acionado quando o usuário escolhe recriar documento (avaliação "não ficou bom" ou "pode melhorar")
+_PROMPT_CORRECAO_DOCUMENTO = """
+O usuário solicitou RECRIAR o documento porque não ficou bom. Execute as seguintes etapas ao gerar cada seção:
+
+1. ANÁLISE: Identifique seções duplicadas, requisitos repetidos, inconsistências entre níveis (épico, feature, user story, requisito funcional) e problemas de clareza.
+
+2. LIMPEZA: Remova repetições de texto, seções duplicadas, frases redundantes e conteúdo que não adiciona nova informação.
+
+3. REESTRUTURAÇÃO: Organize na estrutura profissional:
+   - Visão Geral | Objetivo do Sistema | Escopo (Incluído/Fora)
+   - Épicos → Features → User Stories (Como [usuário] Quero [ação] Para que [benefício])
+   - Requisitos Funcionais (RF01, RF02...) | Auditoria e Conformidade
+   - Cenários Especiais | Benefícios Esperados | Evolução do Produto
+
+4. MELHORIAS: Clareza, precisão técnica, consistência entre seções.
+
+5. NORMALIZAÇÃO: Cada requisito apenas uma vez; features derivam de épicos; user stories de features; RFs objetivos.
+
+6. FORMATAÇÃO: HTML limpo e profissional.
+
+IMPORTANTE: NÃO invente funcionalidades novas. NÃO altere a intenção do sistema. Apenas organize, corrija e consolide.
+
+A seguir está o documento original para revisão:
+"""
 
 
 def _load_constitutional_rules() -> str:
@@ -96,6 +129,17 @@ class DeleteRequest(BaseModel):
     document_id: str
 
 
+class PositiveFeedbackSection(BaseModel):
+    title: str
+    content: str
+
+
+class IndexPositiveFeedbackRequest(BaseModel):
+    project_id: str
+    document_id: str
+    sections: list[PositiveFeedbackSection]
+
+
 class DocumentSectionInput(BaseModel):
     id: str
     title: str
@@ -118,13 +162,43 @@ class GenerateSectionRequest(BaseModel):
     previous_sections_html: Optional[str] = None  # HTML completo das seções já geradas (partes do mesmo documento)
     section_index: Optional[int] = None  # Índice desta seção (0-based)
     total_sections: Optional[int] = None  # Total de seções do documento
-    spec_guidelines: Optional[str] = None  # Diretrizes do documento Spec associado ao modelo
+    spec_guidelines: Optional[str] = None  # Diretrizes Spec + Skill (formato: --- SPEC ---\n...\n--- SKILL ---\n...)
+    document_type: Optional[str] = None  # Tipo documental do modelo (ex.: Requisito) — a IA usa tipo + spec para montar a estrutura
+    creator_feedback: Optional[str] = None  # Avaliação anterior do criador (rating + comment) para recriação
+    example_document: Optional[str] = None  # Documento de exemplo — a IA usa para entender organização e formato esperado
+    parent_field_id: Optional[str] = None  # ID do metadado pai — a IA formata como item filho da árvore organizacional
+    parent_field_title: Optional[str] = None  # Título do metadado pai
+
+
+def _parse_spec_and_skill(combined: Optional[str]) -> tuple[str, str]:
+    """
+    Extrai Spec e Skill de spec_guidelines (formato: --- SPEC ---\\n...\\n--- SKILL ---\\n...).
+    Retorna (spec_content, skill_content). O Skill define o papel/tarefa da IA.
+    """
+    spec_part = ""
+    skill_part = ""
+    if combined and combined.strip():
+        if "--- SKILL ---" in combined:
+            before, after = combined.split("--- SKILL ---", 1)
+            spec_part = before.replace("--- SPEC ---", "").strip()
+            skill_part = after.strip()
+        else:
+            spec_part = combined.replace("--- SPEC ---", "").strip()
+    return spec_part, skill_part
+
+
+class DocumentSectionForChat(BaseModel):
+    """Seção do documento para o chat entender o contexto e ações disponíveis."""
+    id: str
+    title: str
+    index: int  # 1-based para o usuário ("seção 2" = index 2)
 
 
 class ChatRequest(BaseModel):
     project_id: str
     message: str
     document_id: Optional[str] = None
+    document_sections: Optional[list[DocumentSectionForChat]] = None  # Seções editáveis quando document_id presente
 
 
 class HealthResponse(BaseModel):
@@ -211,6 +285,34 @@ def index(request: IndexRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.post("/index-positive-feedback")
+def index_positive_feedback_endpoint(request: IndexPositiveFeedbackRequest):
+    """
+    Indexa documento avaliado como 'bom' pelo criador no RAG.
+    As seções são adicionadas como exemplos positivos para refinar gerações futuras.
+    """
+    try:
+        sections = [{"title": s.title, "content": s.content} for s in request.sections]
+        count = _index_positive_feedback(
+            document_id=request.document_id,
+            project_id=request.project_id,
+            sections=sections,
+        )
+        return {"status": "ok", "chunks_indexed": count}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/remove-positive-feedback")
+def remove_positive_feedback_endpoint(request: DeleteRequest):
+    """Remove feedback positivo de um documento (ex.: quando avaliado como 'não ficou bom')."""
+    try:
+        count = _delete_positive_feedback(request.document_id)
+        return {"status": "ok", "chunks_removed": count}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.post("/delete")
 def delete_from_rag(request: DeleteRequest):
     """Remove documento do ChromaDB (e opcionalmente atualiza banco)."""
@@ -222,6 +324,25 @@ def delete_from_rag(request: DeleteRequest):
                 {"chunk_count": 0, "file_hash": None}
             ).eq("id", request.document_id).execute()
         return {"document_id": request.document_id, "chunks_removed": count}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/clear-all")
+def clear_all_rag():
+    """
+    Limpa todo o ChromaDB (base vetorial RAG).
+    Mantém regras e orientações (Spec) que estão no código.
+    Útil para resetar o sistema quando há erros acumulados.
+    """
+    try:
+        client = get_or_create_client()
+        try:
+            client.delete_collection(COLLECTION_NAME)
+        except Exception:
+            pass  # collection pode não existir
+        get_or_create_collection()  # recria vazia
+        return {"status": "cleared", "message": "Base RAG limpa. Será necessário reindexar os documentos."}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -271,7 +392,7 @@ Resumo (em português):"""
                     "model": OLLAMA_SUMMARY_MODEL,
                     "prompt": prompt,
                     "stream": False,
-                    "options": {"temperature": 0.3, "num_predict": 800},
+                    "options": {"temperature": 0.1, "num_predict": 1000},
                 },
             )
             resp.raise_for_status()
@@ -319,25 +440,45 @@ def _get_rag_context(project_id: str, limit: int = 15) -> str:
         docs = docs[0]
     if not docs:
         return ""
-    return "\n\n---\n\n".join(docs[:10])[:6000]
+    return "\n\n---\n\n".join(docs[:15])[:8000]
 
 
-def _call_ollama(prompt: str, temperature: float = 0.3, num_predict: int = 800, timeout: int = 240) -> str:
-    """Chama Ollama para geração de texto."""
+def _call_ollama(prompt: str, temperature: float = 0.1, num_predict: int = 800, timeout: int = 240) -> str:
+    """Chama Ollama para geração de texto. Retry em caso de Broken pipe ou erro de conexão."""
+    import time
     import httpx
     from config import OLLAMA_URL, OLLAMA_SUMMARY_MODEL
-    with httpx.Client(timeout=timeout) as client:
-        resp = client.post(
-            f"{OLLAMA_URL}/api/generate",
-            json={
-                "model": OLLAMA_SUMMARY_MODEL,
-                "prompt": prompt,
-                "stream": False,
-                "options": {"temperature": temperature, "num_predict": num_predict},
-            },
-        )
-        resp.raise_for_status()
-        return resp.json().get("response", "").strip()
+
+    payload = {
+        "model": OLLAMA_SUMMARY_MODEL,
+        "prompt": prompt,
+        "stream": False,
+        "options": {"temperature": temperature, "num_predict": num_predict},
+    }
+    url = f"{OLLAMA_URL}/api/generate"
+    last_err = None
+    for attempt in range(3):
+        try:
+            with httpx.Client(timeout=timeout) as client:
+                resp = client.post(url, json=payload)
+                resp.raise_for_status()
+                return resp.json().get("response", "").strip()
+        except (BrokenPipeError, ConnectionError, httpx.ConnectError, httpx.ReadTimeout) as e:
+            last_err = e
+            if attempt < 2:
+                time.sleep(1.0 * (attempt + 1))
+            else:
+                raise
+        except OSError as e:
+            if getattr(e, "errno", None) == 32:  # Broken pipe
+                last_err = e
+                if attempt < 2:
+                    time.sleep(1.0 * (attempt + 1))
+                else:
+                    raise
+            else:
+                raise
+    return ""
 
 
 @app.post("/generate-document-understanding")
@@ -372,7 +513,7 @@ Escreva um resumo objetivo (2 a 4 parágrafos) do seu entendimento sobre:
 3. O que você pretende escrever em cada parágrafo ao gerar o documento
 
 Resumo (em português):"""
-        summary = _call_ollama(prompt, temperature=0.3, num_predict=1000)
+        summary = _call_ollama(prompt, temperature=0.1, num_predict=1000)
         col = get_or_create_collection()
         results = col.get(
             where={"project_id": {"$eq": request.project_id}},
@@ -398,82 +539,201 @@ def generate_section_content(request: GenerateSectionRequest):
     try:
         col = get_or_create_collection()
         query_text = f"{request.section_title} {request.help_text or ''}".strip()
-        results = col.query(
-            query_texts=[query_text or "documentação do projeto"],
-            n_results=8,
-            where={"project_id": {"$eq": request.project_id}},
-        )
-        docs = results.get("documents", [[]])[0]
-        # Limita contexto RAG a 3000 chars para não inflar o prompt além do que phi3 aguenta
-        rag_context = "\n\n".join(docs[:4])[:3000] if docs else _get_rag_context(request.project_id, limit=8)[:3000]
+        try:
+            results = col.query(
+                query_texts=[query_text or "documentação do projeto"],
+                n_results=12,
+                where={"project_id": {"$eq": str(request.project_id)}},
+            )
+            raw_docs = results.get("documents") or [[]]
+            docs = raw_docs[0] if isinstance(raw_docs, list) and raw_docs else []
+            if not isinstance(docs, list):
+                docs = []
+            docs = [str(d) for d in docs if d]
+            rag_context = "\n\n".join(docs[:8])[:6000] if docs else _get_rag_context(request.project_id, limit=12)[:6000]
+        except Exception:
+            try:
+                rag_context = _get_rag_context(request.project_id, limit=12)[:6000]
+            except Exception:
+                rag_context = ""
+
+        # Posição da seção no documento — CRÍTICO para evitar repetição
+        section_idx = request.section_index if request.section_index is not None else 0
+        total = request.total_sections if request.total_sections and request.total_sections > 0 else 1
+        is_first_section = section_idx == 0
+
+        section_pos_block = f"""
+POSIÇÃO NO DOCUMENTO: Esta é a seção {section_idx + 1} de {total} de UM ÚNICO DOCUMENTO.
+As seções são PARTES do mesmo documento, NÃO documentos separados.
+"""
+        if is_first_section:
+            section_pos_block += """
+PRIMEIRA SEÇÃO: Pode incluir introdução/contexto inicial se pertinente. As seções seguintes NÃO repetirão isso.
+"""
+        else:
+            section_pos_block += """
+SEÇÃO INTERMEDIÁRIA/FINAL: É PROIBIDO incluir introdução, objetivos, visão geral, contexto do projeto ou apresentação.
+Esses elementos JÁ ESTÃO nas seções anteriores. Comece DIRETO no conteúdo específico desta seção.
+NÃO repita cabeçalhos de documento, resumos executivos ou "Este documento apresenta...".
+"""
+
+        # Seção filha na árvore organizacional — formatação hierárquica
+        parent_hierarchy_block = ""
+        if request.parent_field_title and request.parent_field_title.strip():
+            parent_hierarchy_block = f"""
+HIERARQUIA: Esta seção é FILHA de "{request.parent_field_title.strip()}" na árvore organizacional.
+Formate o conteúdo para que o leitor perceba claramente a hierarquia:
+- Use listas com marcadores (círculo vazio, <ul><li>) para itens subordinados.
+- Cada item deve ser um <li> dentro de <ul>.
+- Exemplo: <ul><li>Número (Número automático)</li><li>Título</li><li>Ementa</li></ul>
+- O texto deve parecer uma lista indentada sob o pai, como em requisitos funcionais (RF09: ... com subitens).
+"""
 
         # Contexto das seções anteriores: prioriza HTML completo (partes do mesmo documento)
-        # para que a IA entenda que NÃO deve repetir introduções, objetivos, visão geral etc.
-        section_pos = ""
-        if request.section_index is not None and request.total_sections is not None and request.total_sections > 0:
-            section_pos = f"\nEsta é a seção {request.section_index + 1} de {request.total_sections} de UM ÚNICO DOCUMENTO."
-
+        is_correction_mode = bool(request.creator_feedback and request.creator_feedback.strip())
         ctx_prev = ""
         if request.previous_sections_html and request.previous_sections_html.strip():
-            ctx_prev = f"""
-SEÇÕES JÁ ESCRITAS DESTE MESMO DOCUMENTO (não repita introduções, objetivos, visão geral ou contexto):
+            if is_correction_mode:
+                # Em modo correção, o documento vai no feedback_block (após "A seguir está o documento original para revisão:")
+                ctx_prev = ""
+            else:
+                ctx_prev = f"""
+=== SEÇÕES JÁ ESCRITAS (partes do MESMO documento — NÃO repita) ===
+O texto abaixo já foi escrito. Sua seção é CONTINUAÇÃO. PROIBIDO repetir introdução, objetivos, visão geral ou contexto.
 ---
 {request.previous_sections_html[:6000]}
 ---
-IMPORTANTE: As seções acima fazem parte do MESMO documento. Sua seção é uma CONTINUAÇÃO. NÃO repita o que já foi escrito.
+=== FIM DAS SEÇÕES ANTERIORES ===
 """
         elif request.document_context:
             ctx_prev = f"\nSeções anteriores (não repita):\n{request.document_context[:800]}\n"
 
+        # Avaliação anterior do criador (quando recriando o documento) — aciona prompt de correção
+        feedback_block = ""
+        if request.creator_feedback and request.creator_feedback.strip():
+            doc_original = ""
+            if request.previous_sections_html and request.previous_sections_html.strip():
+                doc_original = f"\n{request.previous_sections_html[:6000]}\n"
+            feedback_block = f"""
+=== PROMPT DE CORREÇÃO (usuário solicitou recriar — documento não ficou bom) ===
+{_PROMPT_CORRECAO_DOCUMENTO}
+{doc_original}
+=== AVALIAÇÃO DO CRIADOR ===
+{request.creator_feedback.strip()[:800]}
+=== FIM DA AVALIAÇÃO ===
+
+Aplique o prompt de correção acima ao gerar esta seção. Ajuste o conteúdo com base na avaliação para melhorar o resultado.
+"""
+
+        # Documento de exemplo: referência de organização e formato esperado
+        example_block = ""
+        if request.example_document and request.example_document.strip():
+            example_excerpt = request.example_document.strip()[:4000]
+            example_block = f"""
+=== DOCUMENTO DE EXEMPLO (referência de organização e formato — NÃO copiar literalmente) ===
+Use como referência para entender: estrutura de seções, tom, formatação, nível de detalhe.
+O CONTEÚDO vem dos [DADOS DO PROJETO], mas a organização e estilo devem se assemelhar ao exemplo.
+---
+{example_excerpt}
+---
+=== FIM DO EXEMPLO ===
+
+"""
+
         # Regras constitucionais: Spec/REGRAS_CONSTITUCIONAIS.md (fonte única)
         constitutional_rules = _load_constitutional_rules()
 
-        part_instruction = """CONTEXTO CRÍTICO: Você está gerando UMA PARTE de um documento maior, não um documento independente.
-- NÃO inclua introduções, objetivos, visão geral ou contexto que já aparecem em seções anteriores.
-- NÃO repita cabeçalhos de documento, apresentações ou resumos executivos.
-- Escreva APENAS o conteúdo específico desta seção, como continuação natural do documento."""
+        part_instruction = """REGRAS DE CONTINUIDADE:
+- Cada seção é UMA PARTE de um documento maior. NUNCA trate como documento independente.
+- NÃO repita introduções, objetivos, visão geral ou contexto entre seções.
+- Escreva APENAS o conteúdo específico desta seção, como continuação natural.
+- CADA SEÇÃO DEVE TERMINAR COMPLETA: não deixe frases ou parágrafos incompletos. Se o limite de tokens for atingido, encerre a última frase de forma coerente antes de parar.
+- Mantenha coerência e estrutura: o documento final em modo de visualização deve fluir como um texto único e contínuo."""
 
-        if request.spec_guidelines:
-            spec_excerpt = request.spec_guidelines[:2500]
-            prompt = f"""Você é um redator técnico. Gere o conteúdo HTML da seção "{request.section_title}" de um documento.{section_pos}
-{f'Orientação: {request.help_text}' if request.help_text else ''}
+        spec_content, skill_content = _parse_spec_and_skill(request.spec_guidelines)
+        # O Skill define o papel e a tarefa da IA. Se não houver Skill, usa fallback.
+        task_definition = skill_content[:2000].strip() if skill_content else "Você é um analista de requisitos."
 
-{part_instruction}
-
-REGRA CRÍTICA — O SPEC ABAIXO É APENAS PARA ESTRUTURA:
-O Spec contém SOMENTE regras de formatação e organização (ex.: usar EP01, FT02, tabelas, etc.).
-O Spec NÃO é fonte de conteúdo. É PROIBIDO copiar, citar ou incluir QUALQUER texto do Spec no documento.
-O documento deve conter APENAS informações extraídas dos DADOS DO PROJETO (base de conhecimento).
-Se o Spec mencionar exemplos, títulos ou descrições, eles são APENAS ilustrações — NÃO os use no texto gerado.
-
-REGRAS DE ESTRUTURA (extraia só a forma, ignore o texto como conteúdo):
----
-{spec_excerpt}
----
-
-DADOS DO PROJETO (fonte ÚNICA de conteúdo):
-{rag_context}
-{ctx_prev}
+        if spec_content or skill_content:
+            spec_excerpt = spec_content[:2500] if spec_content else ""
+            doc_type_line = f"Tipo do documento: {request.document_type.strip()}." if request.document_type and request.document_type.strip() else ""
+            help_line = f"Orientação da seção (NÃO copie como texto): {request.help_text}" if request.help_text else ""
+            prompt = f"""=== REGRAS ABSOLUTAS (violação invalida o documento) ===
 {constitutional_rules}
-SAÍDA: apenas HTML válido DESTA SEÇÃO (sem <html>, <head>, <body>). Use <h2>, <h3>, <p>, <strong>, <ul>, <li>, <table>. Sem comentários da IA.
+Regra adicional — spec é referência de estrutura: O bloco [ESTRUTURA] abaixo contém EXEMPLOS, INSTRUÇÕES e EXPLICAÇÕES para orientar a IA. Nenhum texto do Spec pode aparecer no documento. Exemplos proibidos de cópia literal: "Objetivo, público-alvo", "O que é o sistema", "Como [perfil], quero [ação]", "[Épico 1]", "[Nome da Feature]", "Incluído / Fora de escopo". Use o Spec APENAS para entender a hierarquia e numeração (EP01 → FT01 → HU001 → RF01). O CONTEÚDO vem exclusivamente dos [DADOS DO PROJETO].
+=== FIM DAS REGRAS ===
+
+=== TAREFA (definida pelo documento Skill) ===
+{task_definition}
+
+Gere o conteúdo HTML da seção "{request.section_title}".
+{section_pos_block}
+{parent_hierarchy_block}
+{doc_type_line}
+{help_line}
+{part_instruction}
+=== FIM DA TAREFA ===
+
+=== ESTRUTURA (somente hierarquia e numeração — NÃO copiar nenhum texto) ===
+{spec_excerpt}
+=== FIM DA ESTRUTURA ===
+{example_block}
+=== DADOS DO PROJETO (única fonte de conteúdo) ===
+{rag_context}
+=== FIM DOS DADOS ===
+{ctx_prev}
+{feedback_block}
+=== SAÍDA ===
+Retorne APENAS HTML válido desta seção (sem <html>, <head>, <body>). Tags permitidas: <h2>, <h3>, <p>, <strong>, <ul>, <li>, <table>, <tr>, <td>, <th>. Proibido: comentários, explicações, raciocínio da IA, texto do Spec, texto copiado da base.
 
 HTML:"""
         else:
-            prompt = f"""Você é um redator técnico. Gere o conteúdo HTML da seção "{request.section_title}" em português formal.{section_pos}
-{f'Orientação: {request.help_text}' if request.help_text else ''}
-
-{part_instruction}
-
-DADOS DO PROJETO:
-{rag_context}
-{ctx_prev}
+            doc_type_line = f"Tipo do documento: {request.document_type.strip()}." if request.document_type and request.document_type.strip() else ""
+            help_line = f"Orientação da seção: {request.help_text}" if request.help_text else ""
+            prompt = f"""=== REGRAS ABSOLUTAS (violação invalida o documento) ===
 {constitutional_rules}
-SAÍDA: apenas HTML válido DESTA SEÇÃO (sem <html>, <head>, <body>). Use <p>, <strong>, <ul>, <li>. Sem comentários da IA.
+=== FIM DAS REGRAS ===
+
+=== TAREFA (definida pelo documento Skill) ===
+{task_definition}
+
+Gere o conteúdo HTML da seção "{request.section_title}" em português formal.
+{section_pos_block}
+{parent_hierarchy_block}
+{doc_type_line}
+{help_line}
+{part_instruction}
+=== FIM DA TAREFA ===
+{example_block}
+=== DADOS DO PROJETO (única fonte de conteúdo) ===
+{rag_context}
+=== FIM DOS DADOS ===
+{ctx_prev}
+{feedback_block}
+=== SAÍDA ===
+Retorne APENAS HTML válido desta seção (sem <html>, <head>, <body>). Tags permitidas: <h2>, <h3>, <p>, <strong>, <ul>, <li>. Proibido: comentários, explicações ou raciocínio da IA.
 
 HTML:"""
 
-        content = _call_ollama(prompt, temperature=0.3, num_predict=800, timeout=240)
+        print(prompt)
+        try:
+            content = _call_ollama(prompt, temperature=0.1, num_predict=2000, timeout=300)
+        except Exception as ollama_err:
+            err_msg = str(ollama_err)
+            if "Broken pipe" in err_msg or "Errno 32" in err_msg:
+                raise HTTPException(
+                    status_code=503,
+                    detail="Ollama fechou a conexão. Verifique se está rodando (ollama serve) e se o modelo está carregado.",
+                )
+            if "Connection" in err_msg or "timeout" in err_msg.lower():
+                raise HTTPException(
+                    status_code=503,
+                    detail="Não foi possível conectar ao Ollama. Verifique se está rodando em localhost:11434.",
+                )
+            raise HTTPException(status_code=500, detail=f"Erro ao gerar conteúdo: {err_msg}")
         return {"content": content or ""}
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -499,12 +759,38 @@ def chat(request: ChatRequest):
             rag_context = "Ainda não há documentação indexada na base de conhecimento deste projeto."
 
         if request.document_id:
-            system_instruction = """Você é um assistente especializado em documentação de projetos.
-Responda em português, de forma clara e objetiva.
-O usuário está editando um documento. Use o contexto da base de conhecimento para responder perguntas sobre esse documento e o projeto.
-Se o usuário pedir para gerar ou preencher o documento, sugira o botão "Gerar tudo com IA" no editor.
+            sections_info = ""
+            if request.document_sections:
+                sections_info = "\nSeções do documento (número = índice para o usuário):\n" + "\n".join(
+                    f"  {s.index}. {s.title}" for s in request.document_sections
+                )
+            system_instruction = f"""Você é um assistente especializado em documentação de projetos.
+O usuário está editando um documento. Use o contexto da base de conhecimento para responder.
+{sections_info}
 
-REGRA OBRIGATÓRIA — fora do escopo: Se a pergunta está fora do escopo do projeto ou NÃO existe informação sobre o assunto na base de conhecimento abaixo, responda APENAS: "Não há informações sobre isso na documentação deste projeto." NÃO sugira criar documentos, usar botões, inventar procedimentos ou dar alternativas."""
+REGRA CRÍTICA — DIFERENCIE PERGUNTA DE PEDIDO DE ALTERAÇÃO:
+- PERGUNTA (como?, quando?, onde?, o que?, qual?): o usuário quer uma RESPOSTA. Responda com base na base de conhecimento. NÃO inclua [SEADOCS_ACTION]. Apenas responda.
+- PEDIDO DE ALTERAÇÃO (corrija, refaça, adicione, altere, melhore, inclua no documento): o usuário quer MODIFICAR o documento. Aí sim inclua [SEADOCS_ACTION].
+
+Exemplo PERGUNTA → só responder: "como o cliente faz reserva?" → responda explicando com base nos dados. Sem bloco.
+Exemplo PEDIDO → incluir bloco: "adicione na seção 2 como o cliente faz reserva" → inclua [SEADOCS_ACTION].
+
+Quando for PEDIDO de alteração (não pergunta):
+- regenerate_all: repetição em várias seções, "refaça o documento", "todas as seções".
+- regenerate_section: usuário citar número de seção (ex: "corrija a seção 2").
+
+Bloco só para pedidos de alteração:
+[SEADOCS_ACTION]
+{{"type": "regenerate_all", "instruction": "instrução completa"}}
+[/SEADOCS_ACTION]
+ou
+[SEADOCS_ACTION]
+{{"type": "regenerate_section", "section_index": N, "instruction": "instrução completa"}}
+[/SEADOCS_ACTION]
+
+O campo "instruction" deve preservar TODOS os detalhes que o usuário mencionou (ex: se citar "telefone, WhatsApp e Instagram", inclua isso na instruction, não resuma como "vários canais").
+
+REGRA — fora do escopo: Se NÃO há informação na base, responda: "Não há informações sobre isso na documentação deste projeto." """
         else:
             system_instruction = """Você é um assistente especializado em documentação de projetos.
 Responda em português, de forma clara e objetiva.
@@ -524,14 +810,56 @@ Pergunta do usuário: {request.message}
 
 Resposta:"""
 
-        response = _call_ollama(prompt, temperature=0.5, num_predict=1500)
+        response = _call_ollama(prompt, temperature=0.1, num_predict=1500)
 
-        # Detecta pedidos de geração para sugerir ação ao frontend
-        msg_lower = request.message.lower().strip()
-        gerar_keywords = ["gere", "gerar", "crie", "criar", "preencha", "preencher", "escreva", "escrever", "produza", "produzir"]
+        # Parse ação estruturada do bloco [SEADOCS_ACTION] na resposta
         suggested_action = None
-        if any(kw in msg_lower for kw in gerar_keywords) and any(w in msg_lower for w in ["documento", "documentos", "parágrafo", "parágrafos", "seção", "seções"]):
-            suggested_action = "generate_document"
+        action_match = re.search(r"\[SEADOCS_ACTION\]\s*(.*?)\s*\[/SEADOCS_ACTION\]", response or "", re.DOTALL | re.IGNORECASE)
+        if action_match:
+            try:
+                action_json = json.loads(action_match.group(1).strip())
+                action_type = action_json.get("type")
+                instruction = (action_json.get("instruction") or "").strip() or None
+
+                # Fallback: se a mensagem indica problema em TODO o documento, forçar regenerate_all
+                msg_lower = request.message.lower()
+                whole_doc_keywords = ["todas as seções", "todas as sessões", "em todas as seções", "em todas as sessões", "o documento está repetindo", "documento repetindo", "seções repetindo", "refaça", "recreie", "recrie"]
+                if any(kw in msg_lower for kw in whole_doc_keywords) and action_type == "regenerate_section":
+                    action_type = "regenerate_all"
+
+                # Se instruction está vazia ou é texto de resposta (não instrução), usa a mensagem do usuário
+                bad_instructions = ("executando", "correção solicitada", "solicitada", "em andamento")
+                if not instruction or any(b in (instruction or "").lower() for b in bad_instructions):
+                    instruction = request.message.strip()[:400]
+
+                if action_type == "regenerate_section":
+                    si = action_json.get("section_index")
+                    if isinstance(si, (int, float)) and si >= 1:
+                        suggested_action = {
+                            "type": "regenerate_section",
+                            "section_index": int(si),
+                            "instruction": instruction,
+                        }
+                elif action_type == "regenerate_all":
+                    suggested_action = {
+                        "type": "regenerate_all",
+                        "instruction": instruction,
+                    }
+            except (json.JSONDecodeError, TypeError):
+                pass
+
+        # SEMPRE remove o bloco [SEADOCS_ACTION] da resposta antes de enviar ao usuário
+        raw = response or ""
+        raw = re.sub(r"\[\s*SEADOCS_ACTION\s*\][\s\S]*?\[\s*/\s*SEADOCS_ACTION\s*\]", "", raw, flags=re.IGNORECASE)
+        raw = re.sub(r"\[\s*SEADOCS_ACTION\s*\][\s\S]*$", "", raw, flags=re.IGNORECASE)  # fallback se fechamento ausente
+        response = re.sub(r"\n{3,}", "\n\n", raw).strip()
+
+        # Fallback: detecta pedidos de geração por keywords (compatibilidade)
+        if suggested_action is None:
+            msg_lower = request.message.lower().strip()
+            gerar_keywords = ["gere", "gerar", "crie", "criar", "preencha", "preencher", "escreva", "escrever", "produza", "produzir"]
+            if any(kw in msg_lower for kw in gerar_keywords) and any(w in msg_lower for w in ["documento", "documentos", "parágrafo", "parágrafos", "seção", "seções"]):
+                suggested_action = "generate_document"
 
         return {
             "response": response or "Não foi possível gerar uma resposta. Verifique se o Claude (ANTHROPIC_API_KEY) ou Ollama está configurado.",
@@ -541,9 +869,107 @@ Resposta:"""
         raise HTTPException(status_code=500, detail=str(e))
 
 
+class ProposeSectionsRequest(BaseModel):
+    """Quando o modelo não tem campos de metadados, a IA analisa a base e propõe seções."""
+    project_id: str
+    document_type: Optional[str] = None
+    spec_guidelines: Optional[str] = None
+
+
 class PlanDocumentRequest(BaseModel):
     project_id: str
     sections: list[DocumentSectionInput]
+
+
+@app.post("/propose-sections-from-knowledge-base")
+def propose_sections_from_knowledge_base(request: ProposeSectionsRequest):
+    """
+    Quando o modelo não tem campos de metadados definidos, analisa a base de conhecimento
+    do projeto e propõe as seções necessárias para construir o documento completo.
+    A IA entende os problemas/necessidades com base nos dados e cria todos os campos
+    que precisar para todas as partes do documento.
+    """
+    rag_context = _get_rag_context(request.project_id, limit=25)
+    if not rag_context:
+        return {
+            "sections": [
+                {"id": "section1", "title": "Conteúdo do documento", "helpText": "Adicione arquivos na base de conhecimento do projeto para que a IA possa propor seções automaticamente."}
+            ]
+        }
+
+    doc_type = (request.document_type or "documento").strip()
+    spec_block = ""
+    if request.spec_guidelines and request.spec_guidelines.strip():
+        spec_block = f"""
+ESTRUTURA ESPERADA (Spec do modelo — use como referência de hierarquia e numeração):
+---
+{request.spec_guidelines[:2000]}
+---
+"""
+
+    prompt = f"""Você é um analista de documentação. Analise a base de conhecimento do projeto abaixo e identifique TODOS os problemas, necessidades, requisitos e temas que devem ser cobertos em um documento do tipo "{doc_type}".
+
+Base de conhecimento do projeto:
+---
+{rag_context[:8000]}
+---
+{spec_block}
+
+Com base na análise, liste as SEÇÕES que o documento deve ter para cobrir completamente o conteúdo relevante. Cada seção deve ser um campo/metadado que a IA preencherá ao gerar o documento.
+- Use títulos claros e objetivos para cada seção
+- Ordene de forma lógica (introdução/contexto primeiro, detalhes depois)
+- Inclua todas as partes necessárias para um documento completo e profissional
+
+Retorne APENAS uma lista no formato abaixo, uma seção por linha:
+id:título da seção
+
+Exemplo:
+sec-1:Introdução e contexto do projeto
+sec-2:Objetivos e escopo
+sec-3:Requisitos funcionais identificados
+sec-4:Requisitos não funcionais
+sec-5:Regras de negócio
+sec-6:Considerações finais
+
+Lista de seções:"""
+
+    try:
+        response = _call_ollama(prompt, temperature=0.1, num_predict=1200, timeout=180)
+    except Exception:
+        response = ""
+
+    sections: list[dict] = []
+    seen_ids: set[str] = set()
+    for i, line in enumerate(response.splitlines()):
+        line = line.strip()
+        if not line or ":" not in line:
+            continue
+        try:
+            idx = line.index(":")
+            sec_id = line[:idx].strip().replace(" ", "-") or f"sec-{i}"
+            sec_id = sec_id[:50]
+            if sec_id in seen_ids:
+                suffix = 0
+                while f"{sec_id}-{suffix}" in seen_ids:
+                    suffix += 1
+                sec_id = f"{sec_id}-{suffix}"
+            seen_ids.add(sec_id)
+            title = line[idx + 1 :].strip()
+            if title and len(title) > 2:
+                sections.append({
+                    "id": sec_id,
+                    "title": title[:200],
+                    "helpText": f'Conteúdo de "{title}" com base na base de conhecimento.',
+                })
+        except ValueError:
+            continue
+
+    if not sections:
+        sections = [
+            {"id": "sec-1", "title": "Conteúdo principal", "helpText": "Conteúdo do documento com base na base de conhecimento."}
+        ]
+
+    return {"sections": sections}
 
 
 @app.post("/plan-document-structure")

@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useRef } from 'react';
 import { useLocation } from 'react-router-dom';
 import { Button } from './ui/button';
 import { Badge } from './ui/badge';
@@ -23,7 +23,7 @@ export function ProjectEditor({ projectId, documentId, onBack }: ProjectEditorPr
   const scrollToActiveSection = (location.state as { scrollToActiveSection?: boolean })?.scrollToActiveSection ?? false;
   const currentUser = apiService.getCurrentUser();
   const isExternalUser = currentUser?.role === 'external';
-  const { startGeneration, isGenerating, getJob } = useDocumentGeneration();
+  const { startGeneration, regenerateSection, regenerateAllWithInstruction, isGenerating, getJob } = useDocumentGeneration();
 
   const [project, setProject] = useState<Project | null>(null);
   const [document, setDocument] = useState<Document | null>(null);
@@ -41,10 +41,36 @@ export function ProjectEditor({ projectId, documentId, onBack }: ProjectEditorPr
   const isGeneratingDocument = isGenerating(documentId);
   const generationJob = getJob(documentId);
   const sectionsBeingGeneratedByAI = generationJob?.sectionsBeingGenerated ?? new Set<string>();
+  const prevGenStatusRef = useRef<string | undefined>();
+
+  const loadProject = useCallback(async () => {
+    const data = await apiService.getProject(projectId);
+    setProject(data);
+  }, [projectId]);
+
+  const loadDocument = useCallback(async () => {
+    const data = await apiService.getDocumentById(documentId);
+    setDocument(data);
+  }, [documentId]);
+
+  const loadActiveUsers = useCallback(async () => {
+    const users = apiService.getActiveUsers(projectId);
+    setActiveUsers(users);
+  }, [projectId]);
 
   useEffect(() => {
     if (isExternalUser) setViewMode(true);
   }, [isExternalUser]);
+
+  // Recarrega documento quando geração em background termina (fallback se Realtime não disparar)
+  useEffect(() => {
+    const status = generationJob?.status;
+    const wasRunning = prevGenStatusRef.current === 'running' || prevGenStatusRef.current === 'reviewing';
+    if (wasRunning && status === 'completed' && generationJob?.documentId === documentId) {
+      loadDocument();
+    }
+    prevGenStatusRef.current = status;
+  }, [generationJob?.status, generationJob?.documentId, documentId, loadDocument]);
 
   useEffect(() => {
     loadProject();
@@ -61,22 +87,7 @@ export function ProjectEditor({ projectId, documentId, onBack }: ProjectEditorPr
         subscription.unsubscribe();
       }
     };
-  }, [projectId, documentId]);
-
-  const loadProject = async () => {
-    const data = await apiService.getProject(projectId);
-    setProject(data);
-  };
-
-  const loadDocument = async () => {
-    const data = await apiService.getDocumentById(documentId);
-    setDocument(data);
-  };
-
-  const loadActiveUsers = async () => {
-    const users = apiService.getActiveUsers(projectId);
-    setActiveUsers(users);
-  };
+  }, [projectId, documentId, loadProject, loadDocument, loadActiveUsers]);
 
   const handleSave = async (content: Document['content']) => {
     if (viewMode) return;
@@ -101,7 +112,7 @@ export function ProjectEditor({ projectId, documentId, onBack }: ProjectEditorPr
     startGeneration({
       documentId,
       projectId,
-      documentTitle: document.title,
+      documentTitle: document.title ?? document.name ?? 'Documento',
       sections,
       templateId: document.templateId ?? undefined,
     });
@@ -122,6 +133,55 @@ export function ProjectEditor({ projectId, documentId, onBack }: ProjectEditorPr
     }
     triggerGeneration(sections);
   }, [document, triggerGeneration]);
+
+  const handleRequestRegenerateSection = useCallback(async (sectionIndex: number, instruction?: string) => {
+    if (!document?.content?.sections) return;
+    const sections = document.content.sections.filter(s => s.isEditable);
+    const idx = sectionIndex - 1; // 1-based → 0-based
+    if (idx < 0 || idx >= sections.length) {
+      toast.error(`Seção ${sectionIndex} não encontrada. O documento tem ${sections.length} seção(ões) editável(is).`);
+      return;
+    }
+    const section = sections[idx];
+    const previousSections = sections.slice(0, idx);
+    const previousSectionsHtml = previousSections
+      .filter(s => (s.content || '').trim())
+      .map(s => `<section data-title="${s.title}">\n${s.content}\n</section>`)
+      .join('\n\n');
+    const previousEvaluation = await apiService.getDocumentEvaluation(documentId);
+    await regenerateSection({
+      documentId,
+      projectId,
+      section,
+      sections,
+      sectionIndex: idx,
+      totalSections: sections.length,
+      previousSectionsHtml,
+      instruction,
+      templateId: document.templateId ?? undefined,
+      previousEvaluation: previousEvaluation ? { rating: previousEvaluation.rating, comment: previousEvaluation.comment } : null,
+    });
+    loadDocument();
+  }, [document, documentId, projectId, regenerateSection, loadDocument]);
+
+  const handleRequestRegenerateAll = useCallback(async (instruction?: string) => {
+    if (!document?.content?.sections) return;
+    const sections = document.content.sections.filter(s => s.isEditable);
+    if (sections.length === 0) {
+      toast.info('Nenhuma seção editável encontrada.');
+      return;
+    }
+    const previousEvaluation = await apiService.getDocumentEvaluation(documentId);
+    regenerateAllWithInstruction({
+      documentId,
+      projectId,
+      documentTitle: document.title ?? document.name ?? 'Documento',
+      sections,
+      instruction,
+      templateId: document.templateId ?? undefined,
+      previousEvaluation: previousEvaluation ? { rating: previousEvaluation.rating, comment: previousEvaluation.comment } : null,
+    });
+  }, [document, documentId, projectId, regenerateAllWithInstruction]);
 
   if (!project || !document) {
     return (
@@ -233,7 +293,9 @@ export function ProjectEditor({ projectId, documentId, onBack }: ProjectEditorPr
           onExitViewMode={isExternalUser ? undefined : () => setViewMode(false)}
           onDocumentUpdated={loadDocument}
           sectionsBeingGeneratedByParent={sectionsBeingGeneratedByAI}
+          isDocumentBeingGeneratedByParent={isGeneratingDocument}
           scrollToActiveSection={scrollToActiveSection}
+          onRequestGenerateAll={(sections) => setGenerateRequest({ documentId, projectId, sections })}
         />
       </main>
 
@@ -257,6 +319,11 @@ export function ProjectEditor({ projectId, documentId, onBack }: ProjectEditorPr
           onSuggestedGenerateDocument={handleSuggestedGenerateDocument}
           onRequestCreateDocument={handleRequestCreateDocument}
           documentHasContent={document?.content?.sections?.some(s => (s.content || '').trim()) ?? false}
+          documentSections={document?.content?.sections
+            ?.filter(s => s.isEditable)
+            .map((s, i) => ({ id: s.id, title: s.title, index: i + 1 }))}
+          onRequestRegenerateSection={handleRequestRegenerateSection}
+          onRequestRegenerateAll={handleRequestRegenerateAll}
         />
       )}
 

@@ -6,7 +6,7 @@
 
 **Resumo R1–R6:**
 - **R1.** Alterações limitadas ao escopo solicitado.
-- **R2.** Spec obrigatório no modelo (`spec_path`).
+- **R2.** Spec e Skill obrigatórios no modelo (`spec_path` e `skill_path` em `templates`).
 - **R3.** Validar Spec antes da geração.
 - **R4.** Seguir rigorosamente as diretrizes do Spec.
 - **R5.** Não replicar conversas entre pessoas da base de conhecimento — interpretar e redigir em linguagem formal.

@@ -28,13 +28,13 @@ export function ensureCustomBlotsRegistered(): void {
     static tagName = 'div';
     static className = 'sgid-metadata-field';
 
-    static create(value: { id?: string; title?: string; help?: string; topicId?: string; topicName?: string; repeatable?: boolean; planningInstruction?: string }) {
+    static create(value: { id?: string; title?: string; help?: string; topicId?: string; topicName?: string; parentFieldId?: string; parentFieldTitle?: string; repeatable?: boolean; planningInstruction?: string }) {
       const node = super.create() as HTMLElement;
       const id = value?.id || `field-${Date.now()}`;
       const title = value?.title || 'Campo';
       const help = value?.help || '';
-      const topicId = value?.topicId || '';
-      const topicName = value?.topicName || (topicId.startsWith('cell:') ? `Célula ${topicId.split(':').pop()}` : topicId);
+      const parentFieldId = value?.parentFieldId || value?.topicId || '';
+      const parentFieldTitle = value?.parentFieldTitle || value?.topicName || (parentFieldId.startsWith('cell:') ? `Célula ${parentFieldId.split(':').pop()}` : parentFieldId);
       const repeatable = value?.repeatable ?? false;
       const planningInstruction = value?.planningInstruction || '';
 
@@ -42,7 +42,7 @@ export function ensureCustomBlotsRegistered(): void {
       node.setAttribute('data-field-id', id);
       node.setAttribute('data-field-title', title);
       node.setAttribute('data-field-help', help);
-      node.setAttribute('data-topic-id', topicId);
+      node.setAttribute('data-parent-field-id', parentFieldId);
       if (repeatable) node.setAttribute('data-repeatable', 'true');
       if (planningInstruction) node.setAttribute('data-planning-instruction', planningInstruction);
 
@@ -61,11 +61,11 @@ export function ensureCustomBlotsRegistered(): void {
         titleEl.appendChild(badge);
       }
 
-      if (topicId && !repeatable) {
-        const topicTag = document.createElement('span');
-        topicTag.className = 'text-[9px] bg-blue-100 text-blue-700 px-1.5 py-0.5 rounded-full ml-2';
-        topicTag.innerText = `Tópico: ${topicName}`;
-        titleEl.appendChild(topicTag);
+      if (parentFieldId && !repeatable) {
+        const parentTag = document.createElement('span');
+        parentTag.className = 'text-[9px] bg-blue-100 text-blue-700 px-1.5 py-0.5 rounded-full ml-2';
+        parentTag.innerText = `Filho de: ${parentFieldTitle}`;
+        titleEl.appendChild(parentTag);
       }
 
       if (help) {
@@ -94,7 +94,8 @@ export function ensureCustomBlotsRegistered(): void {
         id: node.getAttribute('data-field-id') || '',
         title: node.getAttribute('data-field-title') || '',
         help: node.getAttribute('data-field-help') || '',
-        topicId: node.getAttribute('data-topic-id') || '',
+        topicId: node.getAttribute('data-topic-id') || node.getAttribute('data-parent-field-id') || '',
+        parentFieldId: node.getAttribute('data-parent-field-id') || node.getAttribute('data-topic-id') || '',
         repeatable: node.getAttribute('data-repeatable') === 'true',
         planningInstruction: node.getAttribute('data-planning-instruction') || '',
       };
