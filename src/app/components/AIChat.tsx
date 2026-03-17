@@ -337,7 +337,12 @@ export function AIChat({ projectId, documentId, generateRequest, onConfirmGenera
       // Mensagens de erro personalizadas
       const errorMessage = error.message || 'Erro desconhecido';
       
-      if (errorMessage.includes('Configure a API')) {
+      if (errorMessage === 'RAG_SERVICE_OFFLINE') {
+        toast.error('🔌 Serviço RAG indisponível', {
+          description: 'Configure VITE_RAG_SERVICE_URL no Vercel ou inicie o RAG localmente',
+          duration: 6000
+        });
+      } else if (errorMessage.includes('Configure a API')) {
         toast.error('⚙️ Configuração necessária', {
           description: 'Configure sua chave de IA nas configurações antes de usar o chat',
           duration: 6000
@@ -365,10 +370,13 @@ export function AIChat({ projectId, documentId, generateRequest, onConfirmGenera
       }
       
       // Adicionar mensagem de erro no chat também
+      const displayError = errorMessage === 'RAG_SERVICE_OFFLINE'
+        ? 'O serviço RAG não está disponível. Configure VITE_RAG_SERVICE_URL no Vercel ou inicie o RAG localmente.'
+        : errorMessage;
       const errorMessageObj: Message = {
         id: (Date.now() + 1).toString(),
         role: 'assistant',
-        content: '❌ Desculpe, ocorreu um erro ao processar sua mensagem. ' + errorMessage,
+        content: '❌ Desculpe, ocorreu um erro ao processar sua mensagem. ' + displayError,
         timestamp: new Date()
       };
       setMessages(prev => [...prev, errorMessageObj]);

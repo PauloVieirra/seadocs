@@ -5,11 +5,20 @@
 
 const RAG_SERVICE_URL = import.meta.env.VITE_RAG_SERVICE_URL || 'http://localhost:8000';
 
+/** RAG em localhost só é acessível quando o app também está em localhost. Em produção (Vercel etc.) configure VITE_RAG_SERVICE_URL. */
+function isRAGReachable(): boolean {
+  if (typeof window === 'undefined') return true;
+  const ragIsLocalhost = RAG_SERVICE_URL.includes('localhost') || RAG_SERVICE_URL.includes('127.0.0.1');
+  const appOnLocalhost = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
+  return !ragIsLocalhost || appOnLocalhost;
+}
+
 /** Envia configuração de IA para o serviço RAG (provider + chave Groq). */
 export async function updateAIConfig(params: {
   provider: 'ollama' | 'groq';
   groqApiKey?: string;
 }): Promise<void> {
+  if (!isRAGReachable()) return;
   const res = await fetch(`${RAG_SERVICE_URL}/ai-config`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -107,6 +116,9 @@ export async function getDocumentationSummary(projectId: string): Promise<{
   summary: string;
   sources_count: number;
 }> {
+  if (!isRAGReachable()) {
+    throw new Error('RAG_SERVICE_OFFLINE');
+  }
   const res = await fetch(
     `${RAG_SERVICE_URL}/summary?project_id=${encodeURIComponent(projectId)}`
   );
@@ -160,6 +172,7 @@ export async function getDocumentUnderstanding(params: {
   documentId: string;
   sections: DocumentSectionInput[];
 }): Promise<{ summary: string; sources_count: number }> {
+  if (!isRAGReachable()) throw new Error('RAG_SERVICE_OFFLINE');
   const res = await fetch(`${RAG_SERVICE_URL}/generate-document-understanding`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -226,6 +239,7 @@ export async function chatWithRAG(params: {
   /** Seções editáveis do documento (para o chat entender ações como "corrija a seção 2") */
   documentSections?: Array<{ id: string; title: string; index: number }>;
 }): Promise<{ response: string; suggested_action?: ChatSuggestedAction }> {
+  if (!isRAGReachable()) throw new Error('RAG_SERVICE_OFFLINE');
   const res = await fetch(`${RAG_SERVICE_URL}/chat`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
