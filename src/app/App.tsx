@@ -11,7 +11,8 @@ import { GroupManagementPanel } from './components/GroupManagementPanel';
 import { UserManagementPanel } from './components/UserManagementPanel';
 import { DocumentModelManagementPanel } from './components/DocumentModelManagementPanel';
 import { CreateDocumentModelPage } from './pages/CreateDocumentModelPage';
-import { DatabaseConfigDialog } from './components/DatabaseConfigDialog';
+import { AIConfigDialog } from './components/AIConfigDialog';
+import { updateAIConfig } from '../services/rag-api';
 import { AdminDashboard } from './components/AdminDashboard';
 import { AuthRedirect } from './components/AuthRedirect';
 import { Wiki } from './components/Wiki';
@@ -84,7 +85,19 @@ export default function App() {
     }
       setAuthLoaded(true);
     });
-  }, []); 
+  }, []);
+
+  // Sincroniza config de IA com o RAG ao carregar (admin com config salva)
+  useEffect(() => {
+    if (!authLoaded || !currentUser || currentUser.role !== 'admin') return;
+    apiService.getAIConfiguracao().then((config) => {
+      if (config?.provider === 'groq') {
+        updateAIConfig({ provider: 'groq' }).catch(() => {});
+      } else if (config?.provider === 'ollama') {
+        updateAIConfig({ provider: 'ollama' }).catch(() => {});
+      }
+    });
+  }, [authLoaded, currentUser]); 
 
   const handleLoginSuccess = (user: User) => {
     setCurrentUser(user);
@@ -130,7 +143,7 @@ export default function App() {
     <>
       <Toaster position="top-right" closeButton />
       <GenerationStatusBar />
-      <DatabaseConfigDialog open={configDialogOpen} onOpenChange={setConfigDialogOpen} />
+      <AIConfigDialog open={configDialogOpen} onOpenChange={setConfigDialogOpen} />
       <ChangePasswordDialog
         user={currentUser}
         open={changePasswordOpen}

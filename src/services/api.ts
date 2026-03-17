@@ -18,8 +18,9 @@ export interface DatabaseConfig {
 }
 
 export interface AIConfig {
-  apiKey: string;
-  provider?: 'openai' | 'anthropic' | 'manus' | 'custom';
+  apiKey?: string;
+  provider?: 'openai' | 'anthropic' | 'manus' | 'custom' | 'ollama' | 'groq';
+  groqApiKey?: string;
 }
 
 export { type ManusConfig } from './manus-api';

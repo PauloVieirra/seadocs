@@ -5,6 +5,25 @@
 
 const RAG_SERVICE_URL = import.meta.env.VITE_RAG_SERVICE_URL || 'http://localhost:8000';
 
+/** Envia configuração de IA para o serviço RAG (provider + chave Groq). */
+export async function updateAIConfig(params: {
+  provider: 'ollama' | 'groq';
+  groqApiKey?: string;
+}): Promise<void> {
+  const res = await fetch(`${RAG_SERVICE_URL}/ai-config`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      provider: params.provider,
+      groq_api_key: params.groqApiKey ?? null,
+    }),
+  });
+  if (!res.ok) {
+    const err = await res.text();
+    throw new Error(err || `RAG ai-config failed: ${res.status}`);
+  }
+}
+
 export interface IndexResponse {
   document_id: string;
   chunk_count: number;

@@ -1,6 +1,7 @@
 # RAG Service - ChromaDB + Embeddings + Document Processing
 chromadb>=0.4.22
 ollama>=0.3.0
+groq>=0.4.0
 pypdf>=4.0.0
 python-docx>=1.0.0
 fastapi>=0.109.0

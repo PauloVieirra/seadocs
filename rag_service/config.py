@@ -19,3 +19,7 @@ CHUNK_OVERLAP = int(os.getenv("CHUNK_OVERLAP", "400"))
 # Supabase (para atualizar status no banco)
 SUPABASE_URL = os.getenv("SUPABASE_URL", "")
 SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_KEY", "")  # service_role para bypass RLS
+
+# Groq API (fallback quando Ollama indisponível)
+GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
+GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.1-8b-instant")

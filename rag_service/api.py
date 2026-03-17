@@ -207,6 +207,27 @@ class HealthResponse(BaseModel):
     persist_dir: str
 
 
+class AIConfigRequest(BaseModel):
+    provider: str  # "ollama" | "groq"
+    groq_api_key: Optional[str] = None
+
+
+# Config de IA em memória (frontend envia via POST /ai-config)
+_ai_config: dict = {"provider": "ollama", "groq_api_key": None}
+
+
+@app.post("/ai-config")
+def set_ai_config(request: AIConfigRequest):
+    """Recebe configuração de IA do frontend (provider). Chave Groq vem de GROQ_API_KEY no ambiente."""
+    global _ai_config
+    provider = request.provider if request.provider in ("ollama", "groq") else "ollama"
+    _ai_config = {
+        "provider": provider,
+        "groq_api_key": None,  # Sempre usa GROQ_API_KEY do ambiente (Vercel, etc.)
+    }
+    return {"status": "ok", "provider": provider}
+
+
 @app.get("/health", response_model=HealthResponse)
 def health():
     """Verifica se ChromaDB está configurado e a collection existe."""
@@ -481,6 +502,60 @@ def _call_ollama(prompt: str, temperature: float = 0.1, num_predict: int = 800, 
     return ""
 
 
+def _call_groq(prompt: str, temperature: float = 0.1, max_tokens: int = 800, api_key: str = "") -> str:
+    """Chama Groq API para geração de texto."""
+    from groq import Groq
+    from config import GROQ_MODEL
+
+    client = Groq(api_key=api_key)
+    completion = client.chat.completions.create(
+        model=GROQ_MODEL,
+        messages=[{"role": "user", "content": prompt}],
+        temperature=temperature,
+        max_tokens=max_tokens,
+    )
+    return (completion.choices[0].message.content or "").strip()
+
+
+def _call_llm(prompt: str, temperature: float = 0.1, num_predict: int = 800, timeout: int = 240) -> str:
+    """
+    Chama o provedor de IA configurado (Ollama ou Groq).
+    Se Ollama estiver configurado mas indisponível, usa Groq automaticamente (quando chave disponível).
+    """
+    import os
+    from config import GROQ_API_KEY
+
+    provider = _ai_config.get("provider", "ollama")
+    groq_key = _ai_config.get("groq_api_key") or os.getenv("GROQ_API_KEY") or GROQ_API_KEY
+
+    # Provedor Groq: usar diretamente
+    if provider == "groq" and groq_key:
+        return _call_groq(prompt, temperature=temperature, max_tokens=num_predict, api_key=groq_key)
+
+    # Provedor Ollama: tentar Ollama, fallback para Groq se indisponível
+    if provider == "ollama":
+        try:
+            return _call_ollama(prompt, temperature=temperature, num_predict=num_predict, timeout=timeout)
+        except Exception as ollama_err:
+            err_msg = str(ollama_err).lower()
+            if groq_key and (
+                "connection" in err_msg or "timeout" in err_msg or "broken pipe" in err_msg or "errno 32" in err_msg
+            ):
+                return _call_groq(prompt, temperature=temperature, max_tokens=num_predict, api_key=groq_key)
+            raise
+
+    # Fallback: tentar Ollama primeiro
+    try:
+        return _call_ollama(prompt, temperature=temperature, num_predict=num_predict, timeout=timeout)
+    except Exception as ollama_err:
+        err_msg = str(ollama_err).lower()
+        if groq_key and (
+            "connection" in err_msg or "timeout" in err_msg or "broken pipe" in err_msg or "errno 32" in err_msg
+        ):
+            return _call_groq(prompt, temperature=temperature, max_tokens=num_predict, api_key=groq_key)
+        raise
+
+
 @app.post("/generate-document-understanding")
 def generate_document_understanding(request: GenerateUnderstandingRequest):
     """
@@ -513,7 +588,7 @@ Escreva um resumo objetivo (2 a 4 parágrafos) do seu entendimento sobre:
 3. O que você pretende escrever em cada parágrafo ao gerar o documento
 
 Resumo (em português):"""
-        summary = _call_ollama(prompt, temperature=0.1, num_predict=1000)
+        summary = _call_llm(prompt, temperature=0.1, num_predict=1000)
         col = get_or_create_collection()
         results = col.get(
             where={"project_id": {"$eq": request.project_id}},
@@ -717,7 +792,7 @@ HTML:"""
 
         print(prompt)
         try:
-            content = _call_ollama(prompt, temperature=0.1, num_predict=2000, timeout=300)
+            content = _call_llm(prompt, temperature=0.1, num_predict=2000, timeout=300)
         except Exception as ollama_err:
             err_msg = str(ollama_err)
             if "Broken pipe" in err_msg or "Errno 32" in err_msg:
@@ -810,7 +885,7 @@ Pergunta do usuário: {request.message}
 
 Resposta:"""
 
-        response = _call_ollama(prompt, temperature=0.1, num_predict=1500)
+        response = _call_llm(prompt, temperature=0.1, num_predict=1500)
 
         # Parse ação estruturada do bloco [SEADOCS_ACTION] na resposta
         suggested_action = None
@@ -934,7 +1009,7 @@ sec-6:Considerações finais
 Lista de seções:"""
 
     try:
-        response = _call_ollama(prompt, temperature=0.1, num_predict=1200, timeout=180)
+        response = _call_llm(prompt, temperature=0.1, num_predict=1200, timeout=180)
     except Exception:
         response = ""
 
@@ -1028,7 +1103,7 @@ Exemplo:
 Lista completa:"""
 
     try:
-        response = _call_ollama(prompt, temperature=0.1, num_predict=1500, timeout=240)
+        response = _call_llm(prompt, temperature=0.1, num_predict=1500, timeout=240)
     except Exception:
         response = ""
 

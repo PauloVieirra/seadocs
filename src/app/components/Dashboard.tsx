@@ -9,7 +9,7 @@ import { Textarea } from './ui/textarea';
 import { Plus, FileText, Search, Trash2, Settings, Rocket, Trash, Archive } from 'lucide-react';
 import { apiService, type Project, type User, type Group } from '../../services/api';
 import { usePermissions } from '../../hooks/usePermissions';
-import { DatabaseConfigDialog } from './DatabaseConfigDialog';
+import { AIConfigDialog } from './AIConfigDialog';
 import { MultiSelect } from './ui/multi-select'; // Importar MultiSelect
 import { UserSearchSelect } from './UserSearchSelect'; // Importar novo componente
 import { ProjectSettingsDialog } from './ProjectSettingsDialog'; // Importar ProjectSettingsDialog
@@ -499,7 +499,7 @@ export function Dashboard({ user, onProjectSelect }: DashboardProps) { // Removi
         )}
       </main>
 
-      <DatabaseConfigDialog open={configDialogOpen} onOpenChange={setConfigDialogOpen} />
+      <AIConfigDialog open={configDialogOpen} onOpenChange={setConfigDialogOpen} />
       
       <PasswordConfirmationDialog
         open={passwordDialogOpen}

@@ -30,6 +30,10 @@ Variáveis de ambiente (ou `.env`):
 | `OLLAMA_EMBED_MODEL` | Modelo de embeddings | `nomic-embed-text` |
 | `SUPABASE_URL` | URL do Supabase | - |
 | `SUPABASE_SERVICE_KEY` | Chave service_role (bypass RLS + download bucket privado) | - |
+| `GROQ_API_KEY` | Chave da API Groq (para uso quando Ollama indisponível ou provider Groq) | - |
+| `GROQ_MODEL` | Modelo Groq (ex.: llama-3.1-8b-instant) | `llama-3.1-8b-instant` |
+
+**Vercel:** configure `GROQ_API_KEY` nas variáveis de ambiente do projeto. O frontend não exibe campo para a chave — ela vem do ambiente.
 
 **Frontend** (.env na raiz do projeto): adicione `VITE_RAG_SERVICE_URL=http://localhost:8000` se o serviço rodar em outra porta.
 
