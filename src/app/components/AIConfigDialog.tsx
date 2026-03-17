@@ -43,9 +43,9 @@ export function AIConfigDialog({ open, onOpenChange }: AIConfigDialogProps) {
 
     try {
       await apiService.configurarIA(config);
-      await syncAIConfigToRAG({ provider });
       setSuccess(true);
       toast.success('Configuração de IA salva com sucesso!');
+      syncAIConfigToRAG({ provider }).catch(() => { /* RAG indisponível; config será aplicada quando estiver online */ });
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Erro ao salvar configuração.');
     } finally {

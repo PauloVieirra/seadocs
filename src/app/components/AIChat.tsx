@@ -190,7 +190,7 @@ export function AIChat({ projectId, documentId, generateRequest, onConfirmGenera
         const errMsg: Message = {
           id: 'understanding-err-' + Date.now(),
           role: 'assistant',
-          content: '❌ Não foi possível analisar o documento. Verifique se o serviço RAG está rodando (localhost:8000) e se há documentos na base de conhecimento.',
+          content: '❌ Não foi possível analisar o documento. Verifique se o serviço RAG está configurado (VITE_RAG_SERVICE_URL) e se há documentos na base de conhecimento.',
           timestamp: new Date(),
         };
         setMessages(prev => [...prev, errMsg]);
@@ -245,7 +245,7 @@ export function AIChat({ projectId, documentId, generateRequest, onConfirmGenera
         const fallbackMessage: Message = {
           id: 'summary-' + Date.now(),
           role: 'assistant',
-          content: 'Olá! Sou seu assistente de IA. Não foi possível carregar o resumo da documentação. Verifique se o serviço RAG está rodando (localhost:8000) e se há documentos na base de conhecimento. Como posso ajudar?',
+          content: 'Olá! Sou seu assistente de IA. Não foi possível carregar o resumo da documentação. Verifique se o serviço RAG está configurado e disponível, e se há documentos na base de conhecimento. Como posso ajudar?',
           timestamp: new Date()
         };
         setMessages([fallbackMessage]);
