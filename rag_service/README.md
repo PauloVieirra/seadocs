@@ -1,15 +1,17 @@
-# Serviço RAG - ChromaDB + Ollama
+# Serviço RAG - Supabase pgvector + Ollama
 
-Sistema de ingestão e indexação de documentos para RAG (Retrieval-Augmented Generation).
+Sistema de ingestão e indexação de documentos para RAG (Retrieval-Augmented Generation) usando **Supabase pgvector**.
 
 ## Pré-requisitos
 
-1. **Ollama** rodando localmente com modelo de embeddings:
+1. **Supabase** com extensão pgvector habilitada (migration `20260322120000_rag_pgvector.sql`)
+
+2. **Ollama** para embeddings (nomic-embed-text):
    ```bash
    ollama pull nomic-embed-text
    ```
 
-2. **Python 3.10+**
+3. **Python 3.10+**
 
 ## Instalação
 
@@ -24,18 +26,16 @@ Variáveis de ambiente (ou `.env`):
 
 | Variável | Descrição | Padrão |
 |----------|-----------|--------|
-| `CHROMA_PERSIST_DIR` | Diretório persistente do ChromaDB | `./chroma_db` |
-| `CHROMA_COLLECTION` | Nome da collection | `docs_rag` |
-| `OLLAMA_URL` | URL do Ollama na nuvem (quando "Ollama na nuvem" nas configs) | `http://localhost:11434` |
-| `OLLAMA_EMBED_MODEL` | Modelo de embeddings | `nomic-embed-text` |
 | `SUPABASE_URL` | URL do Supabase | - |
-| `SUPABASE_SERVICE_KEY` | Chave service_role (bypass RLS + download bucket privado) | - |
-| `GROQ_API_KEY` | Chave da API Groq (para uso quando Ollama indisponível ou provider Groq) | - |
-| `GROQ_MODEL` | Modelo Groq (ex.: llama-3.1-8b-instant) | `llama-3.1-8b-instant` |
+| `SUPABASE_SERVICE_KEY` | Chave service_role (bypass RLS + download bucket) | - |
+| `OLLAMA_URL` | URL do Ollama (embeddings + LLM na nuvem) | `http://localhost:11434` |
+| `OLLAMA_EMBED_MODEL` | Modelo de embeddings | `nomic-embed-text` |
+| `GROQ_API_KEY` | Chave da API Groq (fallback quando Ollama indisponível) | - |
+| `GROQ_MODEL` | Modelo Groq | `llama-3.1-8b-instant` |
 
-**Vercel:** configure `GROQ_API_KEY` nas variáveis de ambiente do projeto. O frontend não exibe campo para a chave — ela vem do ambiente.
+**Vercel:** configure `GROQ_API_KEY` e `OLLAMA_URL` nas variáveis de ambiente.
 
-**Frontend** (.env na raiz do projeto): adicione `VITE_RAG_SERVICE_URL=http://localhost:8000` se o serviço rodar em outra porta.
+**Frontend** (.env): `VITE_RAG_SERVICE_URL=http://localhost:8000` se o serviço rodar em outra porta.
 
 ## Executar
 
@@ -45,14 +45,14 @@ uvicorn api:app --reload --host 0.0.0.0 --port 8000
 
 ## Endpoints
 
-- `GET /health` - Status do ChromaDB
-- `POST /index` - Indexar documento (body: document_id, file_url, file_name, project_id, file_path?, reindex?)
-- `POST /delete` - Remover documento do ChromaDB
-- `POST /search?query=...&project_id=...&n_results=5` - Busca semântica
+- `GET /health` - Status do Supabase pgvector
+- `POST /index` - Indexar documento
+- `POST /delete` - Remover documento do RAG
+- `POST /search` - Busca semântica
 
 ## Fluxo
 
 1. Upload no bucket → salva no banco com `file_url`
 2. Frontend chama `POST /index` com os dados do documento
-3. Serviço baixa o arquivo (via URL ou Supabase Storage com file_path), extrai texto, chunk, gera embeddings, insere no ChromaDB
+3. Serviço baixa o arquivo, extrai texto, chunk, gera embeddings via Ollama, insere na tabela `rag_documents` (Supabase)
 4. Atualiza `status=PROCESSED`, `chunk_count`, `file_hash` no banco

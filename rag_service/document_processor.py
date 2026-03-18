@@ -10,7 +10,7 @@ import httpx
 from pypdf import PdfReader
 from docx import Document as DocxDocument
 
-from chroma_manager import get_or_create_collection
+from supabase_vector_manager import add_documents, delete_by_document_id, get_documents
 from config import CHUNK_SIZE, CHUNK_OVERLAP
 
 
@@ -53,7 +53,6 @@ def extract_text_from_bytes(content: bytes, file_name: str) -> str:
 
 def _split_into_sentences(paragraph: str) -> list[str]:
     """Divide um parágrafo em sentenças (evita cortar no meio de frases)."""
-    # Quebra por pontuação final (. ! ?) seguida de espaço ou fim
     parts = re.split(r'(?<=[.!?])\s+', paragraph.strip())
     return [p.strip() for p in parts if p.strip()]
 
@@ -71,21 +70,18 @@ def chunk_text(text: str) -> list[str]:
     max_chars = CHUNK_SIZE
     overlap_chars = CHUNK_OVERLAP
 
-    # 1. Divide por parágrafos (dupla quebra de linha)
     paragraphs = [p.strip() for p in re.split(r'\n\s*\n', text) if p.strip()]
     chunks: list[str] = []
     current: list[str] = []
     current_len = 0
 
     for para in paragraphs:
-        para_len = len(para) + 2  # +2 para \n\n
+        para_len = len(para) + 2
         if para_len > max_chars:
-            # Parágrafo muito longo: divide por sentenças
             sentences = _split_into_sentences(para)
             for sent in sentences:
                 sent_len = len(sent) + 1
                 if len(sent) > max_chars:
-                    # Sentença isolada maior que chunk: flush e adiciona como chunk único
                     if current:
                         chunks.append("\n\n".join(current))
                         current, current_len = [], 0
@@ -139,8 +135,7 @@ def index_document(
 ) -> tuple[int, str]:
     """
     Baixa o documento (via URL ou Supabase Storage), extrai texto, gera chunks,
-    embeddings e insere no ChromaDB. Retorna (chunk_count, file_hash).
-    Se check_duplicate(project_id, hash, document_id) retornar True, pula inserção.
+    embeddings e insere no Supabase pgvector. Retorna (chunk_count, file_hash).
     """
     content = download_file(file_url, file_path)
     hash_value = file_hash or compute_file_hash(content)
@@ -151,7 +146,6 @@ def index_document(
     if not chunks:
         return 0, hash_value
 
-    collection = get_or_create_collection()
     created_at = datetime.utcnow().isoformat() + "Z"
     ids = [f"{document_id}_chunk_{i}" for i in range(len(chunks))]
     metadatas = [
@@ -165,11 +159,7 @@ def index_document(
         }
         for _ in chunks
     ]
-    collection.add(
-        ids=ids,
-        documents=chunks,
-        metadatas=metadatas,
-    )
+    add_documents(ids=ids, documents=chunks, metadatas=metadatas)
     return len(chunks), hash_value
 
 
@@ -188,16 +178,11 @@ def index_positive_feedback(
     sections: list[dict],
 ) -> int:
     """
-    Indexa seções de um documento avaliado como 'bom' no ChromaDB.
-    Usado para refinar gerações futuras com exemplos de boa qualidade.
+    Indexa seções de um documento avaliado como 'bom' no Supabase.
     Retorna quantidade de chunks adicionados.
     """
-    collection = get_or_create_collection()
-    # Remove feedback anterior deste documento (se houver)
     fid = f"feedback_{document_id}"
-    existing = collection.get(where={"document_id": {"$eq": fid}}, include=[])
-    if existing and existing.get("ids"):
-        collection.delete(ids=existing["ids"])
+    delete_by_document_id(fid)
 
     all_chunks: list[str] = []
     all_ids: list[str] = []
@@ -223,30 +208,16 @@ def index_positive_feedback(
             })
 
     if all_chunks:
-        collection.add(ids=all_ids, documents=all_chunks, metadatas=all_metadatas)
+        add_documents(ids=all_ids, documents=all_chunks, metadatas=all_metadatas)
     return len(all_chunks)
 
 
 def delete_positive_feedback(document_id: str) -> int:
-    """Remove chunks de feedback positivo de um documento. Retorna quantidade removida."""
-    collection = get_or_create_collection()
+    """Remove chunks de feedback positivo de um documento."""
     fid = f"feedback_{document_id}"
-    results = collection.get(where={"document_id": {"$eq": fid}}, include=[])
-    ids = results.get("ids", []) if results else []
-    if ids:
-        collection.delete(ids=ids)
-    return len(ids)
+    return delete_by_document_id(fid)
 
 
 def delete_document_from_chroma(document_id: str) -> int:
-    """Remove todos os chunks de um documento do ChromaDB. Retorna quantidade removida."""
-    collection = get_or_create_collection()
-    # ChromaDB: where usa $eq para igualdade
-    results = collection.get(
-        where={"document_id": {"$eq": document_id}},
-        include=[],
-    )
-    ids_to_delete = results.get("ids", []) if results else []
-    if ids_to_delete:
-        collection.delete(ids=ids_to_delete)
-    return len(ids_to_delete)
+    """Remove todos os chunks de um documento do Supabase."""
+    return delete_by_document_id(document_id)

@@ -11,7 +11,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from supabase import create_client, Client
 
-from chroma_manager import get_or_create_collection, get_or_create_client
+from supabase_vector_manager import (
+    get_documents,
+    query as vector_query,
+    clear_all as vector_clear_all,
+)
 from document_processor import (
     index_document,
     index_positive_feedback as _index_positive_feedback,
@@ -19,7 +23,6 @@ from document_processor import (
     delete_document_from_chroma,
     compute_file_hash,
 )
-from config import CHROMA_PERSIST_DIR, COLLECTION_NAME
 
 # Diretório de modelos de exemplo (relativo à raiz do projeto)
 MODELOS_DIR = Path(__file__).parent.parent / "public" / "modelos"
@@ -97,12 +100,9 @@ def get_supabase() -> Optional[Client]:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Inicializa ChromaDB na subida do servidor."""
-    CHROMA_PERSIST_DIR.mkdir(parents=True, exist_ok=True)
-    get_or_create_collection()
+    """Inicializa conexão com Supabase (pgvector)."""
+    # Tabela rag_documents criada via migration
     yield
-    # cleanup se necessário
-    pass
 
 
 app = FastAPI(title="RAG Service", lifespan=lifespan)
@@ -202,7 +202,7 @@ class ChatRequest(BaseModel):
 
 
 class HealthResponse(BaseModel):
-    chroma_ready: bool
+    chroma_ready: bool  # mantido para compatibilidade com frontend
     collection: str
     persist_dir: str
 
@@ -233,14 +233,18 @@ def set_ai_config(request: AIConfigRequest):
 
 @app.get("/health", response_model=HealthResponse)
 def health():
-    """Verifica se ChromaDB está configurado e a collection existe."""
+    """Verifica se Supabase pgvector está configurado."""
     try:
-        col = get_or_create_collection()
+        sb = get_supabase()
+        if not sb:
+            raise HTTPException(status_code=503, detail="Supabase não configurado")
         return HealthResponse(
             chroma_ready=True,
-            collection=COLLECTION_NAME,
-            persist_dir=str(CHROMA_PERSIST_DIR),
+            collection="rag_documents",
+            persist_dir="supabase",
         )
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=503, detail=str(e))
 
@@ -355,17 +359,11 @@ def delete_from_rag(request: DeleteRequest):
 @app.post("/clear-all")
 def clear_all_rag():
     """
-    Limpa todo o ChromaDB (base vetorial RAG).
-    Mantém regras e orientações (Spec) que estão no código.
-    Útil para resetar o sistema quando há erros acumulados.
+    Limpa toda a base vetorial RAG (Supabase pgvector).
+    Será necessário reindexar os documentos.
     """
     try:
-        client = get_or_create_client()
-        try:
-            client.delete_collection(COLLECTION_NAME)
-        except Exception:
-            pass  # collection pode não existir
-        get_or_create_collection()  # recria vazia
+        vector_clear_all()
         return {"status": "cleared", "message": "Base RAG limpa. Será necessário reindexar os documentos."}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -375,29 +373,16 @@ def clear_all_rag():
 def get_summary(project_id: str):
     """
     Retorna um resumo do entendimento sobre a documentação da base de dados (RAG).
-    Busca chunks do projeto no ChromaDB e gera resumo via Ollama.
+    Busca chunks do projeto no Supabase e gera resumo via LLM.
     """
-    import httpx
-    from config import OLLAMA_URL, OLLAMA_SUMMARY_MODEL
-
     try:
-        col = get_or_create_collection()
-        # Busca até 30 chunks do projeto no ChromaDB
-        results = col.get(
-            where={"project_id": {"$eq": project_id}},
-            limit=30,
-            include=["documents", "metadatas"],
-        )
-        docs = results.get("documents", [])
-        if isinstance(docs, list) and docs and isinstance(docs[0], list):
-            docs = docs[0]
+        docs = get_documents(project_id=project_id, limit=30)
         if not docs:
             return {
                 "summary": "Ainda não há documentação indexada na base de conhecimento deste projeto. Adicione arquivos (PDF, DOCX, TXT) na aba **Fonte de Dados** para que eu possa analisá-los e ajudá-lo.",
                 "sources_count": 0,
             }
 
-        # Concatena chunks (limita tamanho para não sobrecarregar o modelo)
         context = "\n\n---\n\n".join(docs[:20])[:12000]
         prompt = f"""Com base na documentação técnica abaixo, extraída da base de conhecimento do projeto, escreva um resumo objetivo (2 a 4 parágrafos) do entendimento sobre:
 - O que o projeto trata
@@ -409,21 +394,10 @@ Documentação:
 
 Resumo (em português):"""
 
-        with httpx.Client(timeout=90) as client:
-            resp = client.post(
-                f"{OLLAMA_URL}/api/generate",
-                json={
-                    "model": OLLAMA_SUMMARY_MODEL,
-                    "prompt": prompt,
-                    "stream": False,
-                    "options": {"temperature": 0.1, "num_predict": 1000},
-                },
-            )
-            resp.raise_for_status()
-            summary = resp.json().get("response", "").strip()
+        summary = _call_llm(prompt, temperature=0.1, num_predict=1000)
 
         return {
-            "summary": summary or "Não foi possível gerar o resumo. Verifique se o Ollama está rodando e o modelo está disponível.",
+            "summary": summary or "Não foi possível gerar o resumo. Verifique se o Ollama/Groq está configurado.",
             "sources_count": len(docs),
         }
     except Exception as e:
@@ -432,20 +406,14 @@ Resumo (em português):"""
 
 @app.post("/search")
 def search(query: str, project_id: Optional[str] = None, n_results: int = 5):
-    """Busca semântica no ChromaDB."""
+    """Busca semântica no Supabase pgvector."""
     try:
-        col = get_or_create_collection()
-        where = {"project_id": {"$eq": project_id}} if project_id else None
-        results = col.query(
-            query_texts=[query],
-            n_results=n_results,
-            where=where,
-        )
+        docs, metas, dists = vector_query(query, project_id=project_id, n_results=n_results)
         return {
             "query": query,
-            "documents": results.get("documents", [[]])[0],
-            "metadatas": results.get("metadatas", [[]])[0],
-            "distances": results.get("distances", [[]])[0],
+            "documents": docs,
+            "metadatas": metas,
+            "distances": dists,
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -453,15 +421,7 @@ def search(query: str, project_id: Optional[str] = None, n_results: int = 5):
 
 def _get_rag_context(project_id: str, limit: int = 15) -> str:
     """Obtém contexto da base de conhecimento do projeto."""
-    col = get_or_create_collection()
-    results = col.get(
-        where={"project_id": {"$eq": project_id}},
-        limit=limit,
-        include=["documents"],
-    )
-    docs = results.get("documents", [])
-    if isinstance(docs, list) and docs and isinstance(docs[0], list):
-        docs = docs[0]
+    docs = get_documents(project_id=project_id, limit=limit)
     if not docs:
         return ""
     return "\n\n---\n\n".join(docs[:15])[:8000]
@@ -603,15 +563,7 @@ Escreva um resumo objetivo (2 a 4 parágrafos) do seu entendimento sobre:
 
 Resumo (em português):"""
         summary = _call_llm(prompt, temperature=0.1, num_predict=1000)
-        col = get_or_create_collection()
-        results = col.get(
-            where={"project_id": {"$eq": request.project_id}},
-            limit=30,
-            include=["documents"],
-        )
-        docs = results.get("documents", [])
-        if isinstance(docs, list) and docs and isinstance(docs[0], list):
-            docs = docs[0]
+        docs = get_documents(project_id=request.project_id, limit=30)
         return {
             "summary": summary or "Não foi possível gerar o resumo. Verifique se o Ollama está rodando.",
             "sources_count": len(docs),
@@ -626,18 +578,13 @@ def generate_section_content(request: GenerateSectionRequest):
     Gera o conteúdo HTML de uma seção com base na base de conhecimento e no Spec do modelo.
     """
     try:
-        col = get_or_create_collection()
         query_text = f"{request.section_title} {request.help_text or ''}".strip()
         try:
-            results = col.query(
-                query_texts=[query_text or "documentação do projeto"],
+            docs, _, _ = vector_query(
+                query_text or "documentação do projeto",
+                project_id=str(request.project_id),
                 n_results=12,
-                where={"project_id": {"$eq": str(request.project_id)}},
             )
-            raw_docs = results.get("documents") or [[]]
-            docs = raw_docs[0] if isinstance(raw_docs, list) and raw_docs else []
-            if not isinstance(docs, list):
-                docs = []
             docs = [str(d) for d in docs if d]
             rag_context = "\n\n".join(docs[:8])[:6000] if docs else _get_rag_context(request.project_id, limit=12)[:6000]
         except Exception:
@@ -834,14 +781,11 @@ def chat(request: ChatRequest):
     e responde ou sugere ações. Quando document_id é informado, o prompt prioriza o documento em edição.
     """
     try:
-        col = get_or_create_collection()
-        where_project = {"project_id": {"$eq": request.project_id}}
-        results = col.query(
-            query_texts=[request.message],
+        docs, _, _ = vector_query(
+            request.message,
+            project_id=request.project_id,
             n_results=10,
-            where=where_project,
         )
-        docs = results.get("documents", [[]])[0]
         rag_context = "\n\n".join(docs[:8])[:10000] if docs else _get_rag_context(request.project_id, limit=20)
 
         if not rag_context:
