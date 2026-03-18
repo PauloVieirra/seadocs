@@ -13,9 +13,10 @@ function isRAGReachable(): boolean {
   return !ragIsLocalhost || appOnLocalhost;
 }
 
-/** Envia configuração de IA para o serviço RAG (provider + chave Groq). */
+/** Envia configuração de IA para o serviço RAG (provider, ollama_mode, chave Groq). */
 export async function updateAIConfig(params: {
   provider: 'ollama' | 'groq';
+  ollamaMode?: 'local' | 'cloud';
   groqApiKey?: string;
 }): Promise<void> {
   if (!isRAGReachable()) return;
@@ -24,6 +25,7 @@ export async function updateAIConfig(params: {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       provider: params.provider,
+      ollama_mode: params.ollamaMode ?? 'local',
       groq_api_key: params.groqApiKey ?? null,
     }),
   });

@@ -209,23 +209,26 @@ class HealthResponse(BaseModel):
 
 class AIConfigRequest(BaseModel):
     provider: str  # "ollama" | "groq"
+    ollama_mode: Optional[str] = "local"  # "local" | "cloud"
     groq_api_key: Optional[str] = None
 
 
 # Config de IA em memória (frontend envia via POST /ai-config)
-_ai_config: dict = {"provider": "ollama", "groq_api_key": None}
+_ai_config: dict = {"provider": "ollama", "ollama_mode": "local", "groq_api_key": None}
 
 
 @app.post("/ai-config")
 def set_ai_config(request: AIConfigRequest):
-    """Recebe configuração de IA do frontend (provider). Chave Groq vem de GROQ_API_KEY no ambiente."""
+    """Recebe configuração de IA do frontend. Ollama: local=localhost, cloud=OLLAMA_URL do ambiente."""
     global _ai_config
     provider = request.provider if request.provider in ("ollama", "groq") else "ollama"
+    ollama_mode = request.ollama_mode if request.ollama_mode in ("local", "cloud") else "local"
     _ai_config = {
         "provider": provider,
-        "groq_api_key": None,  # Sempre usa GROQ_API_KEY do ambiente (Vercel, etc.)
+        "ollama_mode": ollama_mode,
+        "groq_api_key": None,
     }
-    return {"status": "ok", "provider": provider}
+    return {"status": "ok", "provider": provider, "ollama_mode": ollama_mode}
 
 
 @app.get("/health", response_model=HealthResponse)
@@ -464,19 +467,30 @@ def _get_rag_context(project_id: str, limit: int = 15) -> str:
     return "\n\n---\n\n".join(docs[:15])[:8000]
 
 
+def _get_ollama_url() -> str:
+    """Retorna URL do Ollama conforme config: local=localhost, cloud=OLLAMA_URL do ambiente."""
+    from config import OLLAMA_URL
+
+    mode = _ai_config.get("ollama_mode", "local")
+    if mode == "cloud":
+        return OLLAMA_URL  # Lê OLLAMA_URL do ambiente (Vercel, etc.)
+    return "http://localhost:11434"  # Local: máquina do usuário
+
+
 def _call_ollama(prompt: str, temperature: float = 0.1, num_predict: int = 800, timeout: int = 240) -> str:
     """Chama Ollama para geração de texto. Retry em caso de Broken pipe ou erro de conexão."""
     import time
     import httpx
-    from config import OLLAMA_URL, OLLAMA_SUMMARY_MODEL
+    from config import OLLAMA_SUMMARY_MODEL
 
+    ollama_url = _get_ollama_url()
     payload = {
         "model": OLLAMA_SUMMARY_MODEL,
         "prompt": prompt,
         "stream": False,
         "options": {"temperature": temperature, "num_predict": num_predict},
     }
-    url = f"{OLLAMA_URL}/api/generate"
+    url = f"{ollama_url}/api/generate"
     last_err = None
     for attempt in range(3):
         try:

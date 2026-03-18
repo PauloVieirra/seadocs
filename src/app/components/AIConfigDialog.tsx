@@ -3,9 +3,10 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } f
 import { Button } from './ui/button';
 import { Label } from './ui/label';
 import { Switch } from './ui/switch';
+import { RadioGroup, RadioGroupItem } from './ui/radio-group';
 import { apiService, type AIConfig } from '../../services/api';
 import { updateAIConfig as syncAIConfigToRAG } from '../../services/rag-api';
-import { Cpu, Cloud, CheckCircle2, AlertCircle } from 'lucide-react';
+import { Cpu, Cloud, CheckCircle2, AlertCircle, Monitor, Server } from 'lucide-react';
 import { toast } from 'sonner';
 
 interface AIConfigDialogProps {
@@ -15,6 +16,7 @@ interface AIConfigDialogProps {
 
 export function AIConfigDialog({ open, onOpenChange }: AIConfigDialogProps) {
   const [provider, setProvider] = useState<'ollama' | 'groq'>('ollama');
+  const [ollamaMode, setOllamaMode] = useState<'local' | 'cloud'>('local');
   const [loading, setLoading] = useState(false);
   const [success, setSuccess] = useState(false);
 
@@ -22,6 +24,7 @@ export function AIConfigDialog({ open, onOpenChange }: AIConfigDialogProps) {
     if (open) {
       apiService.getAIConfiguracao().then((config) => {
         setProvider(config?.provider === 'groq' ? 'groq' : 'ollama');
+        setOllamaMode(config?.ollamaMode === 'cloud' ? 'cloud' : 'local');
       });
     }
   }, [open]);
@@ -39,13 +42,13 @@ export function AIConfigDialog({ open, onOpenChange }: AIConfigDialogProps) {
     setLoading(true);
     setSuccess(false);
 
-    const config: AIConfig = { provider };
+    const config: AIConfig = { provider, ollamaMode: provider === 'ollama' ? ollamaMode : undefined };
 
     try {
       await apiService.configurarIA(config);
       setSuccess(true);
       toast.success('Configuração de IA salva com sucesso!');
-      syncAIConfigToRAG({ provider }).catch(() => { /* RAG indisponível; config será aplicada quando estiver online */ });
+      syncAIConfigToRAG({ provider, ollamaMode: provider === 'ollama' ? ollamaMode : undefined }).catch(() => { /* RAG indisponível */ });
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Erro ao salvar configuração.');
     } finally {
@@ -72,21 +75,43 @@ export function AIConfigDialog({ open, onOpenChange }: AIConfigDialogProps) {
           </div>
 
           <form onSubmit={handleSave} className="space-y-4">
-            {/* Ollama local */}
-            <div className="flex items-center justify-between rounded-lg border p-4">
-              <div className="flex items-center gap-3">
-                <Cpu className="w-5 h-5 text-indigo-600" />
-                <div>
-                  <Label className="text-base font-medium">Ollama local</Label>
-                  <p className="text-xs text-muted-foreground mt-0.5">
-                    Modelo rodando localmente (ex.: phi3, llama)
-                  </p>
+            {/* Ollama */}
+            <div className="flex flex-col gap-3 rounded-lg border p-4">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  <Cpu className="w-5 h-5 text-indigo-600" />
+                  <div>
+                    <Label className="text-base font-medium">Ollama</Label>
+                    <p className="text-xs text-muted-foreground mt-0.5">
+                      Modelo local ou na nuvem (ex.: phi3, llama)
+                    </p>
+                  </div>
                 </div>
+                <Switch
+                  checked={provider === 'ollama'}
+                  onCheckedChange={handleOllamaToggle}
+                />
               </div>
-              <Switch
-                checked={provider === 'ollama'}
-                onCheckedChange={handleOllamaToggle}
-              />
+              {provider === 'ollama' && (
+                <RadioGroup value={ollamaMode} onValueChange={(v) => setOllamaMode(v as 'local' | 'cloud')} className="grid gap-2 pt-2 border-t">
+                  <div className="flex items-center gap-2">
+                    <RadioGroupItem value="local" id="ollama-local" />
+                    <Label htmlFor="ollama-local" className="flex items-center gap-1.5 cursor-pointer font-normal">
+                      <Monitor className="w-4 h-4 text-muted-foreground" />
+                      <span>Local</span>
+                      <span className="text-xs text-muted-foreground">— na máquina do usuário (localhost)</span>
+                    </Label>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <RadioGroupItem value="cloud" id="ollama-cloud" />
+                    <Label htmlFor="ollama-cloud" className="flex items-center gap-1.5 cursor-pointer font-normal">
+                      <Server className="w-4 h-4 text-muted-foreground" />
+                      <span>Na nuvem</span>
+                      <span className="text-xs text-muted-foreground">— OLLAMA_URL no Vercel</span>
+                    </Label>
+                  </div>
+                </RadioGroup>
+              )}
             </div>
 
             {/* Groq API */}

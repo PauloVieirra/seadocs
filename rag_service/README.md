@@ -26,7 +26,7 @@ Variáveis de ambiente (ou `.env`):
 |----------|-----------|--------|
 | `CHROMA_PERSIST_DIR` | Diretório persistente do ChromaDB | `./chroma_db` |
 | `CHROMA_COLLECTION` | Nome da collection | `docs_rag` |
-| `OLLAMA_URL` | URL do Ollama | `http://localhost:11434` |
+| `OLLAMA_URL` | URL do Ollama na nuvem (quando "Ollama na nuvem" nas configs) | `http://localhost:11434` |
 | `OLLAMA_EMBED_MODEL` | Modelo de embeddings | `nomic-embed-text` |
 | `SUPABASE_URL` | URL do Supabase | - |
 | `SUPABASE_SERVICE_KEY` | Chave service_role (bypass RLS + download bucket privado) | - |

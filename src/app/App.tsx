@@ -94,7 +94,7 @@ export default function App() {
       if (config?.provider === 'groq') {
         updateAIConfig({ provider: 'groq' }).catch(() => {});
       } else if (config?.provider === 'ollama') {
-        updateAIConfig({ provider: 'ollama' }).catch(() => {});
+        updateAIConfig({ provider: 'ollama', ollamaMode: config.ollamaMode ?? 'local' }).catch(() => {});
       }
     });
   }, [authLoaded, currentUser]); 

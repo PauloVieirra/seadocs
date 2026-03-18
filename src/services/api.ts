@@ -21,6 +21,7 @@ export interface AIConfig {
   apiKey?: string;
   provider?: 'openai' | 'anthropic' | 'manus' | 'custom' | 'ollama' | 'groq';
   groqApiKey?: string;
+  ollamaMode?: 'local' | 'cloud';
 }
 
 export { type ManusConfig } from './manus-api';
